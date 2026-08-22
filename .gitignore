@@ -8,4 +8,5 @@ build/
 *.egg-info/
 .env
 .web-search-data/
+ui/node_modules/
 .idea

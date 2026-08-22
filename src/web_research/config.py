@@ -25,9 +25,9 @@ def _float_env(name: str, default: float) -> float:
 @dataclass(frozen=True, slots=True)
 class Settings:
     searxng_url: str = "http://127.0.0.1:8080"
-    omlx_base_url: str = "http://127.0.0.1:8000/v1"
-    omlx_model: str = ""
-    omlx_api_key: str = ""
+    model_base_url: str = "http://127.0.0.1:8000/v1"
+    model_id: str = ""
+    model_api_key: str = ""
     data_dir: Path = Path(".web-search-data")
     log_level: str = "INFO"
     user_agent: str = "LocalResearchBot/0.1 (+local personal research)"
@@ -44,9 +44,9 @@ class Settings:
     def from_env(cls) -> Settings:
         return cls(
             searxng_url=os.getenv("WEB_SEARCH_SEARXNG_URL", "http://127.0.0.1:8080"),
-            omlx_base_url=os.getenv("WEB_SEARCH_OMLX_BASE_URL", "http://127.0.0.1:8000/v1"),
-            omlx_model=os.getenv("WEB_SEARCH_OMLX_MODEL", ""),
-            omlx_api_key=os.getenv("WEB_SEARCH_OMLX_API_KEY", ""),
+            model_base_url=os.getenv("WEB_SEARCH_MODEL_BASE_URL", "http://127.0.0.1:8000/v1"),
+            model_id=os.getenv("WEB_SEARCH_MODEL_ID", ""),
+            model_api_key=os.getenv("WEB_SEARCH_MODEL_API_KEY", ""),
             data_dir=Path(os.getenv("WEB_SEARCH_DATA_DIR", ".web-search-data")).expanduser(),
             log_level=os.getenv("WEB_SEARCH_LOG_LEVEL", "INFO").upper(),
             user_agent=os.getenv(

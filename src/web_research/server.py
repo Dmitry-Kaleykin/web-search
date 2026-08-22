@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from .agent import ResearchAgent
 from .config import Settings, budget_for
 from .controller import ResearchController
-from .model.omlx import OMLXModelClient
+from .model.openai_compatible import OpenAICompatibleModelClient
 from .readers.crawl4ai import Crawl4AIReader
 from .readers.http import HTTPReader
 from .readers.router import LayeredReader
@@ -130,10 +130,10 @@ async def web_search(
         else None
     )
     reader = LayeredReader(http_reader, browser_reader)
-    model = OMLXModelClient(
-        settings.omlx_base_url,
-        settings.omlx_model,
-        api_key=settings.omlx_api_key,
+    model = OpenAICompatibleModelClient(
+        settings.model_base_url,
+        settings.model_id,
+        api_key=settings.model_api_key,
         timeout_seconds=settings.model_timeout_seconds,
         max_tokens=settings.model_max_tokens,
         temperature=settings.model_temperature,

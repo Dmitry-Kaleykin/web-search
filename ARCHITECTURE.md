@@ -12,7 +12,7 @@ The recommended stack is:
 | Layer | Default | Escalation / fallback |
 |---|---|---|
 | External interface | One MCP tool: `web_search` | Pi extension/adapter presents the MCP tool to Pi |
-| Research planning | Local model through an OpenAI-compatible oMLX endpoint | Deterministic templates if the planning call fails |
+| Research planning | Local model through an OpenAI-compatible endpoint | Deterministic templates if the planning call fails |
 | Discovery | Self-hosted SearXNG with JSON enabled | Pluggable direct search provider; later, specialized sources |
 | Ordinary HTML | HTTP fetch + Trafilatura | Crawl4AI single-page render |
 | Site exploration | Research controller selects links | Crawl4AI adaptive crawling within one site |
@@ -32,7 +32,7 @@ flowchart LR
     U[User] --> P[Pi agent]
     P -->|web_search| M[MCP server]
     M --> C[Research controller]
-    C --> L[Local research model via oMLX]
+    C --> L[Local model via an OpenAI-compatible API]
     C --> S[SearXNG]
     C --> R[Reader router]
     R --> T[HTTP + Trafilatura]
@@ -345,7 +345,7 @@ Use one configurable local model initially, but keep four logical roles separate
 
 All outputs should use validated JSON schemas. The model never receives network credentials, browser profile data, or arbitrary filesystem/shell tools.
 
-Calling the same oMLX/Qwen endpoint as Pi is acceptable for a first version because Pi's inference has returned before the tool runs. Add a local request queue and confirm that parallel Pi sessions cannot overload or deadlock the model server. The service should allow a separate cheaper/faster planning model later.
+Calling the same OpenAI-compatible model endpoint as Pi is acceptable for a first version because Pi's inference has returned before the tool runs. Add a local request queue and confirm that parallel Pi sessions cannot overload or deadlock the model server. The service should allow a separate cheaper/faster planning model later.
 
 ## 8. Storage and caching
 
@@ -493,7 +493,7 @@ web-search/
 2. Confirm result pagination, language, time filters, and enabled engines.
 3. Make one minimal MCP `web_search` call from the intended Pi adapter.
 4. Confirm cancellation, timeout behavior, maximum tool-result size, and progress rendering.
-5. Confirm the oMLX model reliably produces and consumes the tool call.
+5. Confirm the selected model reliably produces and consumes the tool call.
 
 This spike should happen before building the research logic because Pi/MCP/tool-call compatibility is the highest integration risk.
 

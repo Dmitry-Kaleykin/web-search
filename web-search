@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+UI_DIR="$PROJECT_DIR/ui"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js 22.19 or newer is required for the terminal console." >&2
+  exit 1
+fi
+
+if [ ! -d "$UI_DIR/node_modules/@earendil-works/pi-tui" ]; then
+  echo "Installing terminal console dependencies..."
+  npm install --prefix "$UI_DIR" --no-audit --no-fund
+fi
+
+exec node "$UI_DIR/src/app.js" "$@"

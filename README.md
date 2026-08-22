@@ -2,7 +2,7 @@
 
 A local-first MCP research service for Pi. It exposes one tool, `web_search`, which searches through
 SearXNG, reads promising pages, tracks evidence requirements, stops adaptively, and returns a cited
-synthesis produced by a local model through an oMLX/OpenAI-compatible endpoint.
+synthesis produced by a local model through an OpenAI-compatible endpoint.
 
 This repository currently implements the first vertical slice from [ARCHITECTURE.md](ARCHITECTURE.md):
 
@@ -20,11 +20,31 @@ This repository currently implements the first vertical slice from [ARCHITECTURE
 Interactive Playwright actions, PDF/Docling, OCR, and MCP Tasks remain later milestones. Unsupported
 or blocked pages are reported rather than silently treated as evidence.
 
+## Terminal console
+
+Run the standalone Pi-styled operator console from the project directory:
+
+```bash
+./web-search
+```
+
+The first launch installs the console's small Node.js dependency set. Inside the console you can:
+
+- Install or update the Python application and Chromium runtime.
+- Launch Docker Desktop when necessary and start, stop, or restart SearXNG.
+- See Docker, SearXNG, model API, Chromium, and MCP readiness at a glance.
+- Run the full readiness doctor and follow SearXNG logs.
+
+The console does not replace or modify Pi. Pi continues to launch the single MCP server over stdio
+when it needs `web_search`; the console is only an operator interface for installation and local
+service management.
+
 ## Requirements
 
 - Python 3.11 or newer.
+- Node.js 22.19 or newer for the optional terminal console.
 - Docker (recommended for SearXNG), or another SearXNG instance with JSON enabled.
-- A running oMLX/OpenAI-compatible chat-completions endpoint.
+- A running OpenAI-compatible chat-completions endpoint.
 - A Pi MCP adapter/extension.
 
 ## 1. Install
@@ -53,8 +73,8 @@ searches anonymous.
 
 ## 3. Configure the research model
 
-Copy `config.example.env` to `.env`, set the exact model ID exposed by oMLX, then export the values in
-the shell that starts the MCP server:
+Copy `config.example.env` to `.env`, set the exact model ID exposed by your model server, then export
+the values in the shell that starts the MCP server:
 
 ```bash
 cp config.example.env .env
@@ -68,13 +88,13 @@ Important settings:
 | Variable | Default | Purpose |
 |---|---|---|
 | `WEB_SEARCH_SEARXNG_URL` | `http://127.0.0.1:8080` | SearXNG base URL |
-| `WEB_SEARCH_OMLX_BASE_URL` | `http://127.0.0.1:8000/v1` | OpenAI-compatible API base |
-| `WEB_SEARCH_OMLX_MODEL` | none | Required model ID |
+| `WEB_SEARCH_MODEL_BASE_URL` | `http://127.0.0.1:8000/v1` | OpenAI-compatible API base |
+| `WEB_SEARCH_MODEL_ID` | none | Required model ID |
 | `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
 | `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
 | `WEB_SEARCH_ENABLE_CRAWL4AI` | `true` | Escalate incomplete pages to Chromium |
 
-Do not enable private URL fetching for normal use. SearXNG and oMLX have their own explicitly
+Do not enable private URL fetching for normal use. SearXNG and the model server have their own explicitly
 configured local endpoints; public result pages remain protected against SSRF.
 
 ## 4. Check the services
@@ -84,7 +104,7 @@ configured local endpoints; public result pages remain protected against SSRF.
 ```
 
 The command verifies the SearXNG JSON API, Crawl4AI package and Chromium runtime, the configured
-model ID, the oMLX `/models` endpoint, and the data directory.
+model ID, the model server's `/models` endpoint, and the data directory.
 
 ## 5. Connect Pi
 
@@ -119,8 +139,8 @@ pass and additional pages have low expected value.
 ```
 
 The test suite is offline. It exercises the controller, evidence rules, citations, reader byte bounds,
-URL safety, SearXNG and oMLX protocol adapters, Crawl4AI failure handling, and the MCP tool schema
-without requiring live SearXNG or oMLX services.
+URL safety, SearXNG and model-server protocol adapters, Crawl4AI failure handling, and the MCP tool
+schema without requiring live SearXNG or model services.
 
 ## Security defaults
 

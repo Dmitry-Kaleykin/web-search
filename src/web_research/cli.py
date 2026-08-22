@@ -62,34 +62,34 @@ async def _doctor() -> int:
             failed = True
             print(f"FAIL SearXNG JSON API: {exc}", file=sys.stderr)
 
-        if not settings.omlx_model:
+        if not settings.model_id:
             failed = True
-            print("FAIL WEB_SEARCH_OMLX_MODEL is not set", file=sys.stderr)
+            print("FAIL WEB_SEARCH_MODEL_ID is not set", file=sys.stderr)
         headers = {}
-        if settings.omlx_api_key:
-            headers["Authorization"] = f"Bearer {settings.omlx_api_key}"
+        if settings.model_api_key:
+            headers["Authorization"] = f"Bearer {settings.model_api_key}"
         try:
             response = await client.get(
-                f"{settings.omlx_base_url.rstrip('/')}/models", headers=headers
+                f"{settings.model_base_url.rstrip('/')}/models", headers=headers
             )
             response.raise_for_status()
             models = response.json().get("data", [])
             ids = {str(item.get("id")) for item in models if isinstance(item, dict)}
-            if not settings.omlx_model:
+            if not settings.model_id:
                 if ids:
-                    print(f"INFO available oMLX model IDs: {json.dumps(sorted(ids))}")
-            elif ids and settings.omlx_model not in ids:
+                    print(f"INFO available model IDs: {json.dumps(sorted(ids))}")
+            elif ids and settings.model_id not in ids:
                 failed = True
                 print(
-                    f"FAIL configured model {settings.omlx_model!r} is not in /models: "
+                    f"FAIL configured model {settings.model_id!r} is not in /models: "
                     f"{json.dumps(sorted(ids))}",
                     file=sys.stderr,
                 )
             else:
-                print(f"OK   oMLX model endpoint: {settings.omlx_model}")
+                print(f"OK   model endpoint: {settings.model_id}")
         except Exception as exc:
             failed = True
-            print(f"FAIL oMLX endpoint: {exc}", file=sys.stderr)
+            print(f"FAIL model endpoint: {exc}", file=sys.stderr)
     return 1 if failed else 0
 
 

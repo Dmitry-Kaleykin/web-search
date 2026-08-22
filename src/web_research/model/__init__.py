@@ -1,6 +1,6 @@
 """Local model clients and prompts."""
 
 from .base import ResearchModel
-from .omlx import OMLXModelClient
+from .openai_compatible import OpenAICompatibleModelClient
 
-__all__ = ["OMLXModelClient", "ResearchModel"]
+__all__ = ["OpenAICompatibleModelClient", "ResearchModel"]

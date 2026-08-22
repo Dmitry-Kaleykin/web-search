@@ -9,8 +9,8 @@ class ModelError(RuntimeError):
     pass
 
 
-class OMLXModelClient:
-    """Small OpenAI-compatible chat client, intentionally independent of an SDK."""
+class OpenAICompatibleModelClient:
+    """Small chat-completions client, intentionally independent of a provider SDK."""
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class OMLXModelClient:
         schema: dict[str, Any],
     ) -> dict[str, Any]:
         if not self.model:
-            raise ModelError("WEB_SEARCH_OMLX_MODEL is not configured")
+            raise ModelError("WEB_SEARCH_MODEL_ID is not configured")
         schema_instruction = (
             "Return exactly one JSON object matching this JSON Schema. "
             "Do not wrap it in Markdown.\n" + json.dumps(schema, ensure_ascii=False)
@@ -67,7 +67,7 @@ class OMLXModelClient:
             data = response.json()
             content = data["choices"][0]["message"]["content"]
         except Exception as exc:
-            raise ModelError(f"oMLX model request failed for {schema_name}: {exc}") from exc
+            raise ModelError(f"Model request failed for {schema_name}: {exc}") from exc
         if not isinstance(content, str):
             raise ModelError(f"Model returned non-text content for {schema_name}")
         try:
