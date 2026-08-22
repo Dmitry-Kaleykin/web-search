@@ -25,6 +25,14 @@ then Pi's active model, then another available Pi model. This server sends no hi
 model is selected. `WEB_SEARCH_MODEL_ID` remains available only as a direct fallback when the client
 does not advertise sampling.
 
+The server deliberately negotiates the 2025-11-25 handshake protocol over stdio. Its adaptive
+controller performs model calls between searches and page reads, which needs the duplex sampling
+back-channel. `pi-mcp-adapter` uses automatic negotiation and falls back to this protocol.
+
+Users of TUN proxies with fake-IP DNS may need `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS=true`. This permits
+only synthetic `198.18.0.0/15` answers for hostname URLs; it does not disable the private-network
+guard.
+
 The MCP server returns structured output containing `answer_markdown`, `sources`, `coverage`,
 `stop_reason`, `stats`, and `warnings`. Pi should use `answer_markdown` as the researched answer and
 retain the other fields for transparency.

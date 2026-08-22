@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Literal
 
+import anyio
 from pydantic import BaseModel
 
 from .agent import ResearchAgent
@@ -22,6 +23,8 @@ from .storage import SQLiteStore
 try:
     from mcp.server import MCPServer
     from mcp.server.mcpserver import Context
+    from mcp.server.runner import serve_loop
+    from mcp.server.stdio import stdio_server
 except ImportError as exc:  # pragma: no cover - clear startup error without dependencies
     raise RuntimeError(
         "The MCP SDK is not installed. Run `python -m pip install -e .` first."
@@ -122,12 +125,14 @@ async def web_search(
         user_agent=settings.user_agent,
         max_response_bytes=settings.max_response_bytes,
         allow_private_urls=settings.allow_private_urls,
+        allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
     )
     browser_reader = (
         Crawl4AIReader(
             store=store,
             user_agent=settings.user_agent,
             allow_private_urls=settings.allow_private_urls,
+            allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
         )
         if settings.enable_crawl4ai
         else None
@@ -186,7 +191,23 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     LOGGER.info("Starting Local Agentic Web Search MCP server")
-    mcp.run()
+    anyio.run(_run_stdio_server)
+
+
+async def _run_stdio_server() -> None:
+    """Use handshake-era stdio so iterative MCP sampling has a duplex back-channel."""
+    lowlevel = mcp._lowlevel_server
+    async with (
+        stdio_server() as (read_stream, write_stream),
+        lowlevel.lifespan(lowlevel) as lifespan_state,
+    ):
+        await serve_loop(
+            lowlevel,
+            read_stream,
+            write_stream,
+            lifespan_state=lifespan_state,
+            init_options=lowlevel.create_initialization_options(),
+        )
 
 
 if __name__ == "__main__":

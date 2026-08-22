@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gzip
 import unittest
+from types import SimpleNamespace
 
 import httpx
 
@@ -48,6 +50,58 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
         try:
             with self.assertRaises(ReaderError):
                 await reader.read("http://127.0.0.1/large")
+        finally:
+            await reader.close()
+
+    async def test_reader_does_not_decode_compressed_content_twice(self) -> None:
+        html = (
+            b"<html><main><h1>Compressed page</h1><p>"
+            + b"useful text " * 30
+            + b"</p></main></html>"
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"Content-Type": "text/html", "Content-Encoding": "gzip"},
+                content=gzip.compress(html),
+            )
+
+        reader = HTTPReader(allow_private_urls=True)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            document = await reader.read("http://127.0.0.1/compressed")
+        finally:
+            await reader.close()
+        self.assertIn("Compressed page", document.content)
+
+    async def test_proxy_fake_peer_is_allowed_only_with_explicit_option(self) -> None:
+        stream = SimpleNamespace(get_extra_info=lambda _name: ("198.18.0.49", 443))
+        response = SimpleNamespace(extensions={"network_stream": stream})
+
+        strict_reader = HTTPReader()
+        try:
+            with self.assertRaisesRegex(ReaderError, "Connected peer is not public"):
+                strict_reader._validate_connected_peer(response)
+        finally:
+            await strict_reader.close()
+
+        proxy_reader = HTTPReader(allow_proxy_fake_ips=True)
+        try:
+            proxy_reader._validate_connected_peer(response, proxy_fake_dns=True)
+        finally:
+            await proxy_reader.close()
+
+    async def test_proxy_option_does_not_allow_unvalidated_loopback_peer(self) -> None:
+        stream = SimpleNamespace(get_extra_info=lambda _name: ("127.0.0.1", 443))
+        response = SimpleNamespace(extensions={"network_stream": stream})
+        reader = HTTPReader(allow_proxy_fake_ips=True)
+        try:
+            with self.assertRaisesRegex(ReaderError, "Connected peer is not public"):
+                reader._validate_connected_peer(response, proxy_fake_dns=False)
+            reader._validate_connected_peer(response, proxy_fake_dns=True)
         finally:
             await reader.close()
 

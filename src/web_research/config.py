@@ -32,6 +32,7 @@ class Settings:
     log_level: str = "INFO"
     user_agent: str = "LocalResearchBot/0.1 (+local personal research)"
     allow_private_urls: bool = False
+    allow_proxy_fake_ips: bool = False
     max_response_bytes: int = 5_000_000
     document_cache_ttl_seconds: int = 21_600
     search_cache_ttl_seconds: int = 900
@@ -53,6 +54,7 @@ class Settings:
                 "WEB_SEARCH_USER_AGENT", "LocalResearchBot/0.1 (+local personal research)"
             ),
             allow_private_urls=_bool_env("WEB_SEARCH_ALLOW_PRIVATE_URLS", False),
+            allow_proxy_fake_ips=_bool_env("WEB_SEARCH_ALLOW_PROXY_FAKE_IPS", False),
             max_response_bytes=_int_env("WEB_SEARCH_MAX_RESPONSE_BYTES", 5_000_000),
             document_cache_ttl_seconds=_int_env("WEB_SEARCH_DOCUMENT_CACHE_TTL_SECONDS", 21_600),
             search_cache_ttl_seconds=_int_env("WEB_SEARCH_SEARCH_CACHE_TTL_SECONDS", 900),

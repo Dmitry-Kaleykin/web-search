@@ -19,11 +19,13 @@ class Crawl4AIReader:
         store: SQLiteStore | None = None,
         user_agent: str = "LocalResearchBot/0.1",
         allow_private_urls: bool = False,
+        allow_proxy_fake_ips: bool = False,
         page_timeout_ms: int = 35_000,
     ) -> None:
         self.store = store
         self.user_agent = user_agent
         self.allow_private_urls = allow_private_urls
+        self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.page_timeout_ms = page_timeout_ms
         self._crawler: Any = None
         self._run_config: Any = None
@@ -35,7 +37,11 @@ class Crawl4AIReader:
             self._crawler = None
 
     async def read(self, url: str) -> Document:
-        await validate_public_url(url, allow_private=self.allow_private_urls)
+        await validate_public_url(
+            url,
+            allow_private=self.allow_private_urls,
+            allow_proxy_fake_ips=self.allow_proxy_fake_ips,
+        )
         crawler, run_config = await self._ensure_crawler()
         try:
             result = await crawler.arun(url=url, config=run_config)
@@ -47,7 +53,11 @@ class Crawl4AIReader:
             raise ReaderError(f"Crawl4AI failed for {url}: {result.error_message}")
 
         final_url = str(result.url or url)
-        await validate_public_url(final_url, allow_private=self.allow_private_urls)
+        await validate_public_url(
+            final_url,
+            allow_private=self.allow_private_urls,
+            allow_proxy_fake_ips=self.allow_proxy_fake_ips,
+        )
         if not markdown.strip():
             raise ReaderError(f"Crawl4AI produced no Markdown for {url}")
         title = str((result.metadata or {}).get("title") or _title_from_url(final_url))
@@ -107,6 +117,7 @@ class Crawl4AIReader:
 
     def _install_network_guard(self, crawler) -> None:
         allow_private = self.allow_private_urls
+        allow_proxy_fake_ips = self.allow_proxy_fake_ips
 
         async def on_page_context_created(page, context, **_kwargs):
             host_cache: dict[str, bool] = {}
@@ -121,7 +132,11 @@ class Crawl4AIReader:
                 allowed = host_cache.get(host)
                 if allowed is None:
                     try:
-                        await validate_public_url(request.url, allow_private=allow_private)
+                        await validate_public_url(
+                            request.url,
+                            allow_private=allow_private,
+                            allow_proxy_fake_ips=allow_proxy_fake_ips,
+                        )
                         allowed = True
                     except ValueError:
                         allowed = False

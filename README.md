@@ -117,10 +117,14 @@ Important settings:
 | `WEB_SEARCH_MODEL_ID` | none | Optional direct-fallback model ID |
 | `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
 | `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
+| `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Permit hostname-only `198.18.0.0/15` answers from a local TUN proxy |
 | `WEB_SEARCH_ENABLE_CRAWL4AI` | `true` | Escalate incomplete pages to Chromium |
 
 Do not enable private URL fetching for normal use. SearXNG and any direct fallback model server have
 their own explicitly configured local endpoints; public result pages remain protected against SSRF.
+If a local proxy returns synthetic `198.18.0.x` DNS answers for every public hostname, enable
+`WEB_SEARCH_ALLOW_PROXY_FAKE_IPS`. This exception does not permit literal fake-IP URLs or any other
+private, loopback, link-local, or metadata range.
 
 ## 4. Check the services
 
@@ -143,6 +147,11 @@ Point your Pi MCP extension/adapter at the absolute executable:
 Start from [integrations/pi/mcp-server.example.json](integrations/pi/mcp-server.example.json). It
 enables automatic sampling approval for this trusted local scope and contains no model ID. Pi MCP
 adapters differ in their outer configuration format, but the command and environment are the same.
+
+The stdio executable intentionally uses MCP's 2025-11-25 handshake protocol. Iterative research
+needs several server-to-client sampling requests during one tool call, while the 2026-07-28 protocol
+requires sampling to be represented as multi-round input. `pi-mcp-adapter` negotiates automatically
+and falls back to this compatible handshake path.
 
 The tool signature is:
 

@@ -21,6 +21,11 @@ TRACKING_PARAMETERS = {
     "source",
 }
 
+# RFC 2544 benchmarking space is widely used by local TUN proxies for synthetic
+# DNS answers. It is not treated as public by ipaddress, so accepting it must be
+# explicit and is limited to hostname resolutions (never literal-IP URLs).
+PROXY_FAKE_IP_NETWORKS = (ipaddress.ip_network("198.18.0.0/15"),)
+
 
 @dataclass(frozen=True, slots=True)
 class ValidatedUrl:
@@ -29,7 +34,12 @@ class ValidatedUrl:
     addresses: tuple[str, ...]
 
 
-async def validate_public_url(url: str, *, allow_private: bool = False) -> ValidatedUrl:
+async def validate_public_url(
+    url: str,
+    *,
+    allow_private: bool = False,
+    allow_proxy_fake_ips: bool = False,
+) -> ValidatedUrl:
     parsed = urlsplit(url)
     if parsed.scheme.lower() not in {"http", "https"}:
         raise UnsafeUrlError("Only http and https URLs are allowed")
@@ -45,18 +55,25 @@ async def validate_public_url(url: str, *, allow_private: bool = False) -> Valid
     try:
         direct_ip = ipaddress.ip_address(host)
         addresses = (str(direct_ip),)
+        hostname_resolved = False
     except ValueError:
         addresses = await _resolve(host, parsed.port or _default_port(parsed.scheme))
+        hostname_resolved = True
 
     if not addresses:
         raise UnsafeUrlError("Hostname did not resolve")
     if not allow_private:
         for value in addresses:
             address = ipaddress.ip_address(value)
-            if not address.is_global:
+            proxy_fake_ip = allow_proxy_fake_ips and hostname_resolved and is_proxy_fake_ip(address)
+            if not address.is_global and not proxy_fake_ip:
                 raise UnsafeUrlError(f"Non-public destination is blocked: {address}")
 
     return ValidatedUrl(url=urlunsplit(parsed), host=host, addresses=addresses)
+
+
+def is_proxy_fake_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return any(address in network for network in PROXY_FAKE_IP_NETWORKS)
 
 
 async def _resolve(host: str, port: int) -> tuple[str, ...]:

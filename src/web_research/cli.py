@@ -28,6 +28,8 @@ async def _doctor() -> int:
         )
     ).expanduser()
     print(f"OK   data directory: {settings.data_dir.resolve()}")
+    if settings.allow_proxy_fake_ips:
+        print("INFO proxy fake-IP DNS compatibility: enabled for 198.18.0.0/15")
     if settings.enable_crawl4ai:
         if importlib.util.find_spec("crawl4ai") is None:
             failed = True

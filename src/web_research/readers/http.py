@@ -7,6 +7,7 @@ from ..models import Document
 from ..safety.urls import (
     UnsafeUrlError,
     canonicalize_url,
+    is_proxy_fake_ip,
     resolve_redirect,
     validate_public_url,
 )
@@ -32,6 +33,7 @@ class HTTPReader:
         user_agent: str = "LocalResearchBot/0.1",
         max_response_bytes: int = 5_000_000,
         allow_private_urls: bool = False,
+        allow_proxy_fake_ips: bool = False,
         max_redirects: int = 5,
     ) -> None:
         try:
@@ -42,6 +44,7 @@ class HTTPReader:
         self.cache_ttl_seconds = cache_ttl_seconds
         self.max_response_bytes = max_response_bytes
         self.allow_private_urls = allow_private_urls
+        self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.max_redirects = max_redirects
         self._client = httpx.AsyncClient(
             timeout=timeout_seconds,
@@ -67,11 +70,21 @@ class HTTPReader:
         response = None
         for _ in range(self.max_redirects + 1):
             try:
-                await validate_public_url(current, allow_private=self.allow_private_urls)
+                validated = await validate_public_url(
+                    current,
+                    allow_private=self.allow_private_urls,
+                    allow_proxy_fake_ips=self.allow_proxy_fake_ips,
+                )
             except UnsafeUrlError as exc:
                 raise ReaderError(str(exc)) from exc
             try:
-                response = await self._bounded_get(current)
+                response = await self._bounded_get(
+                    current,
+                    proxy_fake_dns=any(
+                        is_proxy_fake_ip(ipaddress.ip_address(value))
+                        for value in validated.addresses
+                    ),
+                )
             except Exception as exc:
                 if isinstance(exc, ReaderError):
                     raise
@@ -128,9 +141,9 @@ class HTTPReader:
             self.store.put_document(canonical, document)
         return document
 
-    async def _bounded_get(self, url: str):
+    async def _bounded_get(self, url: str, *, proxy_fake_dns: bool = False):
         async with self._client.stream("GET", url) as response:
-            self._validate_connected_peer(response)
+            self._validate_connected_peer(response, proxy_fake_dns=proxy_fake_dns)
             length = response.headers.get("content-length")
             if length and int(length) > self.max_response_bytes:
                 raise ReaderError("Response exceeds configured byte limit")
@@ -139,15 +152,20 @@ class HTTPReader:
                 body.extend(chunk)
                 if len(body) > self.max_response_bytes:
                     raise ReaderError("Response exceeds configured byte limit")
+            decoded_headers = {
+                key: value
+                for key, value in response.headers.items()
+                if key.lower() not in {"content-encoding", "content-length"}
+            }
             return type(response)(
                 status_code=response.status_code,
-                headers=response.headers,
+                headers=decoded_headers,
                 content=bytes(body),
                 request=response.request,
                 extensions=response.extensions,
             )
 
-    def _validate_connected_peer(self, response) -> None:
+    def _validate_connected_peer(self, response, *, proxy_fake_dns: bool = False) -> None:
         """Close the DNS-rebinding gap when the transport exposes the peer address."""
         if self.allow_private_urls:
             return
@@ -162,7 +180,12 @@ class HTTPReader:
             address = ipaddress.ip_address(str(raw_address))
         except ValueError:
             return
-        if not address.is_global:
+        proxy_path = (
+            self.allow_proxy_fake_ips
+            and proxy_fake_dns
+            and (is_proxy_fake_ip(address) or address.is_loopback)
+        )
+        if not address.is_global and not proxy_path:
             raise ReaderError(f"Connected peer is not public: {address}")
 
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
+from mcp import MCPDeprecationWarning
 from mcp.server.mcpserver import Context
 from mcp.types import SamplingMessage, TextContent
 
@@ -42,15 +44,17 @@ class MCPSamplingModelClient:
         if not self.supported(self.context):
             raise ModelError("The connected MCP client does not support model sampling")
         try:
-            result = await self.context.session.create_message(
-                messages=[SamplingMessage(role="user", content=TextContent(text=user))],
-                system_prompt=f"{system}\n\n{schema_instruction(schema)}",
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                include_context="none",
-                metadata={"schema_name": schema_name},
-                related_request_id=self.context.request_id,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", MCPDeprecationWarning)
+                result = await self.context.session.create_message(
+                    messages=[SamplingMessage(role="user", content=TextContent(text=user))],
+                    system_prompt=f"{system}\n\n{schema_instruction(schema)}",
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    include_context="none",
+                    metadata={"schema_name": schema_name},
+                    related_request_id=self.context.request_id,
+                )
         except Exception as exc:
             raise ModelError(f"MCP client sampling failed for {schema_name}: {exc}") from exc
 

@@ -382,12 +382,19 @@ Start with FTS5/BM25. Add embeddings only after an evaluation shows missed evide
 
 For the first version:
 
-- Use a normal blocking MCP tool call with progress notifications.
+- Use a normal blocking MCP tool call with progress notifications over the 2025-11-25 handshake
+  protocol, preserving the duplex sampling back-channel needed by the adaptive loop.
 - Honor cancellation immediately in the controller, pending fetches, browser, and model calls.
 - Stream compact progress such as "searching official sources," "8/12 requirements covered," and "checking a conflict."
 - Keep `auto` mode short enough to fit typical client/tool timeouts.
 
 MCP Tasks are attractive for thorough jobs because they provide durable task IDs, polling, progress, cancellation, and optional input requests. Treat them as a later enhancement because they are an extension and client support varies. Keep an internal job abstraction now so a blocking call can be promoted to a task without rewriting the controller.
+
+The 2026-07-28 protocol replaces imperative server-to-client sampling during a tool call with
+multi-round input-required results. Supporting that protocol without constraining research to a
+static resolver graph requires making the controller resumable and persisting its frontier between
+rounds. Until then, the stdio entry point must force handshake-era negotiation; Pi's adapter supports
+this fallback automatically.
 
 Pi's extension API already supports registering custom tools, streaming updates, and receiving an abort signal. The Pi-side adapter should:
 
