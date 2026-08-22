@@ -1,7 +1,17 @@
 #!/bin/sh
 set -eu
 
-PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+LAUNCHER=$0
+while [ -L "$LAUNCHER" ]; do
+  LAUNCHER_DIR=$(CDPATH= cd -- "$(dirname -- "$LAUNCHER")" && pwd)
+  LINK_TARGET=$(readlink "$LAUNCHER")
+  case "$LINK_TARGET" in
+    /*) LAUNCHER=$LINK_TARGET ;;
+    *) LAUNCHER=$LAUNCHER_DIR/$LINK_TARGET ;;
+  esac
+done
+
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$LAUNCHER")" && pwd)
 UI_DIR="$PROJECT_DIR/ui"
 
 if ! command -v node >/dev/null 2>&1; then

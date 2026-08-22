@@ -22,11 +22,15 @@ or blocked pages are reported rather than silently treated as evidence.
 
 ## Terminal console
 
-Run the standalone Pi-styled operator console from the project directory:
+Run the standalone Pi-styled operator console from any directory:
 
 ```bash
-./web-search
+web-search
 ```
+
+On this machine, `~/.local/bin/web-search` points to the project launcher. The launcher resolves its
+real location through the symlink, so installation and service commands still run in the project
+directory. The project-local `./web-search` command remains available as a fallback.
 
 The first launch installs the console's small Node.js dependency set. Inside the console you can:
 
