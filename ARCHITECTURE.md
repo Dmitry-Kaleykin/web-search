@@ -109,7 +109,8 @@ Return human-readable Markdown as the normal tool content and mirror the importa
     "search_queries": 6,
     "pages_fetched": 14,
     "independent_domains": 8,
-    "elapsed_ms": 73420
+    "elapsed_ms": 73420,
+    "browsing_elapsed_ms": 18400
   },
   "warnings": []
 }
@@ -240,11 +241,13 @@ These prevent runaway work. They are not targets:
 
 | Mode | Initial ceiling to calibrate | Purpose |
 |---|---:|---|
-| Quick | 30 seconds, 2 search calls, 5 fetched pages | Simple lookup |
-| Auto | 2 minutes, 8 search calls, 20 fetched pages | Normal research/comparison |
-| Thorough | 10 minutes, 20 search calls, 60 fetched pages | Broad or high-confidence research |
+| Quick | 30 active browsing seconds, 2 search calls, 5 fetched pages | Simple lookup |
+| Auto | 2 active browsing minutes, 8 search calls, 20 fetched pages | Normal research/comparison |
+| Thorough | 10 active browsing minutes, 20 search calls, 60 fetched pages | Broad or high-confidence research |
 
-Also cap redirects, bytes per response, pages per domain, browser interactions, document pages, model tokens, and concurrent fetches.
+Active browsing time counts search and document-retrieval waits, not model inference or approval
+latency. Model requests have their own timeout. Also cap redirects, bytes per response, pages per
+domain, browser interactions, document pages, model tokens, and concurrent fetches.
 
 #### Mandatory answerability gates
 

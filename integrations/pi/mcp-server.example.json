@@ -1,11 +1,12 @@
 {
   "settings": {
-    "sampling": true,
-    "samplingAutoApprove": true
+    "sampling": true
   },
   "mcpServers": {
     "web-search": {
       "command": "/Users/donais/Documents/Projects/web-search/.venv/bin/web-search-mcp",
+      "samplingAutoApprove": true,
+      "requestTimeoutMs": 1800000,
       "env": {
         "WEB_SEARCH_SEARXNG_URL": "http://127.0.0.1:8080",
         "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS": "false",

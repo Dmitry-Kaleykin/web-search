@@ -57,16 +57,14 @@ class ResearchController:
         callback = progress or _no_progress
         research_id = str(uuid.uuid4())
         started = time.monotonic()
-        deadline = started + budget.max_seconds
+        browsing_budget = _ActiveTimeBudget(budget.max_seconds)
         stats = ResearchStats()
         warnings: list[str] = []
         self.store.start_run(research_id, query, effort)
 
         await callback(0.02, "Compiling the research requirements")
         try:
-            spec = await _run_before_deadline(
-                lambda: self.agent.compile_spec(query, freshness), deadline
-            )
+            spec = await self.agent.compile_spec(query, freshness)
         except Exception as exc:
             spec = heuristic_spec(query, freshness)
             warnings.append(f"research_spec_fallback: {type(exc).__name__}: {exc}")
@@ -74,9 +72,7 @@ class ResearchController:
         ledger = EvidenceLedger(spec)
 
         try:
-            initial_queries = await _run_before_deadline(
-                lambda: self.agent.plan_queries(spec), deadline
-            )
+            initial_queries = await self.agent.plan_queries(spec)
         except Exception as exc:
             initial_queries = [query]
             warnings.append(f"query_planning_fallback: {type(exc).__name__}: {exc}")
@@ -94,7 +90,7 @@ class ResearchController:
 
         try:
             while True:
-                if time.monotonic() >= deadline:
+                if browsing_budget.exhausted:
                     stop_reason = "time_budget_exhausted"
                     break
                 if stats.pages_fetched >= budget.max_pages:
@@ -116,14 +112,13 @@ class ResearchController:
                             f"Searching: {search_query}",
                         )
                         try:
-                            results = await _run_before_deadline(
+                            results = await browsing_budget.run(
                                 lambda search_query=search_query: self.search.search(
                                     search_query,
                                     language=spec.locale,
                                     time_range=_searxng_time_range(freshness),
                                     limit=12,
-                                ),
-                                deadline,
+                                )
                             )
                         except Exception as exc:
                             warnings.append(f"search_failed: {type(exc).__name__}: {exc}")
@@ -145,9 +140,7 @@ class ResearchController:
                         continue
 
                     if not coverage.sufficient and stats.search_queries < budget.max_searches:
-                        followups = await _run_before_deadline(
-                            lambda: self._followup_queries(spec, ledger, warnings), deadline
-                        )
+                        followups = await self._followup_queries(spec, ledger, warnings)
                         novel = [
                             item
                             for item in followups
@@ -193,8 +186,8 @@ class ResearchController:
                     f"Reading {domain}: {selected.title[:90]}",
                 )
                 try:
-                    document = await _run_before_deadline(
-                        lambda selected=selected: self.reader.read(selected.url), deadline
+                    document = await browsing_budget.run(
+                        lambda selected=selected: self.reader.read(selected.url)
                     )
                 except asyncio.CancelledError:
                     raise
@@ -215,10 +208,7 @@ class ResearchController:
                 if "cache_hit" in document.warnings:
                     stats.cache_hits += 1
                 try:
-                    batch = await _run_before_deadline(
-                        lambda document=document: self.agent.analyze_document(spec, document),
-                        deadline,
-                    )
+                    batch = await self.agent.analyze_document(spec, document)
                 except Exception as exc:
                     batch = heuristic_evidence(spec, document)
                     warnings.append(
@@ -255,9 +245,7 @@ class ResearchController:
                             break
                     else:
                         sufficient_streak = 0
-                        followups = await _run_before_deadline(
-                            lambda: self._followup_queries(spec, ledger, warnings), deadline
-                        )
+                        followups = await self._followup_queries(spec, ledger, warnings)
                         pending_queries.extend(
                             item
                             for item in followups
@@ -270,15 +258,14 @@ class ResearchController:
         coverage = ledger.coverage()
         await callback(0.94, "Writing and validating the cited answer")
         try:
-            answer = await _run_before_deadline(
-                lambda: self.agent.synthesize(spec, ledger), deadline
-            )
+            answer = await self.agent.synthesize(spec, ledger)
         except Exception as exc:
             answer = fallback_answer(spec, ledger)
             warnings.append(f"answer_synthesis_fallback: {type(exc).__name__}: {exc}")
 
         stats.independent_domains = len({item.domain for item in ledger.evidence_sources()})
         stats.elapsed_ms = int((time.monotonic() - started) * 1000)
+        stats.browsing_elapsed_ms = int(browsing_budget.elapsed * 1000)
         result = ResearchResult(
             research_id=research_id,
             answer_markdown=answer,
@@ -318,11 +305,29 @@ def _progress(stats: ResearchStats, coverage_score: float, budget: Budget) -> fl
     return min(0.9, 0.08 + 0.42 * budget_fraction + 0.4 * coverage_score)
 
 
-async def _run_before_deadline(factory: Callable[[], Awaitable[T]], deadline: float) -> T:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise TimeoutError("research time budget exhausted")
-    return await asyncio.wait_for(factory(), timeout=remaining)
+class _ActiveTimeBudget:
+    """Counts only time spent awaiting search and document retrieval."""
+
+    def __init__(self, seconds: float) -> None:
+        self.limit = max(0.0, seconds)
+        self.remaining = self.limit
+
+    @property
+    def elapsed(self) -> float:
+        return self.limit - self.remaining
+
+    @property
+    def exhausted(self) -> bool:
+        return self.remaining <= 0
+
+    async def run(self, factory: Callable[[], Awaitable[T]]) -> T:
+        if self.exhausted:
+            raise TimeoutError("active browsing time budget exhausted")
+        started = time.monotonic()
+        try:
+            return await asyncio.wait_for(factory(), timeout=self.remaining)
+        finally:
+            self.remaining = max(0.0, self.remaining - (time.monotonic() - started))
 
 
 def _searxng_time_range(freshness: str | None) -> str | None:

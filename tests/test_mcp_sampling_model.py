@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 import warnings
 from types import SimpleNamespace
@@ -125,6 +126,25 @@ class MCPSamplingModelClientTests(unittest.IsolatedAsyncioTestCase):
                 schema_name="test",
                 schema={"type": "object"},
             )
+
+    async def test_sampling_has_an_independent_model_timeout(self):
+        context = sampling_context()
+
+        async def slow_sampling(**_kwargs):
+            await asyncio.sleep(1)
+
+        context.session.create_message = AsyncMock(side_effect=slow_sampling)
+        client = MCPSamplingModelClient(context, timeout_seconds=0.01)
+
+        with self.assertRaisesRegex(ModelError, "sampling failed"):
+            await client.complete_json(
+                system="System",
+                user="Question",
+                schema_name="test",
+                schema={"type": "object"},
+            )
+
+        self.assertEqual(context.session.create_message.await_count, 1)
 
 
 if __name__ == "__main__":

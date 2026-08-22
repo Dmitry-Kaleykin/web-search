@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import warnings
 from typing import Any
 
@@ -18,10 +19,12 @@ class MCPSamplingModelClient:
         self,
         context: Context,
         *,
+        timeout_seconds: float = 90.0,
         max_tokens: int = 4096,
         temperature: float = 0.1,
     ) -> None:
         self.context = context
+        self.timeout_seconds = timeout_seconds
         self.max_tokens = max_tokens
         self.temperature = temperature
 
@@ -46,14 +49,17 @@ class MCPSamplingModelClient:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", MCPDeprecationWarning)
-                result = await self.context.session.create_message(
-                    messages=[SamplingMessage(role="user", content=TextContent(text=user))],
-                    system_prompt=f"{system}\n\n{schema_instruction(schema)}",
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    include_context="none",
-                    metadata={"schema_name": schema_name},
-                    related_request_id=self.context.request_id,
+                result = await asyncio.wait_for(
+                    self.context.session.create_message(
+                        messages=[SamplingMessage(role="user", content=TextContent(text=user))],
+                        system_prompt=f"{system}\n\n{schema_instruction(schema)}",
+                        max_tokens=self.max_tokens,
+                        temperature=self.temperature,
+                        include_context="none",
+                        metadata={"schema_name": schema_name},
+                        related_request_id=self.context.request_id,
+                    ),
+                    timeout=self.timeout_seconds,
                 )
         except Exception as exc:
             raise ModelError(f"MCP client sampling failed for {schema_name}: {exc}") from exc

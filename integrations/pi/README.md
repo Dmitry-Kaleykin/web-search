@@ -15,10 +15,16 @@ Required behavior from the Pi adapter:
 - Forward MCP progress messages to Pi's tool-update UI.
 - Keep the process environment shown in the example configuration.
 
-The included `pi-mcp-adapter` configuration enables `sampling` and `samplingAutoApprove`. Automatic
-approval avoids two confirmation dialogs for every internal model call during research. Scope that
-setting only to MCP servers you trust. If automatic approval is disabled, interactive Pi sessions
-can approve each request and response instead.
+The included `pi-mcp-adapter` configuration enables sampling globally as a capability, but places
+`samplingAutoApprove` on the `web-search` server entry. Automatic approval avoids two confirmation
+dialogs for every internal model call without trusting other MCP servers. This per-server option is
+provided by `scoped-mcp`'s version-pinned adapter patch. If automatic approval is disabled,
+interactive Pi sessions can approve each request and response instead.
+
+The example also gives this server a 30-minute outer `requestTimeoutMs`. That is not the research
+target: it prevents the adapter's short default timeout from canceling a legitimate multi-stage
+call. Web-search still enforces its smaller per-model, active-browsing, search, and page ceilings,
+and canceling the Pi tool call aborts the current sampling request immediately.
 
 No model ID belongs in the MCP server entry. The adapter tries any explicit MCP model hint first,
 then Pi's active model, then another available Pi model. This server sends no hint, so the active Pi
@@ -36,3 +42,7 @@ guard.
 The MCP server returns structured output containing `answer_markdown`, `sources`, `coverage`,
 `stop_reason`, `stats`, and `warnings`. Pi should use `answer_markdown` as the researched answer and
 retain the other fields for transparency.
+
+Effort-level time limits count only active search and page retrieval. Pi model inference and
+approval time use the independent `WEB_SEARCH_MODEL_TIMEOUT_SECONDS` limit, so a slow planning call
+cannot consume the entire browsing allowance before the first query runs.

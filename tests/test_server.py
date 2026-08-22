@@ -43,6 +43,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         model = _create_model(context, Settings(model_id="fallback-model"))
 
         self.assertIsInstance(model, MCPSamplingModelClient)
+        self.assertEqual(model.timeout_seconds, 90.0)
         await model.close()
 
     async def test_direct_model_is_used_when_sampling_is_unavailable(self) -> None:

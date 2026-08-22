@@ -67,6 +67,7 @@ class ToolStats(BaseModel):
     pages_fetched: int
     independent_domains: int
     elapsed_ms: int
+    browsing_elapsed_ms: int
     cache_hits: int
     fetch_failures: int
 
@@ -169,6 +170,7 @@ def _create_model(ctx: Context, settings: Settings) -> ResearchModel:
     if MCPSamplingModelClient.supported(ctx):
         return MCPSamplingModelClient(
             ctx,
+            timeout_seconds=settings.model_timeout_seconds,
             max_tokens=settings.model_max_tokens,
             temperature=settings.model_temperature,
         )

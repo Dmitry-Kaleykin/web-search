@@ -96,13 +96,22 @@ class FakeReader:
         )
 
 
-class SlowModel:
+class SlowModel(FakeModel):
+    def __init__(self, delay: float = 0.04) -> None:
+        self.delay = delay
+
     async def close(self) -> None:
         return None
 
-    async def complete_json(self, **_kwargs):
-        await asyncio.sleep(10)
-        return {}
+    async def complete_json(self, **kwargs):
+        await asyncio.sleep(self.delay)
+        return await super().complete_json(**kwargs)
+
+
+class SlowSearch(FakeSearch):
+    async def search(self, *_args, **_kwargs):
+        await asyncio.sleep(0.1)
+        return await super().search(*_args, **_kwargs)
 
 
 class ControllerTests(unittest.IsolatedAsyncioTestCase):
@@ -134,7 +143,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(updates)
             store.close()
 
-    async def test_time_ceiling_interrupts_a_slow_model_call(self) -> None:
+    async def test_model_latency_does_not_consume_browsing_budget(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteStore(Path(directory) / "test.sqlite3")
             controller = ResearchController(
@@ -152,11 +161,37 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 budget=Budget(0.03, 1, 1, 1, 1, 0.1),
             )
 
+            self.assertGreater(time.monotonic() - started, 0.12)
+            self.assertEqual(result.stats.search_queries, 1)
+            self.assertEqual(result.stats.pages_fetched, 1)
+            self.assertEqual(result.stop_reason, "page_budget_exhausted")
+            self.assertLess(result.stats.browsing_elapsed_ms, 30)
+            self.assertFalse(any("TimeoutError" in warning for warning in result.warnings))
+            store.close()
+
+    async def test_browsing_budget_interrupts_a_slow_search(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            controller = ResearchController(
+                search=SlowSearch(),
+                reader=FakeReader(),
+                agent=ResearchAgent(FakeModel()),
+                store=store,
+            )
+            started = time.monotonic()
+
+            result = await controller.run(
+                "What is the value?",
+                effort="quick",
+                freshness=None,
+                budget=Budget(0.03, 1, 1, 1, 1, 0.1),
+            )
+
             self.assertLess(time.monotonic() - started, 0.5)
             self.assertEqual(result.stop_reason, "time_budget_exhausted")
-            self.assertTrue(
-                any("TimeoutError" in warning for warning in result.warnings), result.warnings
-            )
+            self.assertEqual(result.stats.pages_fetched, 0)
+            self.assertGreaterEqual(result.stats.browsing_elapsed_ms, 25)
+            self.assertTrue(any("TimeoutError" in warning for warning in result.warnings))
             store.close()
 
 

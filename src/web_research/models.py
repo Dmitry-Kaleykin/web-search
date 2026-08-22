@@ -148,6 +148,7 @@ class ResearchStats:
     pages_fetched: int = 0
     independent_domains: int = 0
     elapsed_ms: int = 0
+    browsing_elapsed_ms: int = 0
     cache_hits: int = 0
     fetch_failures: int = 0
 

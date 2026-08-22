@@ -163,8 +163,10 @@ web_search(query, effort="auto", freshness=null)
 - `auto`: normal research and comparisons.
 - `thorough`: a wider evidence search with a larger safety ceiling.
 
-These modes set maximum time/search/page budgets; the controller stops earlier when evidence gates
-pass and additional pages have low expected value.
+These modes set maximum active-browsing, search-call, and page budgets. Model inference and local
+approval latency do not consume the browsing-time allowance; each model call instead uses
+`WEB_SEARCH_MODEL_TIMEOUT_SECONDS`. The controller stops earlier when evidence gates pass and
+additional pages have low expected value.
 
 ## Development
 
