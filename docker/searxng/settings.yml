@@ -1,0 +1,18 @@
+use_default_settings: true
+
+general:
+  instance_name: Local Agentic Web Search
+
+server:
+  # This service is bound to 127.0.0.1 by compose. Replace the key before exposing it elsewhere.
+  secret_key: local-only-change-before-exposing
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+

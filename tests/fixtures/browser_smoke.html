@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Browser smoke fixture</title>
+  </head>
+  <body>
+    <main>
+      <h1 id="status">Waiting for JavaScript</h1>
+    </main>
+    <script>
+      document.querySelector("#status").textContent = "Rendered by Chromium";
+    </script>
+  </body>
+</html>

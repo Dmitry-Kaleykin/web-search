@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from ..models import Document
+from .base import Reader
+
+
+class LayeredReader:
+    def __init__(self, primary: Reader, browser: Reader | None = None) -> None:
+        self.primary = primary
+        self.browser = browser
+
+    async def close(self) -> None:
+        await self.primary.close()
+        if self.browser is not None:
+            await self.browser.close()
+
+    async def read(self, url: str) -> Document:
+        primary_error: Exception | None = None
+        document: Document | None = None
+        try:
+            document = await self.primary.read(url)
+        except Exception as exc:
+            primary_error = exc
+
+        if document is not None and not _possibly_incomplete(document):
+            return document
+        if self.browser is None:
+            if document is not None:
+                document.warnings.append("browser_fallback_disabled")
+                return document
+            assert primary_error is not None
+            raise primary_error
+
+        try:
+            return await self.browser.read(url)
+        except Exception as browser_error:
+            if document is not None:
+                document.warnings.append(
+                    f"browser_fallback_failed:{type(browser_error).__name__}:{browser_error}"
+                )
+                return document
+            assert primary_error is not None
+            raise RuntimeError(
+                f"Both HTTP and browser readers failed. HTTP: {primary_error}; "
+                f"browser: {browser_error}"
+            ) from browser_error
+
+
+def _possibly_incomplete(document: Document) -> bool:
+    if len(document.content.strip()) < 500:
+        return True
+    return any(warning.startswith("possibly_incomplete") for warning in document.warnings)

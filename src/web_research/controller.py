@@ -1,0 +1,349 @@
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from collections import Counter, deque
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict
+from typing import TypeVar
+
+from .agent import (
+    ResearchAgent,
+    fallback_answer,
+    heuristic_evidence,
+    heuristic_spec,
+)
+from .config import Budget
+from .evidence import EvidenceLedger
+from .models import ResearchResult, ResearchStats, SearchResult
+from .ranking import rank_candidates
+from .readers.base import Reader
+from .safety.urls import registrable_domain
+from .search.base import SearchProvider
+from .storage import SQLiteStore
+
+ProgressCallback = Callable[[float, str], Awaitable[None]]
+T = TypeVar("T")
+
+
+async def _no_progress(_progress: float, _message: str) -> None:
+    return None
+
+
+class ResearchController:
+    def __init__(
+        self,
+        *,
+        search: SearchProvider,
+        reader: Reader,
+        agent: ResearchAgent,
+        store: SQLiteStore,
+    ) -> None:
+        self.search = search
+        self.reader = reader
+        self.agent = agent
+        self.store = store
+
+    async def run(
+        self,
+        query: str,
+        *,
+        effort: str,
+        freshness: str | None,
+        budget: Budget,
+        progress: ProgressCallback | None = None,
+    ) -> ResearchResult:
+        callback = progress or _no_progress
+        research_id = str(uuid.uuid4())
+        started = time.monotonic()
+        deadline = started + budget.max_seconds
+        stats = ResearchStats()
+        warnings: list[str] = []
+        self.store.start_run(research_id, query, effort)
+
+        await callback(0.02, "Compiling the research requirements")
+        try:
+            spec = await _run_before_deadline(
+                lambda: self.agent.compile_spec(query, freshness), deadline
+            )
+        except Exception as exc:
+            spec = heuristic_spec(query, freshness)
+            warnings.append(f"research_spec_fallback: {type(exc).__name__}: {exc}")
+        self.store.event(research_id, "research_spec", _spec_payload(spec))
+        ledger = EvidenceLedger(spec)
+
+        try:
+            initial_queries = await _run_before_deadline(
+                lambda: self.agent.plan_queries(spec), deadline
+            )
+        except Exception as exc:
+            initial_queries = [query]
+            warnings.append(f"query_planning_fallback: {type(exc).__name__}: {exc}")
+        if not initial_queries:
+            initial_queries = [query]
+        pending_queries = deque(initial_queries)
+        seen_queries: set[str] = set()
+        candidates: list[SearchResult] = []
+        candidate_urls: set[str] = set()
+        fetched_urls: set[str] = set()
+        domain_counts: Counter[str] = Counter()
+        low_gain_streak = 0
+        sufficient_streak = 0
+        stop_reason = "search_exhausted"
+
+        try:
+            while True:
+                if time.monotonic() >= deadline:
+                    stop_reason = "time_budget_exhausted"
+                    break
+                if stats.pages_fetched >= budget.max_pages:
+                    stop_reason = "page_budget_exhausted"
+                    break
+
+                coverage = ledger.coverage()
+
+                if not candidates:
+                    if pending_queries and stats.search_queries < budget.max_searches:
+                        search_query = pending_queries.popleft()
+                        query_key = search_query.casefold().strip()
+                        if not query_key or query_key in seen_queries:
+                            continue
+                        seen_queries.add(query_key)
+                        stats.search_queries += 1
+                        await callback(
+                            _progress(stats, coverage.score, budget),
+                            f"Searching: {search_query}",
+                        )
+                        try:
+                            results = await _run_before_deadline(
+                                lambda search_query=search_query: self.search.search(
+                                    search_query,
+                                    language=spec.locale,
+                                    time_range=_searxng_time_range(freshness),
+                                    limit=12,
+                                ),
+                                deadline,
+                            )
+                        except Exception as exc:
+                            warnings.append(f"search_failed: {type(exc).__name__}: {exc}")
+                            self.store.event(
+                                research_id,
+                                "search_failed",
+                                {"query": search_query, "error": str(exc)},
+                            )
+                            continue
+                        self.store.event(
+                            research_id,
+                            "search_results",
+                            {"query": search_query, "count": len(results)},
+                        )
+                        for result in results:
+                            if result.url not in candidate_urls and result.url not in fetched_urls:
+                                candidates.append(result)
+                                candidate_urls.add(result.url)
+                        continue
+
+                    if not coverage.sufficient and stats.search_queries < budget.max_searches:
+                        followups = await _run_before_deadline(
+                            lambda: self._followup_queries(spec, ledger, warnings), deadline
+                        )
+                        novel = [
+                            item
+                            for item in followups
+                            if item.casefold().strip() not in seen_queries
+                        ]
+                        if novel:
+                            pending_queries.extend(novel)
+                            continue
+                    stop_reason = (
+                        "requirements_satisfied_and_frontier_exhausted"
+                        if coverage.sufficient
+                        else "search_frontier_exhausted_with_gaps"
+                    )
+                    break
+
+                ranked = rank_candidates(
+                    candidates,
+                    spec,
+                    coverage.unresolved_gaps,
+                    domain_counts,
+                )
+                selected: SearchResult | None = None
+                selected_score = 0.0
+                for score, candidate in ranked:
+                    domain = registrable_domain(candidate.url)
+                    if domain_counts[domain] < budget.max_pages_per_domain:
+                        selected = candidate
+                        selected_score = score
+                        break
+                if selected is None:
+                    candidates.clear()
+                    continue
+                candidates.remove(selected)
+                candidate_urls.discard(selected.url)
+
+                if coverage.sufficient and selected_score < budget.min_gain:
+                    stop_reason = "requirements_satisfied_and_expected_gain_low"
+                    break
+
+                domain = registrable_domain(selected.url)
+                await callback(
+                    _progress(stats, coverage.score, budget),
+                    f"Reading {domain}: {selected.title[:90]}",
+                )
+                try:
+                    document = await _run_before_deadline(
+                        lambda selected=selected: self.reader.read(selected.url), deadline
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    stats.fetch_failures += 1
+                    fetched_urls.add(selected.url)
+                    warnings.append(f"fetch_failed {selected.url}: {type(exc).__name__}: {exc}")
+                    self.store.event(
+                        research_id,
+                        "fetch_failed",
+                        {"url": selected.url, "error": str(exc)},
+                    )
+                    continue
+
+                fetched_urls.add(selected.url)
+                domain_counts[domain] += 1
+                stats.pages_fetched += 1
+                if "cache_hit" in document.warnings:
+                    stats.cache_hits += 1
+                try:
+                    batch = await _run_before_deadline(
+                        lambda document=document: self.agent.analyze_document(spec, document),
+                        deadline,
+                    )
+                except Exception as exc:
+                    batch = heuristic_evidence(spec, document)
+                    warnings.append(
+                        f"evidence_extraction_fallback {selected.url}: {type(exc).__name__}: {exc}"
+                    )
+                source, claims_added = ledger.add_document(document, batch)
+                low_gain_streak = low_gain_streak + 1 if claims_added == 0 else 0
+                self.store.event(
+                    research_id,
+                    "document_analyzed",
+                    {
+                        "source": asdict(source),
+                        "claims_added": claims_added,
+                        "candidate_score": selected_score,
+                    },
+                )
+
+                coverage = ledger.coverage()
+                if coverage.sufficient:
+                    sufficient_streak += 1
+                else:
+                    sufficient_streak = 0
+                await callback(
+                    _progress(stats, coverage.score, budget),
+                    f"Coverage {coverage.score:.0%}; "
+                    f"{len(coverage.unresolved_gaps)} required gap(s) remain",
+                )
+
+                at_checkpoint = stats.pages_fetched % budget.checkpoint_every_pages == 0
+                if at_checkpoint:
+                    if coverage.sufficient:
+                        if sufficient_streak >= 2 or low_gain_streak >= 2:
+                            stop_reason = "requirements_satisfied_and_saturated"
+                            break
+                    else:
+                        sufficient_streak = 0
+                        followups = await _run_before_deadline(
+                            lambda: self._followup_queries(spec, ledger, warnings), deadline
+                        )
+                        pending_queries.extend(
+                            item
+                            for item in followups
+                            if item.casefold().strip() not in seen_queries
+                        )
+        except asyncio.CancelledError:
+            self.store.event(research_id, "cancelled", {})
+            raise
+
+        coverage = ledger.coverage()
+        await callback(0.94, "Writing and validating the cited answer")
+        try:
+            answer = await _run_before_deadline(
+                lambda: self.agent.synthesize(spec, ledger), deadline
+            )
+        except Exception as exc:
+            answer = fallback_answer(spec, ledger)
+            warnings.append(f"answer_synthesis_fallback: {type(exc).__name__}: {exc}")
+
+        stats.independent_domains = len({item.domain for item in ledger.evidence_sources()})
+        stats.elapsed_ms = int((time.monotonic() - started) * 1000)
+        result = ResearchResult(
+            research_id=research_id,
+            answer_markdown=answer,
+            sources=ledger.evidence_sources(),
+            coverage=coverage,
+            stop_reason=stop_reason,
+            stats=stats,
+            warnings=warnings,
+        )
+        self.store.finish_run(result)
+        await callback(1.0, f"Research complete: {stop_reason}")
+        return result
+
+    async def _followup_queries(
+        self,
+        spec,
+        ledger: EvidenceLedger,
+        warnings: list[str],
+    ) -> list[str]:
+        try:
+            assessment = await self.agent.assess(spec, ledger)
+            queries = assessment.get("followup_queries")
+            if isinstance(queries, list):
+                return [" ".join(str(item).split()) for item in queries if str(item).strip()]
+        except Exception as exc:
+            warnings.append(f"gap_assessment_failed: {type(exc).__name__}: {exc}")
+        gap_questions = [
+            item.question
+            for item in spec.requirements
+            if item.id in ledger.coverage().unresolved_gaps
+        ]
+        return gap_questions[:3]
+
+
+def _progress(stats: ResearchStats, coverage_score: float, budget: Budget) -> float:
+    budget_fraction = stats.pages_fetched / max(1, budget.max_pages)
+    return min(0.9, 0.08 + 0.42 * budget_fraction + 0.4 * coverage_score)
+
+
+async def _run_before_deadline(factory: Callable[[], Awaitable[T]], deadline: float) -> T:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("research time budget exhausted")
+    return await asyncio.wait_for(factory(), timeout=remaining)
+
+
+def _searxng_time_range(freshness: str | None) -> str | None:
+    if not freshness:
+        return None
+    lower = freshness.lower()
+    if any(token in lower for token in ("today", "24 hour", "day")):
+        return "day"
+    if any(token in lower for token in ("month", "30 day", "recent")):
+        return "month"
+    if any(token in lower for token in ("year", "12 month")):
+        return "year"
+    return None
+
+
+def _spec_payload(spec) -> dict:
+    return {
+        "original_query": spec.original_query,
+        "task_type": spec.task_type,
+        "subjects": spec.subjects,
+        "requirements": [asdict(item) for item in spec.requirements],
+        "freshness": spec.freshness,
+        "locale": spec.locale,
+    }

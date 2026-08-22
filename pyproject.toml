@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=78"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-agentic-web-search"
+version = "0.1.0"
+description = "A local-first, evidence-driven web research MCP server for Pi"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+  "httpx>=0.28,<1",
+  "mcp>=2,<3",
+  "tld>=0.13,<1",
+  "trafilatura>=2.2,<3",
+]
+
+[project.optional-dependencies]
+browser = [
+  "crawl4ai>=0.9,<1",
+]
+dev = [
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.26,<2",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+web-search-mcp = "web_research.server:main"
+web-search-doctor = "web_research.cli:doctor_main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
