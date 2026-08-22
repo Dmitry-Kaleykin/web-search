@@ -63,33 +63,31 @@ async def _doctor() -> int:
             print(f"FAIL SearXNG JSON API: {exc}", file=sys.stderr)
 
         if not settings.model_id:
-            failed = True
-            print("FAIL WEB_SEARCH_MODEL_ID is not set", file=sys.stderr)
-        headers = {}
-        if settings.model_api_key:
-            headers["Authorization"] = f"Bearer {settings.model_api_key}"
-        try:
-            response = await client.get(
-                f"{settings.model_base_url.rstrip('/')}/models", headers=headers
-            )
-            response.raise_for_status()
-            models = response.json().get("data", [])
-            ids = {str(item.get("id")) for item in models if isinstance(item, dict)}
-            if not settings.model_id:
-                if ids:
-                    print(f"INFO available model IDs: {json.dumps(sorted(ids))}")
-            elif ids and settings.model_id not in ids:
-                failed = True
-                print(
-                    f"FAIL configured model {settings.model_id!r} is not in /models: "
-                    f"{json.dumps(sorted(ids))}",
-                    file=sys.stderr,
+            print("OK   model strategy: dynamic MCP client sampling")
+            print("INFO no direct model fallback is configured")
+        else:
+            headers = {}
+            if settings.model_api_key:
+                headers["Authorization"] = f"Bearer {settings.model_api_key}"
+            try:
+                response = await client.get(
+                    f"{settings.model_base_url.rstrip('/')}/models", headers=headers
                 )
-            else:
-                print(f"OK   model endpoint: {settings.model_id}")
-        except Exception as exc:
-            failed = True
-            print(f"FAIL model endpoint: {exc}", file=sys.stderr)
+                response.raise_for_status()
+                models = response.json().get("data", [])
+                ids = {str(item.get("id")) for item in models if isinstance(item, dict)}
+                if ids and settings.model_id not in ids:
+                    failed = True
+                    print(
+                        f"FAIL configured fallback model {settings.model_id!r} is not in "
+                        f"/models: {json.dumps(sorted(ids))}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"OK   direct fallback model endpoint: {settings.model_id}")
+            except Exception as exc:
+                failed = True
+                print(f"FAIL direct fallback model endpoint: {exc}", file=sys.stderr)
     return 1 if failed else 0
 
 

@@ -2,7 +2,8 @@
 
 A local-first MCP research service for Pi. It exposes one tool, `web_search`, which searches through
 SearXNG, reads promising pages, tracks evidence requirements, stops adaptively, and returns a cited
-synthesis produced by a local model through an OpenAI-compatible endpoint.
+synthesis. Through MCP sampling it automatically uses the model active in the calling Pi session;
+an OpenAI-compatible endpoint can be configured as a fallback for clients without sampling support.
 
 This repository currently implements the first vertical slice from [ARCHITECTURE.md](ARCHITECTURE.md):
 
@@ -36,7 +37,7 @@ The first launch installs the console's small Node.js dependency set. Inside the
 
 - Install or update the Python application and Chromium runtime.
 - Launch Docker Desktop when necessary and start, stop, or restart SearXNG.
-- See Docker, SearXNG, model API, Chromium, and MCP readiness at a glance.
+- See Docker, SearXNG, the model strategy, Chromium, and MCP readiness at a glance.
 - Run the full readiness doctor and follow SearXNG logs.
 
 The console does not replace or modify Pi. Pi continues to launch the single MCP server over stdio
@@ -48,8 +49,8 @@ service management.
 - Python 3.11 or newer.
 - Node.js 22.19 or newer for the optional terminal console.
 - Docker (recommended for SearXNG), or another SearXNG instance with JSON enabled.
-- A running OpenAI-compatible chat-completions endpoint.
-- A Pi MCP adapter/extension.
+- A Pi MCP adapter/extension with MCP sampling support.
+- Optionally, an OpenAI-compatible chat-completions endpoint as a direct fallback.
 
 ## 1. Install
 
@@ -77,8 +78,28 @@ searches anonymous.
 
 ## 3. Configure the research model
 
-Copy `config.example.env` to `.env`, set the exact model ID exposed by your model server, then export
-the values in the shell that starts the MCP server:
+No model ID is required when Pi connects through `pi-mcp-adapter`. The server requests model work
+through MCP sampling, and the adapter selects the model active in the current Pi session. Changing
+models in Pi therefore changes the research model without restarting or editing this server.
+
+Sampling normally shows approval dialogs. Because one research run can make several model calls,
+the practical configuration for this trusted local server is:
+
+```json
+{
+  "settings": {
+    "sampling": true,
+    "samplingAutoApprove": true
+  }
+}
+```
+
+`samplingAutoApprove` applies to every MCP server in the same adapter configuration, so keep this
+server in a trusted project scope. Leave it `false` if you prefer to approve every request and
+response manually.
+
+The `.env` file is optional. Use it for SearXNG settings or to configure a direct model fallback for
+MCP clients that do not support sampling:
 
 ```bash
 cp config.example.env .env
@@ -92,14 +113,14 @@ Important settings:
 | Variable | Default | Purpose |
 |---|---|---|
 | `WEB_SEARCH_SEARXNG_URL` | `http://127.0.0.1:8080` | SearXNG base URL |
-| `WEB_SEARCH_MODEL_BASE_URL` | `http://127.0.0.1:8000/v1` | OpenAI-compatible API base |
-| `WEB_SEARCH_MODEL_ID` | none | Required model ID |
+| `WEB_SEARCH_MODEL_BASE_URL` | `http://127.0.0.1:8000/v1` | Optional direct-fallback API base |
+| `WEB_SEARCH_MODEL_ID` | none | Optional direct-fallback model ID |
 | `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
 | `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
 | `WEB_SEARCH_ENABLE_CRAWL4AI` | `true` | Escalate incomplete pages to Chromium |
 
-Do not enable private URL fetching for normal use. SearXNG and the model server have their own explicitly
-configured local endpoints; public result pages remain protected against SSRF.
+Do not enable private URL fetching for normal use. SearXNG and any direct fallback model server have
+their own explicitly configured local endpoints; public result pages remain protected against SSRF.
 
 ## 4. Check the services
 
@@ -107,8 +128,9 @@ configured local endpoints; public result pages remain protected against SSRF.
 .venv/bin/web-search-doctor
 ```
 
-The command verifies the SearXNG JSON API, Crawl4AI package and Chromium runtime, the configured
-model ID, the model server's `/models` endpoint, and the data directory.
+The command verifies the SearXNG JSON API, Crawl4AI package and Chromium runtime, the selected model
+strategy, and the data directory. It checks `/models` only when a direct fallback model is configured;
+the active Pi model can only be verified during an MCP call.
 
 ## 5. Connect Pi
 
@@ -118,7 +140,8 @@ Point your Pi MCP extension/adapter at the absolute executable:
 /Users/donais/Documents/Projects/web-search/.venv/bin/web-search-mcp
 ```
 
-Start from [integrations/pi/mcp-server.example.json](integrations/pi/mcp-server.example.json). Pi MCP
+Start from [integrations/pi/mcp-server.example.json](integrations/pi/mcp-server.example.json). It
+enables automatic sampling approval for this trusted local scope and contains no model ID. Pi MCP
 adapters differ in their outer configuration format, but the command and environment are the same.
 
 The tool signature is:
@@ -143,8 +166,8 @@ pass and additional pages have low expected value.
 ```
 
 The test suite is offline. It exercises the controller, evidence rules, citations, reader byte bounds,
-URL safety, SearXNG and model-server protocol adapters, Crawl4AI failure handling, and the MCP tool
-schema without requiring live SearXNG or model services.
+URL safety, SearXNG, MCP sampling and direct model-server adapters, Crawl4AI failure handling, and
+the MCP tool schema without requiring live SearXNG or model services.
 
 ## Security defaults
 

@@ -1,11 +1,13 @@
 {
+  "settings": {
+    "sampling": true,
+    "samplingAutoApprove": true
+  },
   "mcpServers": {
     "web-search": {
       "command": "/Users/donais/Documents/Projects/web-search/.venv/bin/web-search-mcp",
       "env": {
         "WEB_SEARCH_SEARXNG_URL": "http://127.0.0.1:8080",
-        "WEB_SEARCH_MODEL_BASE_URL": "http://127.0.0.1:8000/v1",
-        "WEB_SEARCH_MODEL_ID": "YOUR_MODEL_ID",
         "WEB_SEARCH_DATA_DIR": "/Users/donais/Documents/Projects/web-search/.web-search-data",
         "CRAWL4_AI_BASE_DIRECTORY": "/Users/donais/Documents/Projects/web-search/.web-search-data",
         "PLAYWRIGHT_BROWSERS_PATH": "/Users/donais/Documents/Projects/web-search/.web-search-data/ms-playwright"

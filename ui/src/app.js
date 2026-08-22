@@ -60,7 +60,7 @@ const actions = [
   {
     value: "doctor",
     label: "Run readiness checks",
-    description: "Check browser, search API, model API, and configuration",
+    description: "Check browser, search API, model strategy, and configuration",
   },
   {
     value: "logs",
@@ -250,16 +250,19 @@ async function refreshStatus() {
     : { code: 1, stdout: "" };
   const searchUrl = environment.WEB_SEARCH_SEARXNG_URL || "http://127.0.0.1:8080";
   const search = await fetchOk(`${searchUrl.replace(/\/$/, "")}/search?q=health&format=json`);
-  const modelBase = environment.WEB_SEARCH_MODEL_BASE_URL || "http://127.0.0.1:8000/v1";
-  const modelHeaders = environment.WEB_SEARCH_MODEL_API_KEY
-    ? { Authorization: `Bearer ${environment.WEB_SEARCH_MODEL_API_KEY}` }
-    : {};
-  const model = await fetchOk(`${modelBase.replace(/\/$/, "")}/models`, 3500, modelHeaders);
+  const fallbackModelId = environment.WEB_SEARCH_MODEL_ID || "";
+  let model = { ok: true };
+  if (fallbackModelId) {
+    const modelBase = environment.WEB_SEARCH_MODEL_BASE_URL || "http://127.0.0.1:8000/v1";
+    const modelHeaders = environment.WEB_SEARCH_MODEL_API_KEY
+      ? { Authorization: `Bearer ${environment.WEB_SEARCH_MODEL_API_KEY}` }
+      : {};
+    model = await fetchOk(`${modelBase.replace(/\/$/, "")}/models`, 3500, modelHeaders);
+  }
   const pythonReady = await exists(PYTHON, true);
   const mcpReady = await exists(MCP_SERVER, true);
   const browserReady = await exists(BROWSER_DIR);
   const searxngRunning = compose.code === 0 && compose.stdout.split(/\s+/).includes("searxng");
-  const modelId = environment.WEB_SEARCH_MODEL_ID || "not configured";
 
   statusText.setText(
     [
@@ -277,7 +280,15 @@ async function refreshStatus() {
             ? "container running; API unavailable"
             : "stopped",
       ),
-      statusLine(model.ok, "Model API", model.ok ? `reachable; ${modelId}` : `unavailable; ${modelId}`),
+      statusLine(
+        model.ok,
+        "Model",
+        fallbackModelId
+          ? model.ok
+            ? `MCP sampling preferred; fallback ${fallbackModelId} reachable`
+            : `MCP sampling preferred; fallback ${fallbackModelId} unavailable`
+          : "dynamic through MCP client sampling",
+      ),
       statusLine(browserReady, "Chromium", browserReady ? "runtime installed" : "runtime missing"),
       statusLine(
         pythonReady && mcpReady,

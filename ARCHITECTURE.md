@@ -12,7 +12,7 @@ The recommended stack is:
 | Layer | Default | Escalation / fallback |
 |---|---|---|
 | External interface | One MCP tool: `web_search` | Pi extension/adapter presents the MCP tool to Pi |
-| Research planning | Local model through an OpenAI-compatible endpoint | Deterministic templates if the planning call fails |
+| Research planning | Calling client's active model through MCP sampling | Optional direct OpenAI-compatible fallback, then deterministic templates |
 | Discovery | Self-hosted SearXNG with JSON enabled | Pluggable direct search provider; later, specialized sources |
 | Ordinary HTML | HTTP fetch + Trafilatura | Crawl4AI single-page render |
 | Site exploration | Research controller selects links | Crawl4AI adaptive crawling within one site |
@@ -32,7 +32,8 @@ flowchart LR
     U[User] --> P[Pi agent]
     P -->|web_search| M[MCP server]
     M --> C[Research controller]
-    C --> L[Local model via an OpenAI-compatible API]
+    C -->|MCP sampling| P
+    C -. optional direct fallback .-> L[OpenAI-compatible model API]
     C --> S[SearXNG]
     C --> R[Reader router]
     R --> T[HTTP + Trafilatura]
@@ -336,7 +337,8 @@ Try a print view, RSS/Atom feed, public API, downloadable document, or another a
 
 ## 7. Model roles
 
-Use one configurable local model initially, but keep four logical roles separate in code and prompts:
+Use the calling Pi session's active model initially, but keep four logical roles separate in code
+and prompts:
 
 1. **Request compiler** — produces `ResearchSpec`.
 2. **Planner** — proposes queries and the next gap-closing action.
@@ -345,7 +347,16 @@ Use one configurable local model initially, but keep four logical roles separate
 
 All outputs should use validated JSON schemas. The model never receives network credentials, browser profile data, or arbitrary filesystem/shell tools.
 
-Calling the same OpenAI-compatible model endpoint as Pi is acceptable for a first version because Pi's inference has returned before the tool runs. Add a local request queue and confirm that parallel Pi sessions cannot overload or deadlock the model server. The service should allow a separate cheaper/faster planning model later.
+The default path is MCP sampling without a model hint. Pi's MCP adapter therefore resolves each
+request to the active session model, so the research service is provider-independent and follows
+model changes made in Pi. The server can call a separately configured OpenAI-compatible endpoint
+only when the MCP client does not advertise sampling. Deterministic planning and synthesis remain
+the final failure fallback.
+
+Sampling must remain text-only and bounded. The adapter should forward cancellation and enforce its
+normal authorization policy. A trusted local Pi scope may enable automatic sampling approval because
+one research run uses several role-specific calls; otherwise the user must approve every request and
+response.
 
 ## 8. Storage and caching
 
@@ -381,6 +392,7 @@ MCP Tasks are attractive for thorough jobs because they provide durable task IDs
 Pi's extension API already supports registering custom tools, streaming updates, and receiving an abort signal. The Pi-side adapter should:
 
 - Register only `web_search`.
+- Advertise sampling and resolve hint-free requests to Pi's current model.
 - Forward the tool arguments to the MCP server.
 - Map Pi's abort signal to MCP cancellation.
 - Map MCP progress to Pi's `onUpdate` callback.

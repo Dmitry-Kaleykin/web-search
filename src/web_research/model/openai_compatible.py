@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import json
-import re
 from typing import Any
 
-
-class ModelError(RuntimeError):
-    pass
+from .errors import ModelError
+from .json_response import parse_json_object, schema_instruction
 
 
 class OpenAICompatibleModelClient:
@@ -48,14 +45,11 @@ class OpenAICompatibleModelClient:
     ) -> dict[str, Any]:
         if not self.model:
             raise ModelError("WEB_SEARCH_MODEL_ID is not configured")
-        schema_instruction = (
-            "Return exactly one JSON object matching this JSON Schema. "
-            "Do not wrap it in Markdown.\n" + json.dumps(schema, ensure_ascii=False)
-        )
+        response_instruction = schema_instruction(schema)
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": f"{system}\n\n{schema_instruction}"},
+                {"role": "system", "content": f"{system}\n\n{response_instruction}"},
                 {"role": "user", "content": user},
             ],
             "temperature": self.temperature,
@@ -71,24 +65,7 @@ class OpenAICompatibleModelClient:
         if not isinstance(content, str):
             raise ModelError(f"Model returned non-text content for {schema_name}")
         try:
-            parsed = _parse_json_object(content)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            parsed = parse_json_object(content)
+        except (TypeError, ValueError) as exc:
             raise ModelError(f"Model returned invalid JSON for {schema_name}: {exc}") from exc
-        if not isinstance(parsed, dict):
-            raise ModelError(f"Model returned a non-object for {schema_name}")
         return parsed
-
-
-def _parse_json_object(content: str) -> Any:
-    stripped = content.strip()
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-        stripped = re.sub(r"\s*```$", "", stripped)
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        return json.loads(stripped[start : end + 1])

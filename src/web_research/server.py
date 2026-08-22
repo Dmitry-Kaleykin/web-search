@@ -9,7 +9,10 @@ from pydantic import BaseModel
 from .agent import ResearchAgent
 from .config import Settings, budget_for
 from .controller import ResearchController
+from .model.base import ResearchModel
+from .model.mcp_sampling import MCPSamplingModelClient
 from .model.openai_compatible import OpenAICompatibleModelClient
+from .model.unavailable import UnavailableModelClient
 from .readers.crawl4ai import Crawl4AIReader
 from .readers.http import HTTPReader
 from .readers.router import LayeredReader
@@ -130,14 +133,7 @@ async def web_search(
         else None
     )
     reader = LayeredReader(http_reader, browser_reader)
-    model = OpenAICompatibleModelClient(
-        settings.model_base_url,
-        settings.model_id,
-        api_key=settings.model_api_key,
-        timeout_seconds=settings.model_timeout_seconds,
-        max_tokens=settings.model_max_tokens,
-        temperature=settings.model_temperature,
-    )
+    model = _create_model(ctx, settings)
     controller = ResearchController(
         search=search,
         reader=reader,
@@ -162,6 +158,25 @@ async def web_search(
         await reader.close()
         await model.close()
         store.close()
+
+
+def _create_model(ctx: Context, settings: Settings) -> ResearchModel:
+    if MCPSamplingModelClient.supported(ctx):
+        return MCPSamplingModelClient(
+            ctx,
+            max_tokens=settings.model_max_tokens,
+            temperature=settings.model_temperature,
+        )
+    if settings.model_id:
+        return OpenAICompatibleModelClient(
+            settings.model_base_url,
+            settings.model_id,
+            api_key=settings.model_api_key,
+            timeout_seconds=settings.model_timeout_seconds,
+            max_tokens=settings.model_max_tokens,
+            temperature=settings.model_temperature,
+        )
+    return UnavailableModelClient()
 
 
 def main() -> None:
