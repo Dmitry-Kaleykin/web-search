@@ -21,8 +21,20 @@ class FallbackModelClient:
         self.preferred = preferred
         self.fallback = fallback
         self.disable_after_failures = max(1, disable_after_failures)
+        self.attempts = 0
+        self.successes = 0
         self.failures = 0
+        self.fallback_calls = 0
         self.disabled = False
+
+    def usage(self) -> dict[str, int | bool]:
+        return {
+            "attempts": self.attempts,
+            "successes": self.successes,
+            "failures": self.failures,
+            "fallbacks": self.fallback_calls,
+            "disabled": self.disabled,
+        }
 
     async def close(self) -> None:
         await self.preferred.close()
@@ -36,13 +48,16 @@ class FallbackModelClient:
         schema: dict[str, Any],
     ) -> dict[str, Any]:
         if not self.disabled:
+            self.attempts += 1
             try:
-                return await self.preferred.complete_json(
+                result = await self.preferred.complete_json(
                     system=system,
                     user=user,
                     schema_name=schema_name,
                     schema=schema,
                 )
+                self.successes += 1
+                return result
             except Exception as exc:
                 self.failures += 1
                 if self.failures >= self.disable_after_failures:
@@ -54,6 +69,7 @@ class FallbackModelClient:
                     self.disable_after_failures,
                     exc,
                 )
+        self.fallback_calls += 1
         return await self.fallback.complete_json(
             system=system,
             user=user,

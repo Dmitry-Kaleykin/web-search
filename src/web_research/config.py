@@ -3,33 +3,35 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 CONFIG_FILENAME = "config.json"
+PROJECT_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 
-def _bool_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
+def _bool_env(environment: Mapping[str, str], name: str, default: bool) -> bool:
+    value = environment.get(name)
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _int_env(name: str, default: int) -> int:
-    value = os.getenv(name)
+def _int_env(environment: Mapping[str, str], name: str, default: int) -> int:
+    value = environment.get(name)
     return int(value) if value else default
 
 
-def _float_env(name: str, default: float) -> float:
-    value = os.getenv(name)
+def _float_env(environment: Mapping[str, str], name: str, default: float) -> float:
+    value = environment.get(name)
     return float(value) if value else default
 
 
-def _string_env(name: str, default: str = "") -> str:
-    value = os.getenv(name)
+def _string_env(environment: Mapping[str, str], name: str, default: str = "") -> str:
+    value = environment.get(name)
     return value.strip() if value and value.strip() else default
 
 
@@ -59,55 +61,89 @@ class Settings:
     evidence_model_temperature: float = 0.1
 
     @classmethod
-    def from_env(cls) -> Settings:
-        data_dir = Path(os.getenv("WEB_SEARCH_DATA_DIR", ".web-search-data")).expanduser()
+    def from_env(cls, *, env_file: Path | None = None) -> Settings:
+        environment = _merged_environment(env_file or PROJECT_ENV_PATH)
+        data_dir = Path(environment.get("WEB_SEARCH_DATA_DIR", ".web-search-data")).expanduser()
         saved = _read_saved_config(data_dir)
         evidence = saved.get("evidence_model")
         if not isinstance(evidence, dict):
             evidence = {}
-        model_base_url = os.getenv(
-            "WEB_SEARCH_MODEL_BASE_URL", "http://127.0.0.1:8000/v1"
-        )
-        model_api_key = os.getenv("WEB_SEARCH_MODEL_API_KEY", "")
+        model_base_url = environment.get("WEB_SEARCH_MODEL_BASE_URL", "http://127.0.0.1:8000/v1")
+        model_api_key = environment.get("WEB_SEARCH_MODEL_API_KEY", "")
         return cls(
-            searxng_url=os.getenv("WEB_SEARCH_SEARXNG_URL", "http://127.0.0.1:8080"),
+            searxng_url=environment.get("WEB_SEARCH_SEARXNG_URL", "http://127.0.0.1:8080"),
             model_base_url=model_base_url,
-            model_id=os.getenv("WEB_SEARCH_MODEL_ID", ""),
+            model_id=environment.get("WEB_SEARCH_MODEL_ID", ""),
             model_api_key=model_api_key,
             data_dir=data_dir,
-            log_level=os.getenv("WEB_SEARCH_LOG_LEVEL", "INFO").upper(),
-            user_agent=os.getenv(
+            log_level=environment.get("WEB_SEARCH_LOG_LEVEL", "INFO").upper(),
+            user_agent=environment.get(
                 "WEB_SEARCH_USER_AGENT", "LocalResearchBot/0.1 (+local personal research)"
             ),
-            allow_private_urls=_bool_env("WEB_SEARCH_ALLOW_PRIVATE_URLS", False),
-            allow_proxy_fake_ips=_bool_env("WEB_SEARCH_ALLOW_PROXY_FAKE_IPS", False),
-            max_response_bytes=_int_env("WEB_SEARCH_MAX_RESPONSE_BYTES", 5_000_000),
-            document_cache_ttl_seconds=_int_env("WEB_SEARCH_DOCUMENT_CACHE_TTL_SECONDS", 21_600),
-            search_cache_ttl_seconds=_int_env("WEB_SEARCH_SEARCH_CACHE_TTL_SECONDS", 900),
-            enable_crawl4ai=_bool_env("WEB_SEARCH_ENABLE_CRAWL4AI", True),
-            model_timeout_seconds=_float_env("WEB_SEARCH_MODEL_TIMEOUT_SECONDS", 90.0),
-            model_max_tokens=_int_env("WEB_SEARCH_MODEL_MAX_TOKENS", 4096),
-            model_temperature=_float_env("WEB_SEARCH_MODEL_TEMPERATURE", 0.1),
+            allow_private_urls=_bool_env(environment, "WEB_SEARCH_ALLOW_PRIVATE_URLS", False),
+            allow_proxy_fake_ips=_bool_env(environment, "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS", False),
+            max_response_bytes=_int_env(environment, "WEB_SEARCH_MAX_RESPONSE_BYTES", 5_000_000),
+            document_cache_ttl_seconds=_int_env(
+                environment, "WEB_SEARCH_DOCUMENT_CACHE_TTL_SECONDS", 21_600
+            ),
+            search_cache_ttl_seconds=_int_env(
+                environment, "WEB_SEARCH_SEARCH_CACHE_TTL_SECONDS", 900
+            ),
+            enable_crawl4ai=_bool_env(environment, "WEB_SEARCH_ENABLE_CRAWL4AI", True),
+            model_timeout_seconds=_float_env(environment, "WEB_SEARCH_MODEL_TIMEOUT_SECONDS", 90.0),
+            model_max_tokens=_int_env(environment, "WEB_SEARCH_MODEL_MAX_TOKENS", 4096),
+            model_temperature=_float_env(environment, "WEB_SEARCH_MODEL_TEMPERATURE", 0.1),
             evidence_model_base_url=_string_env(
+                environment,
                 "WEB_SEARCH_EVIDENCE_MODEL_BASE_URL",
                 _saved_string(evidence, "base_url") or model_base_url,
             ),
             evidence_model_id=_string_env(
-                "WEB_SEARCH_EVIDENCE_MODEL_ID", _saved_string(evidence, "model_id")
+                environment, "WEB_SEARCH_EVIDENCE_MODEL_ID", _saved_string(evidence, "model_id")
             ),
             evidence_model_api_key=_string_env(
-                "WEB_SEARCH_EVIDENCE_MODEL_API_KEY", model_api_key
+                environment, "WEB_SEARCH_EVIDENCE_MODEL_API_KEY", model_api_key
             ),
             evidence_model_timeout_seconds=_float_env(
-                "WEB_SEARCH_EVIDENCE_MODEL_TIMEOUT_SECONDS", 90.0
+                environment, "WEB_SEARCH_EVIDENCE_MODEL_TIMEOUT_SECONDS", 90.0
             ),
             evidence_model_max_tokens=_int_env(
-                "WEB_SEARCH_EVIDENCE_MODEL_MAX_TOKENS", 1600
+                environment, "WEB_SEARCH_EVIDENCE_MODEL_MAX_TOKENS", 1600
             ),
             evidence_model_temperature=_float_env(
-                "WEB_SEARCH_EVIDENCE_MODEL_TEMPERATURE", 0.1
+                environment, "WEB_SEARCH_EVIDENCE_MODEL_TEMPERATURE", 0.1
             ),
         )
+
+
+def _merged_environment(env_file: Path) -> dict[str, str]:
+    """Load project defaults without overriding the MCP process environment."""
+    return {**_read_env_file(env_file), **os.environ}
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        LOGGER.warning("Ignoring unreadable environment file at %s: %s", path, exc)
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        values[key] = value
+    return values
 
 
 def _read_saved_config(data_dir: Path) -> dict[str, Any]:

@@ -30,6 +30,16 @@ class FallbackModelClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preferred.complete_json.await_count, 2)
         self.assertEqual(fallback.complete_json.await_count, 3)
         self.assertTrue(model.disabled)
+        self.assertEqual(
+            model.usage(),
+            {
+                "attempts": 2,
+                "successes": 0,
+                "failures": 2,
+                "fallbacks": 3,
+                "disabled": True,
+            },
+        )
 
     async def test_successful_preferred_call_does_not_use_fallback(self) -> None:
         preferred = AsyncMock()
@@ -46,6 +56,9 @@ class FallbackModelClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"answer": "fast"})
         fallback.complete_json.assert_not_awaited()
+        self.assertEqual(model.usage()["attempts"], 1)
+        self.assertEqual(model.usage()["successes"], 1)
+        self.assertEqual(model.usage()["fallbacks"], 0)
 
 
 if __name__ == "__main__":

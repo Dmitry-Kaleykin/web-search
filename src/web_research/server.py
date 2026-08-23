@@ -103,6 +103,12 @@ class ToolStats(BaseModel):
     browsing_elapsed_ms: int
     cache_hits: int
     fetch_failures: int
+    evidence_model: str
+    evidence_model_attempts: int
+    evidence_model_successes: int
+    evidence_model_failures: int
+    evidence_model_fallbacks: int
+    evidence_model_disabled: bool
 
 
 class WebSearchOutput(BaseModel):
@@ -198,10 +204,23 @@ async def web_search(
     reader = LayeredReader(http_reader, browser_reader)
     model = _create_model(ctx, settings)
     evidence_model = _create_evidence_model(settings, model)
+    if settings.evidence_model_id:
+        LOGGER.info(
+            "Dedicated evidence model configured: %s at %s (authentication: %s)",
+            settings.evidence_model_id,
+            settings.evidence_model_base_url,
+            "configured" if settings.evidence_model_api_key else "none",
+        )
+    else:
+        LOGGER.info("Evidence analysis uses the Pi active model")
     controller = ResearchController(
         search=search,
         reader=reader,
-        agent=ResearchAgent(model, evidence_model=evidence_model),
+        agent=ResearchAgent(
+            model,
+            evidence_model=evidence_model,
+            evidence_model_name=settings.evidence_model_id or "pi-active",
+        ),
         store=store,
     )
 
@@ -217,6 +236,16 @@ async def web_search(
                 freshness=freshness,
                 budget=budget_for(effort),
                 progress=report,
+            )
+            LOGGER.info(
+                "Evidence model usage: model=%s attempts=%d successes=%d failures=%d "
+                "fallbacks=%d disabled=%s",
+                result.stats.evidence_model,
+                result.stats.evidence_model_attempts,
+                result.stats.evidence_model_successes,
+                result.stats.evidence_model_failures,
+                result.stats.evidence_model_fallbacks,
+                result.stats.evidence_model_disabled,
             )
             return WebSearchOutput.model_validate(result.as_dict())
         finally:

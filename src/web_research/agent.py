@@ -41,11 +41,26 @@ class ResearchAgent:
         model: ResearchModel,
         *,
         evidence_model: ResearchModel | None = None,
+        evidence_model_name: str = "pi-active",
         current_date: str | None = None,
     ) -> None:
         self.model = model
         self.evidence_model = evidence_model or model
+        self.evidence_model_name = evidence_model_name
         self.current_date = current_date or date.today().isoformat()
+
+    def evidence_model_usage(self) -> dict[str, str | int | bool]:
+        usage = getattr(type(self.evidence_model), "usage", None)
+        if callable(usage):
+            return {"model": self.evidence_model_name, **usage(self.evidence_model)}
+        return {
+            "model": self.evidence_model_name,
+            "attempts": 0,
+            "successes": 0,
+            "failures": 0,
+            "fallbacks": 0,
+            "disabled": False,
+        }
 
     async def compile_spec(self, query: str, freshness: str | None) -> ResearchSpec:
         data = await self.model.complete_json(

@@ -148,6 +148,12 @@ class ResearchStats:
     browsing_elapsed_ms: int = 0
     cache_hits: int = 0
     fetch_failures: int = 0
+    evidence_model: str = "pi-active"
+    evidence_model_attempts: int = 0
+    evidence_model_successes: int = 0
+    evidence_model_failures: int = 0
+    evidence_model_fallbacks: int = 0
+    evidence_model_disabled: bool = False
 
 
 @dataclass(slots=True)

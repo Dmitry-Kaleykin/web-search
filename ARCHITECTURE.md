@@ -370,6 +370,11 @@ per-run circuit breaker after repeated failures. The same direct endpoint remain
 whole-service fallback when the MCP client does not advertise sampling. Deterministic planning and
 synthesis remain the final failure fallback.
 
+The operator console and MCP process load the same project `.env`; process-level environment
+variables override file values. The saved evidence-model selection contains only the endpoint and
+model ID, while endpoint credentials remain in `.env` or the process environment. Results and trace
+events record evidence-model attempts, successes, failures, fallbacks, and circuit-breaker state.
+
 Sampling must remain text-only and bounded. The adapter should forward cancellation and enforce its
 normal authorization policy. A trusted local Pi scope may enable automatic sampling approval because
 one research run uses several role-specific calls; otherwise the user must approve every request and

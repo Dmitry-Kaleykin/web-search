@@ -108,14 +108,13 @@ the practical configuration for this trusted local server is:
 server in a trusted project scope. Leave it `false` if you prefer to approve every request and
 response manually.
 
-The `.env` file is optional. Use it for SearXNG settings or to configure a direct model fallback for
+The `.env` file is optional. The terminal console and MCP server load it automatically from the
+project directory; environment variables explicitly supplied by Pi or the operating system take
+precedence. Use it for SearXNG settings, local model authentication, or a direct model fallback for
 MCP clients that do not support sampling:
 
 ```bash
 cp config.example.env .env
-set -a
-source .env
-set +a
 ```
 
 Important settings:

@@ -57,6 +57,10 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             "has_primary",
             tool.output_schema["$defs"]["ToolCoverageItem"]["properties"],
         )
+        stats_schema = tool.output_schema["$defs"]["ToolStats"]["properties"]
+        self.assertIn("evidence_model", stats_schema)
+        self.assertIn("evidence_model_successes", stats_schema)
+        self.assertIn("evidence_model_fallbacks", stats_schema)
         self.assertIn("Never add a calendar year", tool.description)
         self.assertIn("do not invoke web_search in parallel", tool.description)
         self.assertIn("do not add a year", tool.input_schema["properties"]["query"]["description"])

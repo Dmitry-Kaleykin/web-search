@@ -42,6 +42,7 @@ class ResearchAgentModelRoleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             evidence_model.complete_json.await_args.kwargs["schema_name"], "source_evidence"
         )
+        self.assertEqual(agent.evidence_model_usage()["model"], "pi-active")
 
 
 if __name__ == "__main__":

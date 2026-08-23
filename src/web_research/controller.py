@@ -293,6 +293,17 @@ class ResearchController:
                 stats.pages_fetched += 1
                 if "cache_hit" in document.warnings:
                     stats.cache_hits += 1
+                usage_before = self.agent.evidence_model_usage()
+                if usage_before["disabled"]:
+                    analysis_model = "Pi active model (dedicated evidence model disabled)"
+                elif usage_before["model"] == "pi-active":
+                    analysis_model = "Pi active model"
+                else:
+                    analysis_model = str(usage_before["model"])
+                await callback(
+                    _progress(stats, coverage.score, budget),
+                    f"Analyzing extracted evidence with {analysis_model}",
+                )
                 analysis_hit_deadline = False
                 try:
                     batch = await run_deadline.run(
@@ -311,6 +322,17 @@ class ResearchController:
                     batch = heuristic_evidence(spec, document)
                     warnings.append(
                         f"evidence_extraction_fallback {selected.url}: {type(exc).__name__}: {exc}"
+                    )
+                usage_after = self.agent.evidence_model_usage()
+                if int(usage_after["fallbacks"]) > int(usage_before["fallbacks"]):
+                    fallback_message = (
+                        f"Evidence model {usage_after['model']} unavailable; used Pi active model"
+                    )
+                    if usage_after["disabled"]:
+                        fallback_message += " and disabled the helper for this search"
+                    await callback(
+                        _progress(stats, coverage.score, budget),
+                        fallback_message,
                     )
                 source, claims_added = ledger.add_document(document, batch)
                 low_gain_streak = low_gain_streak + 1 if claims_added == 0 else 0
@@ -398,6 +420,14 @@ class ResearchController:
         stats.distinct_domains = len({item.domain for item in ledger.evidence_sources()})
         stats.elapsed_ms = int((time.monotonic() - started) * 1000)
         stats.browsing_elapsed_ms = int(browsing_budget.elapsed * 1000)
+        model_usage = self.agent.evidence_model_usage()
+        stats.evidence_model = str(model_usage["model"])
+        stats.evidence_model_attempts = int(model_usage["attempts"])
+        stats.evidence_model_successes = int(model_usage["successes"])
+        stats.evidence_model_failures = int(model_usage["failures"])
+        stats.evidence_model_fallbacks = int(model_usage["fallbacks"])
+        stats.evidence_model_disabled = bool(model_usage["disabled"])
+        self.store.event(research_id, "evidence_model_usage", model_usage)
         result = ResearchResult(
             research_id=research_id,
             answer_markdown=answer,
