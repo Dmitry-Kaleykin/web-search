@@ -12,7 +12,7 @@ This repository currently implements the first vertical slice from [ARCHITECTURE
 - Trafilatura extraction with a basic HTML fallback.
 - Automatic Crawl4AI/Chromium escalation for failed, short, or JavaScript-shell pages.
 - Model-generated research requirements and gap-specific queries.
-- Evidence ledger with source-count and primary-source gates.
+- Evidence ledger with claim-support, source-count, and domain-diversity gates.
 - Expected-information-gain candidate ranking.
 - Adaptive stopping with hard safety ceilings.
 - Citation-ID validation and deterministic source lists.
@@ -181,10 +181,10 @@ defers model-based gap assessment until a new query is actually needed.
 
 Evidence claims are accepted only when their statement is lexically supported by a verbatim page
 excerpt and every numeric/date token appears in that excerpt. Invalid excerpts may be replaced from
-the page, but replacement lowers confidence; unsupported claims are discarded. A model-labelled
-primary source counts as primary only when its domain matches the researched subject or a narrow
-organization suffix such as `tech`, or when a subject-owned path is used on a recognized publishing
-platform such as GitHub or Hugging Face.
+the page, but replacement lowers confidence; unsupported claims are discarded. Source classes are
+model-generated descriptive metadata only. They are not validated as official ownership and never
+affect ranking, coverage, or stopping decisions; those depend on supported claims and distinct
+source domains.
 Canceled calls are finalized in the run ledger with a `cancelled` event at any controller stage.
 
 ## Development

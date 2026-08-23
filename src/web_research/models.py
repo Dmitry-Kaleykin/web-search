@@ -38,7 +38,6 @@ class Requirement:
     subject: str | None = None
     criterion: str | None = None
     min_sources: int = 1
-    primary_required: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], index: int) -> Requirement:
@@ -54,7 +53,6 @@ class Requirement:
             subject=_optional_str(data.get("subject")),
             criterion=_optional_str(data.get("criterion")),
             min_sources=max(1, min(3, int(data.get("min_sources", 1)))),
-            primary_required=bool(data.get("primary_required", False)),
         )
 
 
@@ -126,7 +124,6 @@ class CoverageItem:
     requirement_id: str
     covered: bool
     source_count: int
-    has_primary: bool
     reason: str
 
 
@@ -146,7 +143,7 @@ class CoverageReport:
 class ResearchStats:
     search_queries: int = 0
     pages_fetched: int = 0
-    independent_domains: int = 0
+    distinct_domains: int = 0
     elapsed_ms: int = 0
     browsing_elapsed_ms: int = 0
     cache_hits: int = 0

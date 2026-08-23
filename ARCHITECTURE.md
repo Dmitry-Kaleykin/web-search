@@ -112,7 +112,7 @@ Return human-readable Markdown as the normal tool content and mirror the importa
   "stats": {
     "search_queries": 6,
     "pages_fetched": 14,
-    "independent_domains": 8,
+    "distinct_domains": 8,
     "elapsed_ms": 73420,
     "browsing_elapsed_ms": 18400
   },
@@ -133,7 +133,7 @@ task_type: fact | explanation | comparison | recommendation | current_event | ex
 subjects: entities or products being researched
 requirements: atomic questions that must be answered
 comparison_dimensions: empty unless applicable
-source_policy: primary/independent/recency/diversity requirements
+source_policy: source-count/independence/recency/diversity requirements
 time_scope and locale
 exclusions and user constraints
 desired answer shape
@@ -141,7 +141,8 @@ desired answer shape
 
 Each requirement has an importance (`required`, `important`, or `optional`) and an evidence rule. Examples:
 
-- A product specification prefers the manufacturer's primary page.
+- A product specification may target manufacturer documentation, without treating domain ownership
+  as an automatically verified evidence property.
 - A subjective comparison dimension requires independent evidence.
 - A current price requires a retrieval timestamp and market/region.
 - A disputed factual claim requires corroboration or an explicit conflict note.
@@ -160,7 +161,7 @@ Claim
   exact excerpt or structured value
   page location / heading
   published_at and retrieved_at
-  source class: primary | expert | independent review | news | forum | unknown
+  unverified descriptive source class: primary | expert | independent review | news | forum | unknown
   extraction method
   confidence and extraction warnings
 ```
@@ -204,7 +205,7 @@ check hard gates, answerability, conflicts, and saturation
 
 Do not issue one generic query and read its first results. Generate query families tied to gaps:
 
-- Primary/official sources.
+- Publisher-authored documentation and release material.
 - Independent sources and reviews.
 - Exact requirement or comparison dimension.
 - Known disagreement or failure modes.
@@ -231,7 +232,6 @@ The first version can implement these as transparent heuristics. It does not nee
 - BM25 relevance between result title/snippet and uncovered requirements.
 - Source-type and domain priors.
 - Penalty for already-seen domains, syndicated copies, and near-duplicate snippets.
-- Bonus for primary sources when a primary source is required.
 - Bonus for a missing product/criterion cell.
 - Penalty for pages likely to require an expensive browser fallback.
 
@@ -268,12 +268,11 @@ Do not stop while any of these apply:
 - A decision-driving comparison cell is missing without being explicitly reported as unavailable.
 - A factual comparison uses inconsistent definitions, regions, units, or dates.
 - An important contradiction is unresolved or unreported.
-- A primary source is required and a credible primary source has not been attempted.
 - A final claim would cite only a search snippet rather than a fetched source.
 
 For product comparisons, useful default rules are:
 
-- One primary source per product for specifications, when available.
+- Manufacturer documentation for specifications when useful, without an official-source gate.
 - Independent sources for subjective claims and real-world behavior.
 - Fresh, region-matched sources for price and availability.
 - Each mandatory product × criterion cell is either supported or explicitly marked unknown.
@@ -399,7 +398,7 @@ For the first version:
 - Use a normal blocking MCP tool call with progress notifications over the 2025-11-25 handshake
   protocol, preserving the duplex sampling back-channel needed by the adaptive loop.
 - Honor cancellation immediately in the controller, pending fetches, browser, and model calls.
-- Stream compact progress such as "searching official sources," "8/12 requirements covered," and "checking a conflict."
+- Stream compact progress such as "searching publisher documentation," "8/12 requirements covered," and "checking a conflict."
 - Keep `auto` mode short enough to fit typical client/tool timeouts.
 
 MCP Tasks are attractive for thorough jobs because they provide durable task IDs, polling, progress, cancellation, and optional input requests. Treat them as a later enhancement because they are an extension and client support varies. Keep an internal job abstraction now so a blocking call can be promoted to a task without rewriting the controller.
@@ -464,7 +463,7 @@ Measure:
 
 - Claim support rate and citation correctness.
 - Required-facet and comparison-cell coverage.
-- Source independence and primary-source usage.
+- Source independence and domain diversity.
 - Unsupported-claim rate.
 - Pages, searches, time, tokens, and browser escalations.
 - Premature-stop and needless-continue rates.

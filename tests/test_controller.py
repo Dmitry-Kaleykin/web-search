@@ -29,7 +29,6 @@ class FakeModel:
                         "question": "What is the verified value?",
                         "importance": "required",
                         "min_sources": 2,
-                        "primary_required": False,
                     }
                 ],
                 "answer_format": "Short answer",
@@ -137,7 +136,6 @@ class AssessmentDateCapturingModel(DateCapturingModel):
                         "question": "What is the verified value?",
                         "importance": "required",
                         "min_sources": 3,
-                        "primary_required": False,
                     }
                 ],
                 "answer_format": "Short answer",
@@ -194,7 +192,6 @@ class FourSourceModel(FakeModel):
                         "question": "What is the verified value?",
                         "importance": "required",
                         "min_sources": 4,
-                        "primary_required": False,
                     }
                 ],
                 "answer_format": "Short answer",
@@ -388,7 +385,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertGreaterEqual(result.stats.search_queries, 3)
-            self.assertGreaterEqual(result.stats.independent_domains, 6)
+            self.assertGreaterEqual(result.stats.distinct_domains, 6)
             self.assertGreaterEqual(result.stats.pages_fetched, 6)
             store.close()
 
@@ -447,7 +444,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(result.coverage.sufficient)
             self.assertEqual(result.stats.pages_fetched, 2)
-            self.assertEqual(result.stats.independent_domains, 2)
+            self.assertEqual(result.stats.distinct_domains, 2)
             self.assertIn("[S1]", result.answer_markdown)
             self.assertTrue(updates)
             store.close()

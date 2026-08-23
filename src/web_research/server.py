@@ -83,7 +83,6 @@ class ToolCoverageItem(BaseModel):
     requirement_id: str
     covered: bool
     source_count: int
-    has_primary: bool
     reason: str
 
 
@@ -98,7 +97,7 @@ class ToolCoverage(BaseModel):
 class ToolStats(BaseModel):
     search_queries: int
     pages_fetched: int
-    independent_domains: int
+    distinct_domains: int
     elapsed_ms: int
     browsing_elapsed_ms: int
     cache_hits: int

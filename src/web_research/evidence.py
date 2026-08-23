@@ -15,33 +15,10 @@ from .models import (
     SourceClass,
 )
 from .safety.urls import registrable_domain
-from .text import best_excerpt, compact_text, lexical_similarity, tokens
+from .text import best_excerpt, compact_text, lexical_similarity
 
 MIN_CLAIM_EXCERPT_SIMILARITY = 0.18
 NUMERIC_FACT_RE = re.compile(r"(?:[$€£¥])?\d+(?:[.,:/+-]\d+)*%?[A-Za-z]?")
-NON_PRIMARY_DOMAINS = {
-    "reddit.com": SourceClass.COMMUNITY,
-    "wikipedia.org": SourceClass.INDEPENDENT,
-    "medium.com": SourceClass.INDEPENDENT,
-    "substack.com": SourceClass.INDEPENDENT,
-}
-SUBJECT_STOPWORDS = {
-    "company",
-    "group",
-    "model",
-    "product",
-    "project",
-    "team",
-    "the",
-}
-PRIMARY_PUBLISHING_PLATFORMS = {"github.com", "huggingface.co"}
-OFFICIAL_DOMAIN_SUFFIXES = {
-    "ai",
-    "labs",
-    "lab",
-    "research",
-    "tech",
-}
 
 
 @dataclass(slots=True)
@@ -62,22 +39,17 @@ class EvidenceLedger:
         existing = next((item for item in self.sources if item.url == document.final_url), None)
         if existing:
             return existing, 0
-        source_class, source_class_warning = _validated_source_class(
-            self.spec, document, batch.source_class
-        )
         source = Source(
             id=f"S{len(self.sources) + 1}",
             url=document.final_url,
             title=document.title,
             domain=registrable_domain(document.final_url),
-            source_class=source_class,
+            source_class=batch.source_class,
             retrieved_at=document.retrieved_at,
             published_at=document.published_at,
             extraction_method=document.method,
             warnings=list(document.warnings),
         )
-        if source_class_warning:
-            source.warnings.append(source_class_warning)
         self.sources.append(source)
         self._source_urls.add(source.url)
 
@@ -134,23 +106,16 @@ class EvidenceLedger:
             requirement_claims = claims_by_requirement[requirement.id]
             source_ids = {claim.source_id for claim in requirement_claims}
             source_domains = {sources_by_id[source_id].domain for source_id in source_ids}
-            has_primary = any(
-                sources_by_id[source_id].source_class == SourceClass.PRIMARY
-                for source_id in source_ids
-            )
             enough_sources = len(source_domains) >= requirement.min_sources
-            covered = enough_sources and (has_primary or not requirement.primary_required)
+            covered = enough_sources
             if not enough_sources:
                 reason = f"needs {requirement.min_sources} source(s); has {len(source_domains)}"
-            elif requirement.primary_required and not has_primary:
-                reason = "needs a primary source"
             else:
                 reason = "evidence rule satisfied"
             item = CoverageItem(
                 requirement_id=requirement.id,
                 covered=covered,
                 source_count=len(source_domains),
-                has_primary=has_primary,
                 reason=reason,
             )
             items.append(item)
@@ -198,40 +163,6 @@ def _claim_supported(statement: str, excerpt: str) -> bool:
     excerpt_facts = {item.casefold() for item in NUMERIC_FACT_RE.findall(excerpt)}
     statement_facts = {item.casefold() for item in NUMERIC_FACT_RE.findall(statement)}
     return statement_facts <= excerpt_facts
-
-
-def _validated_source_class(
-    spec: ResearchSpec, document: Document, claimed: SourceClass
-) -> tuple[SourceClass, str | None]:
-    if claimed != SourceClass.PRIMARY:
-        return claimed, None
-    domain = registrable_domain(document.final_url)
-    known_class = NON_PRIMARY_DOMAINS.get(domain)
-    if known_class is not None:
-        return known_class, f"source_class_downgraded:primary_to_{known_class.value}"
-    subject_tokens = {
-        token
-        for subject in spec.subjects
-        for token in tokens(subject)
-        if len(token) >= 2 and token not in SUBJECT_STOPWORDS
-    }
-    domain_stem = domain.split(".", 1)[0]
-    if any(_subject_matches_domain_stem(token, domain_stem) for token in subject_tokens):
-        return claimed, None
-    if domain in PRIMARY_PUBLISHING_PLATFORMS:
-        normalized_url = document.final_url.casefold()
-        if any(token in normalized_url for token in subject_tokens):
-            return claimed, None
-    return SourceClass.UNKNOWN, "source_class_downgraded:primary_to_unknown"
-
-
-def _subject_matches_domain_stem(subject_token: str, domain_stem: str) -> bool:
-    if domain_stem == subject_token:
-        return True
-    if len(subject_token) < 4 or not domain_stem.startswith(subject_token):
-        return False
-    suffix = domain_stem[len(subject_token) :]
-    return suffix in OFFICIAL_DOMAIN_SUFFIXES
 
 
 def _importance_weight(importance: Importance) -> float:

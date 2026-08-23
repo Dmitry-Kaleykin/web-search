@@ -395,7 +395,7 @@ class ResearchController:
                 {"max_wall_seconds": budget.max_wall_seconds},
             )
 
-        stats.independent_domains = len({item.domain for item in ledger.evidence_sources()})
+        stats.distinct_domains = len({item.domain for item in ledger.evidence_sources()})
         stats.elapsed_ms = int((time.monotonic() - started) * 1000)
         stats.browsing_elapsed_ms = int(browsing_budget.elapsed * 1000)
         result = ResearchResult(
@@ -457,9 +457,9 @@ def _research_depth_satisfied(effort: str, stats: ResearchStats, ledger: Evidenc
 
 def _depth_queries(query: str) -> list[str]:
     return [
-        f"{query} official release notes documentation",
+        f"{query} publisher release notes documentation",
         f"{query} independent analysis review",
-        f"{query} technical report primary source",
+        f"{query} technical report documentation",
         f"{query} expert coverage",
     ]
 

@@ -21,9 +21,8 @@ class EvidenceLedgerTests(unittest.TestCase):
             requirements=[
                 Requirement(
                     id="R1",
-                    question="What are the official dimensions?",
+                    question="What are the dimensions?",
                     min_sources=1,
-                    primary_required=True,
                 ),
                 Requirement(
                     id="R2",
@@ -33,7 +32,7 @@ class EvidenceLedgerTests(unittest.TestCase):
             ],
         )
 
-    def test_primary_and_independent_source_rules(self) -> None:
+    def test_source_count_and_domain_rules(self) -> None:
         ledger = EvidenceLedger(self.spec)
         first = Document(
             url="https://maker.example/specs",
@@ -157,38 +156,7 @@ class EvidenceLedgerTests(unittest.TestCase):
         self.assertEqual(ledger.claims[0].confidence, 0.65)
         self.assertIn("non_verbatim_excerpt_replaced:R1", source.warnings)
 
-    def test_downgrades_obviously_non_primary_domain(self) -> None:
-        ledger = EvidenceLedger(self.spec)
-        document = Document(
-            url="https://en.wikipedia.org/wiki/Maker",
-            final_url="https://en.wikipedia.org/wiki/Maker",
-            title="Maker",
-            content="The product measures exactly 10 by 20 centimetres.",
-            method="http",
-        )
-
-        source, added = ledger.add_document(
-            document,
-            EvidenceBatch(
-                SourceClass.PRIMARY,
-                [
-                    {
-                        "requirement_id": "R1",
-                        "statement": "It measures 10 by 20 centimetres.",
-                        "excerpt": "The product measures exactly 10 by 20 centimetres.",
-                        "confidence": 0.9,
-                        "stance": "supports",
-                    }
-                ],
-            ),
-        )
-
-        self.assertEqual(added, 1)
-        self.assertEqual(source.source_class, SourceClass.INDEPENDENT)
-        self.assertIn("source_class_downgraded:primary_to_independent", source.warnings)
-        self.assertFalse(ledger.coverage().items[0].has_primary)
-
-    def test_downgrades_subject_named_third_party_domain(self) -> None:
+    def test_source_class_is_descriptive_metadata_only(self) -> None:
         spec = ResearchSpec(
             original_query="Latest Qwen release",
             task_type=TaskType.CURRENT_EVENT,
@@ -197,7 +165,6 @@ class EvidenceLedgerTests(unittest.TestCase):
                 Requirement(
                     id="R1",
                     question="What is the latest Qwen release?",
-                    primary_required=True,
                 )
             ],
         )
@@ -227,51 +194,7 @@ class EvidenceLedgerTests(unittest.TestCase):
         )
 
         self.assertEqual(added, 1)
-        self.assertEqual(source.source_class, SourceClass.UNKNOWN)
-        self.assertIn("source_class_downgraded:primary_to_unknown", source.warnings)
-        self.assertFalse(ledger.coverage().sufficient)
-
-    def test_accepts_official_brand_domain_with_organization_suffix(self) -> None:
-        spec = ResearchSpec(
-            original_query="Dreame X50 Ultra specifications",
-            task_type=TaskType.FACT,
-            subjects=["Dreame X50 Ultra"],
-            requirements=[
-                Requirement(
-                    id="R1",
-                    question="What is the official suction power?",
-                    primary_required=True,
-                )
-            ],
-        )
-        ledger = EvidenceLedger(spec)
-        document = Document(
-            url="https://global.dreametech.com/products/x50-ultra",
-            final_url="https://global.dreametech.com/products/x50-ultra",
-            title="Dreame X50 Ultra",
-            content="The X50 Ultra provides 20,000 Pa suction power.",
-            method="http",
-        )
-
-        source, added = ledger.add_document(
-            document,
-            EvidenceBatch(
-                SourceClass.PRIMARY,
-                [
-                    {
-                        "requirement_id": "R1",
-                        "statement": "The X50 Ultra provides 20,000 Pa suction power.",
-                        "excerpt": "The X50 Ultra provides 20,000 Pa suction power.",
-                        "confidence": 0.9,
-                        "stance": "supports",
-                    }
-                ],
-            ),
-        )
-
-        self.assertEqual(added, 1)
         self.assertEqual(source.source_class, SourceClass.PRIMARY)
-        self.assertNotIn("source_class_downgraded:primary_to_unknown", source.warnings)
         self.assertTrue(ledger.coverage().sufficient)
 
 

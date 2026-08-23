@@ -27,12 +27,6 @@ def rank_candidates(
         engine_bonus = min(0.15, 0.03 * len(set(candidate.engines)))
         domain = registrable_domain(candidate.url)
         diversity = 1.0 / (1.0 + domain_counts[domain])
-        primary_hint = 0.0
-        if any(item.primary_required for item in uncovered) and any(
-            token in domain for token in ("docs.", "support.", "developer.")
-        ):
-            primary_hint = 0.12
         score = 0.58 * relevance + 0.18 * result_rank + 0.16 * diversity + engine_bonus
-        score += primary_hint
         ranked.append((score, candidate))
     return sorted(ranked, key=lambda item: item[0], reverse=True)

@@ -51,6 +51,10 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         tool = result.tools[0]
         self.assertEqual(tool.input_schema["required"], ["query"])
         self.assertIn("answer_markdown", tool.output_schema["properties"])
+        self.assertNotIn(
+            "has_primary",
+            tool.output_schema["$defs"]["ToolCoverageItem"]["properties"],
+        )
         self.assertIn("Never add a calendar year", tool.description)
         self.assertIn("do not invoke web_search in parallel", tool.description)
         self.assertIn("do not add a year", tool.input_schema["properties"]["query"]["description"])
