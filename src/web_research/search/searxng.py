@@ -108,7 +108,9 @@ class SearXNGSearchProvider:
             if len(results) >= limit:
                 break
 
-        if self.store:
+        # Empty result sets are often transient when upstream engines are rate-limited or
+        # challenged. Do not poison the cache with a temporary aggregate failure.
+        if self.store and results:
             self.store.put_search(cache_key, results)
         return results
 

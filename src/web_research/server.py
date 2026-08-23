@@ -35,10 +35,36 @@ LOGGER = logging.getLogger(__name__)
 
 WEB_SEARCH_TOOL_DESCRIPTION = (
     "Research a web-dependent question and return a cited, evidence-checked synthesis. "
+    "Make one self-contained call for the whole request; do not invoke web_search in parallel. "
     "Pass the user's temporal wording faithfully. For relative requests such as latest, recent, "
     "current, or today, keep that wording relative; the server resolves it from its own clock. "
     "Never add a calendar year unless the user explicitly supplied that year."
 )
+
+
+class ConcurrentResearchError(RuntimeError):
+    pass
+
+
+class _SingleFlight:
+    """Reject overlapping runs before they contend for one local model."""
+
+    def __init__(self) -> None:
+        self.active = False
+
+    def start(self) -> None:
+        if self.active:
+            raise ConcurrentResearchError(
+                "Another web_search call is already running. Wait for it to finish and make one "
+                "self-contained call instead of parallel searches."
+            )
+        self.active = True
+
+    def finish(self) -> None:
+        self.active = False
+
+
+RUN_GATE = _SingleFlight()
 
 
 class ToolSource(BaseModel):
@@ -93,6 +119,8 @@ mcp = MCPServer(
     "Local Agentic Web Search",
     instructions=(
         "Use web_search for current or web-dependent research. Pass a self-contained request. "
+        "Make one web_search call at a time; parallel calls contend for the same local model and "
+        "are rejected. "
         "Preserve the user's temporal wording and never invent a calendar year for latest, "
         "recent, current, or today; web_search uses its server clock. "
         "The tool reads sources, tracks evidence gaps, and returns a cited synthesis."
@@ -180,14 +208,18 @@ async def web_search(
         await ctx.report_progress(progress=value, total=1.0, message=message)
 
     try:
-        result = await controller.run(
-            query.strip(),
-            effort=effort,
-            freshness=freshness,
-            budget=budget_for(effort),
-            progress=report,
-        )
-        return WebSearchOutput.model_validate(result.as_dict())
+        RUN_GATE.start()
+        try:
+            result = await controller.run(
+                query.strip(),
+                effort=effort,
+                freshness=freshness,
+                budget=budget_for(effort),
+                progress=report,
+            )
+            return WebSearchOutput.model_validate(result.as_dict())
+        finally:
+            RUN_GATE.finish()
     finally:
         await search.close()
         await reader.close()

@@ -12,10 +12,26 @@ from web_research.config import Settings
 from web_research.model.mcp_sampling import MCPSamplingModelClient
 from web_research.model.openai_compatible import OpenAICompatibleModelClient
 from web_research.model.unavailable import UnavailableModelClient
-from web_research.server import _create_model, mcp
+from web_research.server import (
+    ConcurrentResearchError,
+    _create_model,
+    _SingleFlight,
+    mcp,
+)
 
 
 class MCPServerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_single_flight_rejects_overlapping_research(self) -> None:
+        gate = _SingleFlight()
+        gate.start()
+
+        with self.assertRaisesRegex(ConcurrentResearchError, "already running"):
+            gate.start()
+
+        gate.finish()
+        gate.start()
+        gate.finish()
+
     async def test_stdio_entry_negotiates_sampling_compatible_handshake(self) -> None:
         params = StdioServerParameters(
             command=sys.executable,
@@ -36,6 +52,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.input_schema["required"], ["query"])
         self.assertIn("answer_markdown", tool.output_schema["properties"])
         self.assertIn("Never add a calendar year", tool.description)
+        self.assertIn("do not invoke web_search in parallel", tool.description)
         self.assertIn("do not add a year", tool.input_schema["properties"]["query"]["description"])
         freshness_schema = tool.input_schema["properties"]["freshness"]
         self.assertIn("Do not resolve relative wording", freshness_schema["description"])

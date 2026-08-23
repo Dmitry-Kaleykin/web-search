@@ -86,12 +86,22 @@ class ResearchController:
     ) -> ResearchResult:
         callback = progress or _no_progress
         browsing_budget = _ActiveTimeBudget(budget.max_seconds)
+        run_deadline = _RunDeadline(budget.max_wall_seconds)
+        synthesis_reserve = budget.synthesis_reserve_seconds
         stats = ResearchStats()
         warnings: list[str] = []
+        deadline_reached = False
 
         await callback(0.02, "Compiling the research requirements")
         try:
-            spec = await self.agent.compile_spec(query, freshness)
+            spec = await run_deadline.run(
+                lambda: self.agent.compile_spec(query, freshness),
+                reserve=synthesis_reserve,
+            )
+        except _RunDeadlineExceeded:
+            spec = heuristic_spec(query, freshness)
+            deadline_reached = True
+            warnings.append("research_spec_fallback: internal research deadline reached")
         except Exception as exc:
             spec = heuristic_spec(query, freshness)
             warnings.append(f"research_spec_fallback: {type(exc).__name__}: {exc}")
@@ -99,7 +109,14 @@ class ResearchController:
         ledger = EvidenceLedger(spec)
 
         try:
-            initial_queries = await self.agent.plan_queries(spec)
+            initial_queries = await run_deadline.run(
+                lambda: self.agent.plan_queries(spec),
+                reserve=synthesis_reserve,
+            )
+        except _RunDeadlineExceeded:
+            initial_queries = [query]
+            deadline_reached = True
+            warnings.append("query_planning_fallback: internal research deadline reached")
         except Exception as exc:
             initial_queries = [query]
             warnings.append(f"query_planning_fallback: {type(exc).__name__}: {exc}")
@@ -108,15 +125,21 @@ class ResearchController:
         pending_queries = deque(initial_queries)
         seen_queries: set[str] = set()
         candidates: list[SearchResult] = []
-        candidate_urls: set[str] = set()
+        deferred_candidates: list[SearchResult] = []
+        discovered_urls: set[str] = set()
         fetched_urls: set[str] = set()
         domain_counts: Counter[str] = Counter()
+        attempts_in_search_batch = 0
         low_gain_streak = 0
         sufficient_streak = 0
         stop_reason = "search_exhausted"
 
         try:
             while True:
+                if run_deadline.exhausted(reserve=synthesis_reserve):
+                    deadline_reached = True
+                    stop_reason = "internal_deadline_reached"
+                    break
                 if browsing_budget.exhausted:
                     stop_reason = "time_budget_exhausted"
                     break
@@ -139,14 +162,19 @@ class ResearchController:
                             f"Searching: {search_query}",
                         )
                         try:
-                            results = await browsing_budget.run(
-                                lambda search_query=search_query: self.search.search(
-                                    search_query,
-                                    language=spec.locale,
-                                    time_range=_searxng_time_range(freshness),
-                                    limit=12,
-                                )
+                            results = await run_deadline.run(
+                                lambda search_query=search_query: browsing_budget.run(
+                                    lambda: self.search.search(
+                                        search_query,
+                                        language=spec.locale,
+                                        time_range=_searxng_time_range(freshness),
+                                        limit=12,
+                                    )
+                                ),
+                                reserve=synthesis_reserve,
                             )
+                        except _RunDeadlineExceeded:
+                            raise
                         except Exception as exc:
                             warnings.append(f"search_failed: {type(exc).__name__}: {exc}")
                             self.store.event(
@@ -160,17 +188,24 @@ class ResearchController:
                             "search_results",
                             {"query": search_query, "count": len(results)},
                         )
+                        attempts_in_search_batch = 0
                         for result in results:
-                            if result.url not in candidate_urls and result.url not in fetched_urls:
+                            if result.url not in discovered_urls and result.url not in fetched_urls:
                                 candidates.append(result)
-                                candidate_urls.add(result.url)
+                                discovered_urls.add(result.url)
                         continue
 
                     needs_depth = not _research_depth_satisfied(effort, stats, ledger)
                     if (
                         not coverage.sufficient or needs_depth
                     ) and stats.search_queries < budget.max_searches:
-                        followups = await self._followup_queries(spec, ledger, warnings)
+                        followups = await self._followup_queries(
+                            spec,
+                            ledger,
+                            warnings,
+                            deadline=run_deadline,
+                            reserve=synthesis_reserve,
+                        )
                         novel = [
                             item
                             for item in followups
@@ -185,6 +220,11 @@ class ResearchController:
                         if novel:
                             pending_queries.extend(novel)
                             continue
+                    if (not coverage.sufficient or needs_depth) and deferred_candidates:
+                        candidates.extend(deferred_candidates)
+                        deferred_candidates.clear()
+                        attempts_in_search_batch = 0
+                        continue
                     stop_reason = (
                         "requirements_satisfied_and_frontier_exhausted"
                         if coverage.sufficient
@@ -210,7 +250,7 @@ class ResearchController:
                     candidates.clear()
                     continue
                 candidates.remove(selected)
-                candidate_urls.discard(selected.url)
+                attempts_in_search_batch += 1
 
                 depth_satisfied = _research_depth_satisfied(effort, stats, ledger)
                 if coverage.sufficient and depth_satisfied and selected_score < budget.min_gain:
@@ -223,9 +263,14 @@ class ResearchController:
                     f"Reading {domain}: {selected.title[:90]}",
                 )
                 try:
-                    document = await browsing_budget.run(
-                        lambda selected=selected: self.reader.read(selected.url)
+                    document = await run_deadline.run(
+                        lambda selected=selected: browsing_budget.run(
+                            lambda: self.reader.read(selected.url)
+                        ),
+                        reserve=synthesis_reserve,
                     )
+                except _RunDeadlineExceeded:
+                    raise
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -237,6 +282,10 @@ class ResearchController:
                         "fetch_failed",
                         {"url": selected.url, "error": str(exc)},
                     )
+                    if _search_batch_exhausted(attempts_in_search_batch, stats, budget):
+                        deferred_candidates.extend(candidates)
+                        candidates.clear()
+                        attempts_in_search_batch = 0
                     continue
 
                 fetched_urls.add(selected.url)
@@ -244,8 +293,20 @@ class ResearchController:
                 stats.pages_fetched += 1
                 if "cache_hit" in document.warnings:
                     stats.cache_hits += 1
+                analysis_hit_deadline = False
                 try:
-                    batch = await self.agent.analyze_document(spec, document)
+                    batch = await run_deadline.run(
+                        lambda document=document: self.agent.analyze_document(spec, document),
+                        reserve=synthesis_reserve,
+                    )
+                except _RunDeadlineExceeded:
+                    batch = heuristic_evidence(spec, document)
+                    analysis_hit_deadline = True
+                    deadline_reached = True
+                    warnings.append(
+                        f"evidence_extraction_fallback {selected.url}: "
+                        "internal research deadline reached"
+                    )
                 except Exception as exc:
                     batch = heuristic_evidence(spec, document)
                     warnings.append(
@@ -274,36 +335,65 @@ class ResearchController:
                     f"{len(coverage.unresolved_gaps)} required gap(s) remain",
                 )
 
+                if analysis_hit_deadline:
+                    stop_reason = "internal_deadline_reached"
+                    break
+
+                if _search_batch_exhausted(attempts_in_search_batch, stats, budget):
+                    deferred_candidates.extend(candidates)
+                    candidates.clear()
+                    attempts_in_search_batch = 0
+
                 at_checkpoint = stats.pages_fetched % budget.checkpoint_every_pages == 0
                 if at_checkpoint:
                     if coverage.sufficient:
                         if not _research_depth_satisfied(effort, stats, ledger):
                             sufficient_streak = 0
                             if effort == "thorough" and pending_queries:
+                                deferred_candidates.extend(candidates)
                                 candidates.clear()
-                                candidate_urls.clear()
+                                attempts_in_search_batch = 0
                             continue
                         if sufficient_streak >= 2 or low_gain_streak >= 2:
                             stop_reason = "requirements_satisfied_and_saturated"
                             break
                     else:
                         sufficient_streak = 0
-                        followups = await self._followup_queries(spec, ledger, warnings)
-                        pending_queries.extend(
-                            item
-                            for item in followups
-                            if item.casefold().strip() not in seen_queries
-                        )
+                        # Deterministic coverage already tells us whether more evidence is needed.
+                        # Defer the comparatively expensive model assessment until this result
+                        # batch is exhausted and a new query actually has to be planned.
+                        continue
+        except _RunDeadlineExceeded:
+            deadline_reached = True
+            stop_reason = "internal_deadline_reached"
         except asyncio.CancelledError:
             raise
 
         coverage = ledger.coverage()
         await callback(0.94, "Writing and validating the cited answer")
         try:
-            answer = await self.agent.synthesize(spec, ledger)
+            answer = await run_deadline.run(
+                lambda: self.agent.synthesize(spec, ledger),
+                reserve=0.0,
+            )
+        except _RunDeadlineExceeded:
+            answer = fallback_answer(spec, ledger)
+            deadline_reached = True
+            stop_reason = "internal_deadline_reached"
+            warnings.append("answer_synthesis_fallback: internal run deadline reached")
         except Exception as exc:
             answer = fallback_answer(spec, ledger)
             warnings.append(f"answer_synthesis_fallback: {type(exc).__name__}: {exc}")
+
+        if deadline_reached:
+            deadline_warning = "internal_deadline_reached: returning best available evidence"
+            if deadline_warning not in warnings:
+                warnings.append(deadline_warning)
+            self.store.event(
+                research_id,
+                "internal_deadline_reached",
+                {"max_wall_seconds": budget.max_wall_seconds},
+            )
 
         stats.independent_domains = len({item.domain for item in ledger.evidence_sources()})
         stats.elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -326,12 +416,20 @@ class ResearchController:
         spec,
         ledger: EvidenceLedger,
         warnings: list[str],
+        *,
+        deadline: _RunDeadline,
+        reserve: float,
     ) -> list[str]:
         try:
-            assessment = await self.agent.assess(spec, ledger)
+            assessment = await deadline.run(
+                lambda: self.agent.assess(spec, ledger),
+                reserve=reserve,
+            )
             queries = assessment.get("followup_queries")
             if isinstance(queries, list):
                 return [" ".join(str(item).split()) for item in queries if str(item).strip()]
+        except _RunDeadlineExceeded:
+            raise
         except Exception as exc:
             warnings.append(f"gap_assessment_failed: {type(exc).__name__}: {exc}")
         gap_questions = [
@@ -364,6 +462,55 @@ def _depth_queries(query: str) -> list[str]:
         f"{query} technical report primary source",
         f"{query} expert coverage",
     ]
+
+
+def _search_batch_exhausted(
+    attempts: int,
+    stats: ResearchStats,
+    budget: Budget,
+) -> bool:
+    return (
+        attempts >= max(1, budget.max_attempts_per_search_batch)
+        and stats.search_queries < budget.max_searches
+    )
+
+
+class _RunDeadlineExceeded(TimeoutError):
+    pass
+
+
+class _RunDeadline:
+    """Bounds the full run while reserving time for final synthesis."""
+
+    def __init__(self, seconds: float | None) -> None:
+        self.deadline = time.monotonic() + max(0.0, seconds) if seconds is not None else None
+
+    @property
+    def remaining(self) -> float:
+        if self.deadline is None:
+            return float("inf")
+        return max(0.0, self.deadline - time.monotonic())
+
+    def exhausted(self, *, reserve: float) -> bool:
+        return self.deadline is not None and self.remaining <= max(0.0, reserve)
+
+    async def run(
+        self,
+        factory: Callable[[], Awaitable[T]],
+        *,
+        reserve: float,
+    ) -> T:
+        if self.deadline is None:
+            return await factory()
+        available = self.remaining - max(0.0, reserve)
+        if available <= 0:
+            raise _RunDeadlineExceeded("internal run deadline reached")
+        try:
+            return await asyncio.wait_for(factory(), timeout=available)
+        except TimeoutError as exc:
+            if self.exhausted(reserve=reserve):
+                raise _RunDeadlineExceeded("internal run deadline reached") from exc
+            raise
 
 
 class _ActiveTimeBudget:

@@ -124,6 +124,28 @@ class DateCapturingModel(FakeModel):
         return await super().complete_json(**kwargs)
 
 
+class AssessmentDateCapturingModel(DateCapturingModel):
+    async def complete_json(self, **kwargs):
+        if kwargs["schema_name"] == "research_spec":
+            self.calls.append(kwargs)
+            return {
+                "task_type": "fact",
+                "subjects": ["Example"],
+                "requirements": [
+                    {
+                        "id": "R1",
+                        "question": "What is the verified value?",
+                        "importance": "required",
+                        "min_sources": 3,
+                        "primary_required": False,
+                    }
+                ],
+                "answer_format": "Short answer",
+                "locale": None,
+            }
+        return await super().complete_json(**kwargs)
+
+
 class BlockingModel:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -153,7 +175,165 @@ class DiverseSearch(FakeSearch):
         ]
 
 
+class MultiQueryModel(FakeModel):
+    async def complete_json(self, *, schema_name, **kwargs):
+        if schema_name == "search_queries":
+            return {"queries": ["first angle", "second angle"]}
+        return await super().complete_json(schema_name=schema_name, **kwargs)
+
+
+class FourSourceModel(FakeModel):
+    async def complete_json(self, *, schema_name, **kwargs):
+        if schema_name == "research_spec":
+            return {
+                "task_type": "fact",
+                "subjects": ["Example"],
+                "requirements": [
+                    {
+                        "id": "R1",
+                        "question": "What is the verified value?",
+                        "importance": "required",
+                        "min_sources": 4,
+                        "primary_required": False,
+                    }
+                ],
+                "answer_format": "Short answer",
+                "locale": None,
+            }
+        return await super().complete_json(schema_name=schema_name, **kwargs)
+
+
+class EventSearch(FakeSearch):
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.calls = 0
+
+    async def search(self, *_args, **_kwargs):
+        self.calls += 1
+        self.events.append(f"search:{self.calls}")
+        return [
+            SearchResult(
+                url=f"https://source{self.calls}-{index}.example/value",
+                title="Verification",
+                snippet="verified value 42",
+                rank=index,
+            )
+            for index in range(1, 5)
+        ]
+
+
+class EventReader(FakeReader):
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def read(self, url):
+        self.events.append(f"read:{url}")
+        return await super().read(url)
+
+
 class ControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_internal_deadline_returns_a_fallback_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            controller = ResearchController(
+                search=FakeSearch(),
+                reader=FakeReader(),
+                agent=ResearchAgent(BlockingModel()),
+                store=store,
+            )
+            started = time.monotonic()
+
+            result = await controller.run(
+                "What is the value?",
+                effort="quick",
+                freshness=None,
+                budget=Budget(
+                    20,
+                    1,
+                    1,
+                    1,
+                    1,
+                    0.1,
+                    max_wall_seconds=0.08,
+                    synthesis_reserve_seconds=0.03,
+                ),
+            )
+
+            self.assertLess(time.monotonic() - started, 0.3)
+            self.assertEqual(result.stop_reason, "internal_deadline_reached")
+            self.assertTrue(
+                any("internal_deadline_reached" in warning for warning in result.warnings)
+            )
+            with sqlite3.connect(Path(directory) / "test.sqlite3") as connection:
+                events = connection.execute("SELECT event_type FROM events ORDER BY id").fetchall()
+            self.assertIn(("internal_deadline_reached",), events)
+            store.close()
+
+    async def test_searches_are_interleaved_after_a_small_candidate_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            events: list[str] = []
+            controller = ResearchController(
+                search=EventSearch(events),
+                reader=EventReader(events),
+                agent=ResearchAgent(MultiQueryModel()),
+                store=store,
+            )
+
+            result = await controller.run(
+                "What is the verified value?",
+                effort="auto",
+                freshness=None,
+                budget=Budget(
+                    20,
+                    2,
+                    3,
+                    2,
+                    99,
+                    0.0,
+                    max_attempts_per_search_batch=2,
+                ),
+            )
+
+            read_positions = [
+                index for index, event in enumerate(events) if event.startswith("read:")
+            ]
+            self.assertEqual(result.stats.search_queries, 2)
+            self.assertGreaterEqual(len(read_positions), 3)
+            self.assertLess(events.index("search:2"), read_positions[2])
+            store.close()
+
+    async def test_deferred_candidates_are_reused_when_no_new_query_is_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            events: list[str] = []
+            controller = ResearchController(
+                search=EventSearch(events),
+                reader=EventReader(events),
+                agent=ResearchAgent(FourSourceModel()),
+                store=store,
+            )
+
+            result = await controller.run(
+                "What is the verified value?",
+                effort="auto",
+                freshness=None,
+                budget=Budget(
+                    20,
+                    2,
+                    4,
+                    4,
+                    99,
+                    0.0,
+                    max_attempts_per_search_batch=2,
+                ),
+            )
+
+            self.assertTrue(result.coverage.sufficient)
+            self.assertEqual(result.stats.search_queries, 1)
+            self.assertEqual(result.stats.pages_fetched, 4)
+            store.close()
+
     async def test_cancellation_during_planning_finalizes_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "test.sqlite3"
@@ -215,7 +395,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
     async def test_every_model_stage_receives_authoritative_current_date(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteStore(Path(directory) / "test.sqlite3")
-            model = DateCapturingModel()
+            model = AssessmentDateCapturingModel()
             controller = ResearchController(
                 search=FakeSearch(),
                 reader=FakeReader(),
@@ -227,7 +407,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 "What is the latest verified value?",
                 effort="quick",
                 freshness=None,
-                budget=Budget(20, 1, 1, 1, 1, 0.1),
+                budget=Budget(20, 2, 3, 2, 1, 0.1),
             )
 
             self.assertEqual(
@@ -235,6 +415,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 [
                     "research_spec",
                     "search_queries",
+                    "source_evidence",
                     "source_evidence",
                     "sufficiency_assessment",
                     "research_answer",

@@ -73,12 +73,45 @@ class Budget:
     max_pages_per_domain: int
     checkpoint_every_pages: int
     min_gain: float
+    max_wall_seconds: float | None = None
+    synthesis_reserve_seconds: float = 0.0
+    max_attempts_per_search_batch: int = 3
 
 
 BUDGETS: dict[str, Budget] = {
-    "quick": Budget(30.0, 2, 5, 2, 1, 0.15),
-    "auto": Budget(120.0, 8, 20, 4, 2, 0.08),
-    "thorough": Budget(600.0, 20, 60, 8, 3, 0.04),
+    "quick": Budget(
+        30.0,
+        2,
+        5,
+        2,
+        1,
+        0.15,
+        max_wall_seconds=300.0,
+        synthesis_reserve_seconds=105.0,
+        max_attempts_per_search_batch=2,
+    ),
+    "auto": Budget(
+        120.0,
+        8,
+        20,
+        4,
+        2,
+        0.08,
+        max_wall_seconds=720.0,
+        synthesis_reserve_seconds=105.0,
+        max_attempts_per_search_batch=3,
+    ),
+    "thorough": Budget(
+        600.0,
+        20,
+        60,
+        8,
+        3,
+        0.04,
+        max_wall_seconds=1500.0,
+        synthesis_reserve_seconds=105.0,
+        max_attempts_per_search_batch=4,
+    ),
 }
 
 

@@ -35,6 +35,13 @@ SUBJECT_STOPWORDS = {
     "the",
 }
 PRIMARY_PUBLISHING_PLATFORMS = {"github.com", "huggingface.co"}
+OFFICIAL_DOMAIN_SUFFIXES = {
+    "ai",
+    "labs",
+    "lab",
+    "research",
+    "tech",
+}
 
 
 @dataclass(slots=True)
@@ -209,13 +216,22 @@ def _validated_source_class(
         if len(token) >= 2 and token not in SUBJECT_STOPWORDS
     }
     domain_stem = domain.split(".", 1)[0]
-    if domain_stem in subject_tokens:
+    if any(_subject_matches_domain_stem(token, domain_stem) for token in subject_tokens):
         return claimed, None
     if domain in PRIMARY_PUBLISHING_PLATFORMS:
         normalized_url = document.final_url.casefold()
         if any(token in normalized_url for token in subject_tokens):
             return claimed, None
     return SourceClass.UNKNOWN, "source_class_downgraded:primary_to_unknown"
+
+
+def _subject_matches_domain_stem(subject_token: str, domain_stem: str) -> bool:
+    if domain_stem == subject_token:
+        return True
+    if len(subject_token) < 4 or not domain_stem.startswith(subject_token):
+        return False
+    suffix = domain_stem[len(subject_token) :]
+    return suffix in OFFICIAL_DOMAIN_SUFFIXES
 
 
 def _importance_weight(importance: Importance) -> float:

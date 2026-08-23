@@ -11,6 +11,29 @@ from web_research.storage import SQLiteStore
 
 
 class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_transient_results_are_not_cached(self):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"results": []})
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "cache.sqlite3")
+            provider = SearXNGSearchProvider("http://searxng.test", store=store)
+            await provider._client.aclose()
+            provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            try:
+                first = await provider.search("temporarily unavailable")
+                second = await provider.search("temporarily unavailable")
+            finally:
+                await provider.close()
+                store.close()
+
+        self.assertEqual(first, [])
+        self.assertEqual(second, [])
+        self.assertEqual(len(requests), 2)
+
     async def test_json_contract_deduplication_and_cache(self):
         requests: list[httpx.Request] = []
 
