@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Literal
+from typing import Annotated, Literal
 
 import anyio
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .agent import ResearchAgent
 from .config import Settings, budget_for
@@ -32,6 +32,13 @@ except ImportError as exc:  # pragma: no cover - clear startup error without dep
 
 
 LOGGER = logging.getLogger(__name__)
+
+WEB_SEARCH_TOOL_DESCRIPTION = (
+    "Research a web-dependent question and return a cited, evidence-checked synthesis. "
+    "Pass the user's temporal wording faithfully. For relative requests such as latest, recent, "
+    "current, or today, keep that wording relative; the server resolves it from its own clock. "
+    "Never add a calendar year unless the user explicitly supplied that year."
+)
 
 
 class ToolSource(BaseModel):
@@ -86,17 +93,39 @@ mcp = MCPServer(
     "Local Agentic Web Search",
     instructions=(
         "Use web_search for current or web-dependent research. Pass a self-contained request. "
+        "Preserve the user's temporal wording and never invent a calendar year for latest, "
+        "recent, current, or today; web_search uses its server clock. "
         "The tool reads sources, tracks evidence gaps, and returns a cited synthesis."
     ),
 )
 
 
-@mcp.tool(name="web_search", structured_output=True)
+@mcp.tool(
+    name="web_search",
+    description=WEB_SEARCH_TOOL_DESCRIPTION,
+    structured_output=True,
+)
 async def web_search(
-    query: str,
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "The user's complete research request. Preserve relative temporal wording such "
+                "as latest or recent; do not add a year unless the user stated it."
+            )
+        ),
+    ],
     ctx: Context,
     effort: Literal["quick", "auto", "thorough"] = "auto",
-    freshness: str | None = None,
+    freshness: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional time constraint copied from the user, such as 'recent', 'current', or "
+                "'published since 2025'. Do not resolve relative wording to a guessed year."
+            )
+        ),
+    ] = None,
 ) -> WebSearchOutput:
     """Research a web-dependent question and return a cited, evidence-checked synthesis.
 

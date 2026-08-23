@@ -159,6 +159,11 @@ The tool signature is:
 web_search(query, effort="auto", freshness=null)
 ```
 
+Pi should pass the user's temporal wording faithfully. For requests such as "latest", "recent",
+"current", or "today", it must not insert a calendar year unless the user supplied one. The server
+anchors those relative terms to its local date and includes that authoritative date in every model
+stage. Explicit requests such as "news from 2025" remain unchanged.
+
 - `quick`: a short lookup ceiling.
 - `auto`: normal research and comparisons.
 - `thorough`: a wider evidence search with a larger safety ceiling.

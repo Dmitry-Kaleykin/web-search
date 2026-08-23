@@ -35,6 +35,10 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         tool = result.tools[0]
         self.assertEqual(tool.input_schema["required"], ["query"])
         self.assertIn("answer_markdown", tool.output_schema["properties"])
+        self.assertIn("Never add a calendar year", tool.description)
+        self.assertIn("do not add a year", tool.input_schema["properties"]["query"]["description"])
+        freshness_schema = tool.input_schema["properties"]["freshness"]
+        self.assertIn("Do not resolve relative wording", freshness_schema["description"])
 
     async def test_dynamic_client_model_takes_precedence_over_direct_fallback(self) -> None:
         context = SimpleNamespace(

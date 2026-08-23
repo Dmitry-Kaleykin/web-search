@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Any
 
 from .citations import append_sources, validate_citations
@@ -35,13 +36,14 @@ from .text import best_excerpt, lexical_similarity
 
 
 class ResearchAgent:
-    def __init__(self, model: ResearchModel) -> None:
+    def __init__(self, model: ResearchModel, *, current_date: str | None = None) -> None:
         self.model = model
+        self.current_date = current_date or date.today().isoformat()
 
     async def compile_spec(self, query: str, freshness: str | None) -> ResearchSpec:
         data = await self.model.complete_json(
             system=SPEC_SYSTEM,
-            user=spec_user(query, freshness),
+            user=spec_user(query, freshness, self.current_date),
             schema_name="research_spec",
             schema=SPEC_SCHEMA,
         )
@@ -76,7 +78,7 @@ class ResearchAgent:
     async def plan_queries(self, spec: ResearchSpec, gaps: list[str] | None = None) -> list[str]:
         data = await self.model.complete_json(
             system=QUERY_SYSTEM,
-            user=query_user(spec, gaps),
+            user=query_user(spec, gaps, self.current_date),
             schema_name="search_queries",
             schema=QUERY_SCHEMA,
         )
@@ -89,7 +91,9 @@ class ResearchAgent:
         content = _select_relevant_content(spec, document.content)
         data = await self.model.complete_json(
             system=EVIDENCE_SYSTEM,
-            user=evidence_user(spec, document.final_url, document.title, content),
+            user=evidence_user(
+                spec, document.final_url, document.title, content, self.current_date
+            ),
             schema_name="source_evidence",
             schema=EVIDENCE_SCHEMA,
         )
@@ -109,7 +113,12 @@ class ResearchAgent:
         coverage = ledger.coverage()
         return await self.model.complete_json(
             system=ASSESS_SYSTEM,
-            user=assess_user(spec, coverage, ledger.evidence_summary(max_chars=12_000)),
+            user=assess_user(
+                spec,
+                coverage,
+                ledger.evidence_summary(max_chars=12_000),
+                self.current_date,
+            ),
             schema_name="sufficiency_assessment",
             schema=ASSESS_SCHEMA,
         )
@@ -119,7 +128,13 @@ class ResearchAgent:
         sources = ledger.evidence_sources()
         data = await self.model.complete_json(
             system=ANSWER_SYSTEM,
-            user=answer_user(spec, coverage, ledger.evidence_summary(), sources),
+            user=answer_user(
+                spec,
+                coverage,
+                ledger.evidence_summary(),
+                sources,
+                self.current_date,
+            ),
             schema_name="research_answer",
             schema=ANSWER_SCHEMA,
         )

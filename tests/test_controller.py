@@ -114,7 +114,47 @@ class SlowSearch(FakeSearch):
         return await super().search(*_args, **_kwargs)
 
 
+class DateCapturingModel(FakeModel):
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def complete_json(self, **kwargs):
+        self.calls.append(kwargs)
+        return await super().complete_json(**kwargs)
+
+
 class ControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_every_model_stage_receives_authoritative_current_date(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            model = DateCapturingModel()
+            controller = ResearchController(
+                search=FakeSearch(),
+                reader=FakeReader(),
+                agent=ResearchAgent(model, current_date="2031-04-05"),
+                store=store,
+            )
+
+            await controller.run(
+                "What is the latest verified value?",
+                effort="quick",
+                freshness=None,
+                budget=Budget(20, 1, 1, 1, 1, 0.1),
+            )
+
+            self.assertEqual(
+                [call["schema_name"] for call in model.calls],
+                [
+                    "research_spec",
+                    "search_queries",
+                    "source_evidence",
+                    "sufficiency_assessment",
+                    "research_answer",
+                ],
+            )
+            self.assertTrue(all("2031-04-05" in call["user"] for call in model.calls), model.calls)
+            store.close()
+
     async def test_controller_reads_until_evidence_rule_is_met(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteStore(Path(directory) / "test.sqlite3")

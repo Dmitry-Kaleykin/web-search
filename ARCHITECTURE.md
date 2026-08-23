@@ -56,13 +56,13 @@ Expose one tool, with a self-contained natural-language task and a small number 
 ```json
 {
   "name": "web_search",
-  "description": "Research a current or web-dependent question, read enough sources to answer it, and return a cited synthesis. The request must be self-contained.",
+  "description": "Research a current or web-dependent question, read enough sources to answer it, and return a cited synthesis. Preserve relative temporal wording and never add a year unless the user supplied it.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "The complete research question, including subjects, comparison criteria, constraints, locale, and desired output when relevant."
+        "description": "The complete research question, including subjects, comparison criteria, constraints, locale, and desired output when relevant. Preserve latest/recent/current/today as relative wording."
       },
       "effort": {
         "type": "string",
@@ -79,6 +79,10 @@ Expose one tool, with a self-contained natural-language task and a small number 
   }
 }
 ```
+
+At invocation time, the server reads its local calendar date and supplies it as `current_date` to
+every model stage. Relative temporal requests are anchored to that value rather than the model's
+training horizon. Explicit dates in the user's request remain constraints and are never rewritten.
 
 `effort` controls ceilings and evidence strictness, not a fixed number of pages. `auto` should infer the task class and select a suitable policy. `thorough` means a wider source mix, lower tolerance for missing comparison cells, and a higher time/page ceiling.
 
