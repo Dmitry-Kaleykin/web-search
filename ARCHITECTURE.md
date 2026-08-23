@@ -362,9 +362,13 @@ All outputs should use validated JSON schemas. The model never receives network 
 
 The default path is MCP sampling without a model hint. Pi's MCP adapter therefore resolves each
 request to the active session model, so the research service is provider-independent and follows
-model changes made in Pi. The server can call a separately configured OpenAI-compatible endpoint
-only when the MCP client does not advertise sampling. Deterministic planning and synthesis remain
-the final failure fallback.
+model changes made in Pi. A dedicated evidence analyst may be selected from a separately configured
+OpenAI-compatible endpoint in the operator console. This does not place a model ID in Pi's MCP
+configuration: only page-evidence extraction uses the saved model, while all other roles remain
+dynamic through MCP sampling. Evidence-model failures fall back to the active Pi model and trip a
+per-run circuit breaker after repeated failures. The same direct endpoint remains available as a
+whole-service fallback when the MCP client does not advertise sampling. Deterministic planning and
+synthesis remain the final failure fallback.
 
 Sampling must remain text-only and bounded. The adapter should forward cancellation and enforce its
 normal authorization policy. A trusted local Pi scope may enable automatic sampling approval because

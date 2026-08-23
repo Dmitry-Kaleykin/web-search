@@ -39,6 +39,8 @@ The first launch installs the console's small Node.js dependency set. Inside the
 - Launch Docker Desktop when necessary and start, stop, or restart SearXNG.
 - See Docker, SearXNG, the model strategy, Chromium, and MCP readiness at a glance.
 - Run the full readiness doctor and follow SearXNG logs.
+- Select or disable a dedicated evidence model from every model exposed by the configured local
+  OpenAI-compatible endpoint.
 
 The console does not replace or modify Pi. Pi continues to launch the single MCP server over stdio
 when it needs `web_search`; the console is only an operator interface for installation and local
@@ -82,6 +84,14 @@ No model ID is required when Pi connects through `pi-mcp-adapter`. The server re
 through MCP sampling, and the adapter selects the model active in the current Pi session. Changing
 models in Pi therefore changes the research model without restarting or editing this server.
 
+Optionally, choose **Configure evidence model** in the `web-search` terminal console. The console
+lists every model returned by the local endpoint's `/models` response without recommending or
+filtering the list. The selected model analyzes retrieved pages; request compilation, search
+planning, gap assessment, and final synthesis continue to use Pi's active model. The selection is
+stored in `.web-search-data/config.json`, so Pi's MCP configuration remains model-free. If the
+dedicated model fails, the current Pi model handles that page; repeated failures disable the
+dedicated route for the remainder of the search.
+
 Sampling normally shows approval dialogs. Because one research run can make several model calls,
 the practical configuration for this trusted local server is:
 
@@ -115,6 +125,9 @@ Important settings:
 | `WEB_SEARCH_SEARXNG_URL` | `http://127.0.0.1:8080` | SearXNG base URL |
 | `WEB_SEARCH_MODEL_BASE_URL` | `http://127.0.0.1:8000/v1` | Optional direct-fallback API base |
 | `WEB_SEARCH_MODEL_ID` | none | Optional direct-fallback model ID |
+| `WEB_SEARCH_EVIDENCE_MODEL_BASE_URL` | saved endpoint or model base URL | Override the dedicated evidence-model API base |
+| `WEB_SEARCH_EVIDENCE_MODEL_ID` | saved selection or none | Override the dedicated evidence model selected in the terminal UI |
+| `WEB_SEARCH_EVIDENCE_MODEL_MAX_TOKENS` | `1600` | Maximum output for page-evidence extraction |
 | `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
 | `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
 | `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Permit hostname-only `198.18.0.0/15` answers from a local TUN proxy |

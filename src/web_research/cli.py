@@ -90,6 +90,32 @@ async def _doctor() -> int:
             except Exception as exc:
                 failed = True
                 print(f"FAIL direct fallback model endpoint: {exc}", file=sys.stderr)
+
+        if not settings.evidence_model_id:
+            print("INFO no dedicated evidence model is configured")
+        else:
+            headers = {}
+            if settings.evidence_model_api_key:
+                headers["Authorization"] = f"Bearer {settings.evidence_model_api_key}"
+            try:
+                response = await client.get(
+                    f"{settings.evidence_model_base_url.rstrip('/')}/models", headers=headers
+                )
+                response.raise_for_status()
+                models = response.json().get("data", [])
+                ids = {str(item.get("id")) for item in models if isinstance(item, dict)}
+                if settings.evidence_model_id not in ids:
+                    failed = True
+                    print(
+                        f"FAIL configured evidence model {settings.evidence_model_id!r} is not "
+                        f"in /models: {json.dumps(sorted(ids))}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"OK   dedicated evidence model: {settings.evidence_model_id}")
+            except Exception as exc:
+                failed = True
+                print(f"FAIL dedicated evidence model endpoint: {exc}", file=sys.stderr)
     return 1 if failed else 0
 
 

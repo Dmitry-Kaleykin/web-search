@@ -36,8 +36,15 @@ from .text import best_excerpt, lexical_similarity
 
 
 class ResearchAgent:
-    def __init__(self, model: ResearchModel, *, current_date: str | None = None) -> None:
+    def __init__(
+        self,
+        model: ResearchModel,
+        *,
+        evidence_model: ResearchModel | None = None,
+        current_date: str | None = None,
+    ) -> None:
         self.model = model
+        self.evidence_model = evidence_model or model
         self.current_date = current_date or date.today().isoformat()
 
     async def compile_spec(self, query: str, freshness: str | None) -> ResearchSpec:
@@ -89,7 +96,7 @@ class ResearchAgent:
 
     async def analyze_document(self, spec: ResearchSpec, document: Document) -> EvidenceBatch:
         content = _select_relevant_content(spec, document.content)
-        data = await self.model.complete_json(
+        data = await self.evidence_model.complete_json(
             system=EVIDENCE_SYSTEM,
             user=evidence_user(
                 spec, document.final_url, document.title, content, self.current_date

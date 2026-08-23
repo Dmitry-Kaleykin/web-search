@@ -11,6 +11,7 @@ from .agent import ResearchAgent
 from .config import Settings, budget_for
 from .controller import ResearchController
 from .model.base import ResearchModel
+from .model.fallback import FallbackModelClient
 from .model.mcp_sampling import MCPSamplingModelClient
 from .model.openai_compatible import OpenAICompatibleModelClient
 from .model.unavailable import UnavailableModelClient
@@ -196,10 +197,11 @@ async def web_search(
     )
     reader = LayeredReader(http_reader, browser_reader)
     model = _create_model(ctx, settings)
+    evidence_model = _create_evidence_model(settings, model)
     controller = ResearchController(
         search=search,
         reader=reader,
-        agent=ResearchAgent(model),
+        agent=ResearchAgent(model, evidence_model=evidence_model),
         store=store,
     )
 
@@ -222,6 +224,8 @@ async def web_search(
     finally:
         await search.close()
         await reader.close()
+        if evidence_model is not model:
+            await evidence_model.close()
         await model.close()
         store.close()
 
@@ -244,6 +248,20 @@ def _create_model(ctx: Context, settings: Settings) -> ResearchModel:
             temperature=settings.model_temperature,
         )
     return UnavailableModelClient()
+
+
+def _create_evidence_model(settings: Settings, fallback: ResearchModel) -> ResearchModel:
+    if not settings.evidence_model_id:
+        return fallback
+    preferred = OpenAICompatibleModelClient(
+        settings.evidence_model_base_url,
+        settings.evidence_model_id,
+        api_key=settings.evidence_model_api_key,
+        timeout_seconds=settings.evidence_model_timeout_seconds,
+        max_tokens=settings.evidence_model_max_tokens,
+        temperature=settings.evidence_model_temperature,
+    )
+    return FallbackModelClient(preferred, fallback)
 
 
 def main() -> None:
