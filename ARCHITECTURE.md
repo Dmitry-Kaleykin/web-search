@@ -253,6 +253,13 @@ Active browsing time counts search and document-retrieval waits, not model infer
 latency. Model requests have their own timeout. Also cap redirects, bytes per response, pages per
 domain, browser interactions, document pages, model tokens, and concurrent fetches.
 
+`thorough` additionally requires a breadth floor of three distinct search calls and six usable
+source domains before sufficiency/saturation may stop the run. Claim statements must be supported
+by their verbatim excerpts, including exact numeric and date tokens. Primary-source classifications
+are conservatively checked against the researched subject's domain or subject-owned paths on known
+publishing platforms. Canceled calls finalize their ledger row regardless of the active model or
+browsing stage.
+
 #### Mandatory answerability gates
 
 Do not stop while any of these apply:

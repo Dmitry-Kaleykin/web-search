@@ -166,12 +166,20 @@ stage. Explicit requests such as "news from 2025" remain unchanged.
 
 - `quick`: a short lookup ceiling.
 - `auto`: normal research and comparisons.
-- `thorough`: a wider evidence search with a larger safety ceiling.
+- `thorough`: a wider evidence search with a larger safety ceiling; it does not stop for saturation
+  before attempting at least three searches and collecting usable evidence from six domains.
 
 These modes set maximum active-browsing, search-call, and page budgets. Model inference and local
 approval latency do not consume the browsing-time allowance; each model call instead uses
 `WEB_SEARCH_MODEL_TIMEOUT_SECONDS`. The controller stops earlier when evidence gates pass and
 additional pages have low expected value.
+
+Evidence claims are accepted only when their statement is lexically supported by a verbatim page
+excerpt and every numeric/date token appears in that excerpt. Invalid excerpts may be replaced from
+the page, but replacement lowers confidence; unsupported claims are discarded. A model-labelled
+primary source counts as primary only when its domain matches the researched subject, or when a
+subject-owned path is used on a recognized publishing platform such as GitHub or Hugging Face.
+Canceled calls are finalized in the run ledger with a `cancelled` event at any controller stage.
 
 ## Development
 

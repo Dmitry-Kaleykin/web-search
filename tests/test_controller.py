@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -123,7 +124,94 @@ class DateCapturingModel(FakeModel):
         return await super().complete_json(**kwargs)
 
 
+class BlockingModel:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def close(self) -> None:
+        return None
+
+    async def complete_json(self, **_kwargs):
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+class DiverseSearch(FakeSearch):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def search(self, *_args, **_kwargs):
+        self.calls += 1
+        return [
+            SearchResult(
+                url=f"https://source{self.calls}{suffix}.example/value",
+                title="Verification",
+                snippet="verified value 42",
+                rank=index,
+            )
+            for index, suffix in enumerate(("a", "b"), start=1)
+        ]
+
+
 class ControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancellation_during_planning_finalizes_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "test.sqlite3"
+            store = SQLiteStore(database)
+            model = BlockingModel()
+            controller = ResearchController(
+                search=FakeSearch(),
+                reader=FakeReader(),
+                agent=ResearchAgent(model),
+                store=store,
+            )
+            task = asyncio.create_task(
+                controller.run(
+                    "What is the value?",
+                    effort="quick",
+                    freshness=None,
+                    budget=Budget(20, 1, 1, 1, 1, 0.1),
+                )
+            )
+            await asyncio.wait_for(model.started.wait(), timeout=1)
+
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+            with sqlite3.connect(database) as connection:
+                row = connection.execute(
+                    "SELECT completed_at, result FROM research_runs"
+                ).fetchone()
+                events = connection.execute("SELECT event_type FROM events").fetchall()
+            self.assertIsNotNone(row[0])
+            self.assertIsNone(row[1])
+            self.assertEqual(events, [("cancelled",)])
+            store.close()
+
+    async def test_thorough_research_requires_broader_source_mix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            search = DiverseSearch()
+            controller = ResearchController(
+                search=search,
+                reader=FakeReader(),
+                agent=ResearchAgent(FakeModel()),
+                store=store,
+            )
+
+            result = await controller.run(
+                "What is the verified value?",
+                effort="thorough",
+                freshness=None,
+                budget=Budget(20, 5, 10, 2, 1, 0.1),
+            )
+
+            self.assertGreaterEqual(result.stats.search_queries, 3)
+            self.assertGreaterEqual(result.stats.independent_domains, 6)
+            self.assertGreaterEqual(result.stats.pages_fetched, 6)
+            store.close()
+
     async def test_every_model_stage_receives_authoritative_current_date(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteStore(Path(directory) / "test.sqlite3")

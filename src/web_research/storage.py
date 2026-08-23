@@ -88,6 +88,20 @@ class SQLiteStore:
                 (time.time(), json.dumps(result.as_dict(), ensure_ascii=False), result.research_id),
             )
 
+    def cancel_run(self, research_id: str) -> None:
+        """Finalize an unfinished run and record its cancellation atomically."""
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE research_runs SET completed_at = ? WHERE id = ? AND completed_at IS NULL",
+                (time.time(), research_id),
+            )
+            if cursor.rowcount:
+                self._connection.execute(
+                    "INSERT INTO events(research_id, created_at, event_type, payload) "
+                    "VALUES (?, ?, 'cancelled', '{}')",
+                    (research_id, time.time()),
+                )
+
     def event(self, research_id: str, event_type: str, payload: dict[str, Any]) -> None:
         with self._lock, self._connection:
             self._connection.execute(

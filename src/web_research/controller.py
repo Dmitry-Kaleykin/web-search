@@ -25,6 +25,8 @@ from .storage import SQLiteStore
 
 ProgressCallback = Callable[[float, str], Awaitable[None]]
 T = TypeVar("T")
+THOROUGH_MIN_SEARCHES = 3
+THOROUGH_MIN_USABLE_DOMAINS = 6
 
 
 async def _no_progress(_progress: float, _message: str) -> None:
@@ -54,13 +56,38 @@ class ResearchController:
         budget: Budget,
         progress: ProgressCallback | None = None,
     ) -> ResearchResult:
-        callback = progress or _no_progress
         research_id = str(uuid.uuid4())
         started = time.monotonic()
+        self.store.start_run(research_id, query, effort)
+        try:
+            return await self._run_started(
+                query,
+                effort=effort,
+                freshness=freshness,
+                budget=budget,
+                research_id=research_id,
+                started=started,
+                progress=progress,
+            )
+        except asyncio.CancelledError:
+            self.store.cancel_run(research_id)
+            raise
+
+    async def _run_started(
+        self,
+        query: str,
+        *,
+        effort: str,
+        freshness: str | None,
+        budget: Budget,
+        research_id: str,
+        started: float,
+        progress: ProgressCallback | None,
+    ) -> ResearchResult:
+        callback = progress or _no_progress
         browsing_budget = _ActiveTimeBudget(budget.max_seconds)
         stats = ResearchStats()
         warnings: list[str] = []
-        self.store.start_run(research_id, query, effort)
 
         await callback(0.02, "Compiling the research requirements")
         try:
@@ -139,13 +166,22 @@ class ResearchController:
                                 candidate_urls.add(result.url)
                         continue
 
-                    if not coverage.sufficient and stats.search_queries < budget.max_searches:
+                    needs_depth = not _research_depth_satisfied(effort, stats, ledger)
+                    if (
+                        not coverage.sufficient or needs_depth
+                    ) and stats.search_queries < budget.max_searches:
                         followups = await self._followup_queries(spec, ledger, warnings)
                         novel = [
                             item
                             for item in followups
                             if item.casefold().strip() not in seen_queries
                         ]
+                        if not novel and needs_depth:
+                            novel = [
+                                item
+                                for item in _depth_queries(spec.original_query)
+                                if item.casefold().strip() not in seen_queries
+                            ]
                         if novel:
                             pending_queries.extend(novel)
                             continue
@@ -176,7 +212,8 @@ class ResearchController:
                 candidates.remove(selected)
                 candidate_urls.discard(selected.url)
 
-                if coverage.sufficient and selected_score < budget.min_gain:
+                depth_satisfied = _research_depth_satisfied(effort, stats, ledger)
+                if coverage.sufficient and depth_satisfied and selected_score < budget.min_gain:
                     stop_reason = "requirements_satisfied_and_expected_gain_low"
                     break
 
@@ -240,6 +277,12 @@ class ResearchController:
                 at_checkpoint = stats.pages_fetched % budget.checkpoint_every_pages == 0
                 if at_checkpoint:
                     if coverage.sufficient:
+                        if not _research_depth_satisfied(effort, stats, ledger):
+                            sufficient_streak = 0
+                            if effort == "thorough" and pending_queries:
+                                candidates.clear()
+                                candidate_urls.clear()
+                            continue
                         if sufficient_streak >= 2 or low_gain_streak >= 2:
                             stop_reason = "requirements_satisfied_and_saturated"
                             break
@@ -252,7 +295,6 @@ class ResearchController:
                             if item.casefold().strip() not in seen_queries
                         )
         except asyncio.CancelledError:
-            self.store.event(research_id, "cancelled", {})
             raise
 
         coverage = ledger.coverage()
@@ -303,6 +345,25 @@ class ResearchController:
 def _progress(stats: ResearchStats, coverage_score: float, budget: Budget) -> float:
     budget_fraction = stats.pages_fetched / max(1, budget.max_pages)
     return min(0.9, 0.08 + 0.42 * budget_fraction + 0.4 * coverage_score)
+
+
+def _research_depth_satisfied(effort: str, stats: ResearchStats, ledger: EvidenceLedger) -> bool:
+    if effort != "thorough":
+        return True
+    usable_domains = {source.domain for source in ledger.evidence_sources()}
+    return (
+        stats.search_queries >= THOROUGH_MIN_SEARCHES
+        and len(usable_domains) >= THOROUGH_MIN_USABLE_DOMAINS
+    )
+
+
+def _depth_queries(query: str) -> list[str]:
+    return [
+        f"{query} official release notes documentation",
+        f"{query} independent analysis review",
+        f"{query} technical report primary source",
+        f"{query} expert coverage",
+    ]
 
 
 class _ActiveTimeBudget:
