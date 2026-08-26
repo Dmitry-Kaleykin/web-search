@@ -18,6 +18,7 @@ from .model.unavailable import UnavailableModelClient
 from .readers.crawl4ai import Crawl4AIReader
 from .readers.http import HTTPReader
 from .readers.router import LayeredReader
+from .reranking import OpenAICompatibleReranker
 from .search.searxng import SearXNGSearchProvider
 from .storage import SQLiteStore
 
@@ -76,6 +77,7 @@ class ToolSource(BaseModel):
     source_class: Literal["primary", "expert", "independent", "news", "community", "unknown"]
     retrieved_at: str
     published_at: str | None
+    published_at_source: str | None
     extraction_method: str
     warnings: list[str]
 
@@ -109,6 +111,14 @@ class ToolStats(BaseModel):
     evidence_model_failures: int
     evidence_model_fallbacks: int
     evidence_model_disabled: bool
+    reranker_model: str
+    reranker_requests: int
+    reranker_candidates: int
+    reranker_failures: int
+    reranker_disabled: bool
+    prefetch_started: int
+    prefetch_unused: int
+    followed_links_discovered: int
 
 
 class WebSearchOutput(BaseModel):
@@ -204,6 +214,7 @@ async def web_search(
     reader = LayeredReader(http_reader, browser_reader)
     model = _create_model(ctx, settings)
     evidence_model = _create_evidence_model(settings, model)
+    reranker = _create_reranker(settings)
     if settings.evidence_model_id:
         LOGGER.info(
             "Dedicated evidence model configured: %s at %s (authentication: %s)",
@@ -222,6 +233,8 @@ async def web_search(
             evidence_model_name=settings.evidence_model_id or "pi-active",
         ),
         store=store,
+        reranker=reranker,
+        prefetch_pages=settings.prefetch_pages,
     )
 
     async def report(value: float, message: str) -> None:
@@ -247,12 +260,23 @@ async def web_search(
                 result.stats.evidence_model_fallbacks,
                 result.stats.evidence_model_disabled,
             )
+            if result.stats.reranker_model:
+                LOGGER.info(
+                    "Reranker usage: model=%s requests=%d candidates=%d failures=%d disabled=%s",
+                    result.stats.reranker_model,
+                    result.stats.reranker_requests,
+                    result.stats.reranker_candidates,
+                    result.stats.reranker_failures,
+                    result.stats.reranker_disabled,
+                )
             return WebSearchOutput.model_validate(result.as_dict())
         finally:
             RUN_GATE.finish()
     finally:
         await search.close()
         await reader.close()
+        if reranker is not None:
+            await reranker.close()
         if evidence_model is not model:
             await evidence_model.close()
         await model.close()
@@ -291,6 +315,18 @@ def _create_evidence_model(settings: Settings, fallback: ResearchModel) -> Resea
         temperature=settings.evidence_model_temperature,
     )
     return FallbackModelClient(preferred, fallback)
+
+
+def _create_reranker(settings: Settings) -> OpenAICompatibleReranker | None:
+    if not settings.reranker_model_id:
+        return None
+    return OpenAICompatibleReranker(
+        settings.reranker_base_url,
+        settings.reranker_model_id,
+        api_key=settings.reranker_api_key,
+        timeout_seconds=settings.reranker_timeout_seconds,
+        max_candidates=settings.reranker_max_candidates,
+    )
 
 
 def main() -> None:

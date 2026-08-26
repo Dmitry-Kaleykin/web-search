@@ -116,6 +116,33 @@ async def _doctor() -> int:
             except Exception as exc:
                 failed = True
                 print(f"FAIL dedicated evidence model endpoint: {exc}", file=sys.stderr)
+
+        if not settings.reranker_model_id:
+            print("INFO no semantic candidate reranker is configured")
+        else:
+            headers = {}
+            if settings.reranker_api_key:
+                headers["Authorization"] = f"Bearer {settings.reranker_api_key}"
+            try:
+                response = await client.post(
+                    f"{settings.reranker_base_url.rstrip('/')}/rerank",
+                    headers=headers,
+                    json={
+                        "model": settings.reranker_model_id,
+                        "query": "web research",
+                        "documents": ["web research evidence", "unrelated decorative text"],
+                        "top_n": 2,
+                        "return_documents": False,
+                    },
+                )
+                response.raise_for_status()
+                results = response.json().get("results", [])
+                if not isinstance(results, list) or len(results) != 2:
+                    raise ValueError("endpoint did not return two candidate scores")
+                print(f"OK   semantic reranker: {settings.reranker_model_id}")
+            except Exception as exc:
+                failed = True
+                print(f"FAIL semantic reranker endpoint: {exc}", file=sys.stderr)
     return 1 if failed else 0
 
 

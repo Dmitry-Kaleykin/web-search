@@ -6,7 +6,9 @@ import uuid
 from collections import Counter, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
+from functools import partial
 from typing import TypeVar
+from urllib.parse import unquote, urlsplit
 
 from .agent import (
     ResearchAgent,
@@ -15,13 +17,16 @@ from .agent import (
     heuristic_spec,
 )
 from .config import Budget
+from .dates import normalize_published_at
 from .evidence import EvidenceLedger
-from .models import ResearchResult, ResearchStats, SearchResult
+from .models import Document, PlannedQuery, ResearchResult, ResearchStats, SearchLane, SearchResult
 from .ranking import rank_candidates
 from .readers.base import Reader
-from .safety.urls import registrable_domain
+from .reranking import CandidateReranker, RerankingError
+from .safety.urls import canonicalize_url, registrable_domain
 from .search.base import SearchProvider
 from .storage import SQLiteStore
+from .text import lexical_similarity
 
 ProgressCallback = Callable[[float, str], Awaitable[None]]
 T = TypeVar("T")
@@ -41,11 +46,15 @@ class ResearchController:
         reader: Reader,
         agent: ResearchAgent,
         store: SQLiteStore,
+        reranker: CandidateReranker | None = None,
+        prefetch_pages: int = 1,
     ) -> None:
         self.search = search
         self.reader = reader
         self.agent = agent
         self.store = store
+        self.reranker = reranker
+        self.prefetch_pages = max(1, prefetch_pages)
 
     async def run(
         self,
@@ -114,14 +123,14 @@ class ResearchController:
                 reserve=synthesis_reserve,
             )
         except _RunDeadlineExceeded:
-            initial_queries = [query]
+            initial_queries = [PlannedQuery(query=query)]
             deadline_reached = True
             warnings.append("query_planning_fallback: internal research deadline reached")
         except Exception as exc:
-            initial_queries = [query]
+            initial_queries = [PlannedQuery(query=query)]
             warnings.append(f"query_planning_fallback: {type(exc).__name__}: {exc}")
         if not initial_queries:
-            initial_queries = [query]
+            initial_queries = [PlannedQuery(query=query)]
         pending_queries = deque(initial_queries)
         seen_queries: set[str] = set()
         candidates: list[SearchResult] = []
@@ -131,6 +140,8 @@ class ResearchController:
         domain_counts: Counter[str] = Counter()
         attempts_in_search_batch = 0
         low_gain_streak = 0
+        rerank_scores: dict[str, float] = {}
+        prefetch_tasks: dict[str, asyncio.Task[Document]] = {}
         sufficient_streak = 0
         stop_reason = "search_exhausted"
 
@@ -151,25 +162,27 @@ class ResearchController:
 
                 if not candidates:
                     if pending_queries and stats.search_queries < budget.max_searches:
-                        search_query = pending_queries.popleft()
-                        query_key = search_query.casefold().strip()
+                        planned_query = pending_queries.popleft()
+                        search_query = planned_query.query
+                        query_key = f"{planned_query.lane}:{search_query.casefold().strip()}"
                         if not query_key or query_key in seen_queries:
                             continue
                         seen_queries.add(query_key)
                         stats.search_queries += 1
                         await callback(
                             _progress(stats, coverage.score, budget),
-                            f"Searching: {search_query}",
+                            f"Searching{_lane_label(planned_query.lane)}: {search_query}",
                         )
                         try:
-                            results = await run_deadline.run(
-                                lambda search_query=search_query: browsing_budget.run(
-                                    lambda: self.search.search(
-                                        search_query,
-                                        language=spec.locale,
-                                        time_range=_searxng_time_range(freshness),
-                                        limit=12,
-                                    )
+                            results, lane_fallback = await run_deadline.run(
+                                partial(
+                                    _search_with_lane,
+                                    self.search,
+                                    browsing_budget,
+                                    search_query,
+                                    planned_query.lane,
+                                    spec.locale,
+                                    _searxng_time_range(freshness),
                                 ),
                                 reserve=synthesis_reserve,
                             )
@@ -183,16 +196,56 @@ class ResearchController:
                                 {"query": search_query, "error": str(exc)},
                             )
                             continue
+                        if lane_fallback:
+                            warnings.append(
+                                f"source_lane_empty:{planned_query.lane}:used_web_fallback"
+                            )
+                            await callback(
+                                _progress(stats, coverage.score, budget),
+                                f"No {planned_query.lane} results; retried the general web lane",
+                            )
                         self.store.event(
                             research_id,
                             "search_results",
-                            {"query": search_query, "count": len(results)},
+                            {
+                                "query": search_query,
+                                "lane": planned_query.lane,
+                                "count": len(results),
+                            },
                         )
                         attempts_in_search_batch = 0
+                        novel_results: list[SearchResult] = []
                         for result in results:
                             if result.url not in discovered_urls and result.url not in fetched_urls:
                                 candidates.append(result)
+                                novel_results.append(result)
                                 discovered_urls.add(result.url)
+                        if self.reranker is not None and novel_results:
+                            await callback(
+                                _progress(stats, coverage.score, budget),
+                                f"Reranking {len(novel_results)} search candidates with "
+                                f"{self.reranker.model}",
+                            )
+                            rerank_query = _rerank_query(spec, coverage.unresolved_gaps)
+                            try:
+                                rerank_scores.update(
+                                    await run_deadline.run(
+                                        partial(
+                                            self.reranker.rerank,
+                                            rerank_query,
+                                            novel_results,
+                                        ),
+                                        reserve=synthesis_reserve,
+                                    )
+                                )
+                            except _RunDeadlineExceeded:
+                                raise
+                            except RerankingError as exc:
+                                warnings.append(f"reranker_fallback: {exc}")
+                                await callback(
+                                    _progress(stats, coverage.score, budget),
+                                    "Semantic reranker unavailable; using deterministic ranking",
+                                )
                         continue
 
                     needs_depth = not _research_depth_satisfied(effort, stats, ledger)
@@ -209,13 +262,14 @@ class ResearchController:
                         novel = [
                             item
                             for item in followups
-                            if item.casefold().strip() not in seen_queries
+                            if f"{item.lane}:{item.query.casefold().strip()}" not in seen_queries
                         ]
                         if not novel and needs_depth:
                             novel = [
                                 item
                                 for item in _depth_queries(spec.original_query)
-                                if item.casefold().strip() not in seen_queries
+                                if f"{item.lane}:{item.query.casefold().strip()}"
+                                not in seen_queries
                             ]
                         if novel:
                             pending_queries.extend(novel)
@@ -237,6 +291,7 @@ class ResearchController:
                     spec,
                     coverage.unresolved_gaps,
                     domain_counts,
+                    rerank_scores,
                 )
                 selected: SearchResult | None = None
                 selected_score = 0.0
@@ -249,6 +304,24 @@ class ResearchController:
                 if selected is None:
                     candidates.clear()
                     continue
+                eligible_ranked = [
+                    candidate
+                    for _, candidate in ranked
+                    if domain_counts[registrable_domain(candidate.url)]
+                    < budget.max_pages_per_domain
+                ]
+                for prefetch_candidate in eligible_ranked[: self.prefetch_pages]:
+                    if prefetch_candidate.url in prefetch_tasks:
+                        continue
+                    prefetch_tasks[prefetch_candidate.url] = asyncio.create_task(
+                        run_deadline.run(
+                            lambda candidate=prefetch_candidate: browsing_budget.run(
+                                lambda: self.reader.read(candidate.url)
+                            ),
+                            reserve=synthesis_reserve,
+                        )
+                    )
+                    stats.prefetch_started += 1
                 candidates.remove(selected)
                 attempts_in_search_batch += 1
 
@@ -263,12 +336,16 @@ class ResearchController:
                     f"Reading {domain}: {selected.title[:90]}",
                 )
                 try:
-                    document = await run_deadline.run(
-                        lambda selected=selected: browsing_budget.run(
-                            lambda: self.reader.read(selected.url)
-                        ),
-                        reserve=synthesis_reserve,
-                    )
+                    prefetched = prefetch_tasks.pop(selected.url, None)
+                    if prefetched is not None:
+                        document = await prefetched
+                    else:
+                        document = await run_deadline.run(
+                            lambda selected=selected: browsing_budget.run(
+                                lambda: self.reader.read(selected.url)
+                            ),
+                            reserve=synthesis_reserve,
+                        )
                 except _RunDeadlineExceeded:
                     raise
                 except asyncio.CancelledError:
@@ -289,6 +366,11 @@ class ResearchController:
                     continue
 
                 fetched_urls.add(selected.url)
+                if document.published_at is None and selected.published_at:
+                    document.published_at = normalize_published_at(selected.published_at)
+                    if document.published_at:
+                        document.published_at_source = "search_result"
+                        document.warnings.append("published_at_from_search_result")
                 domain_counts[domain] += 1
                 stats.pages_fetched += 1
                 if "cache_hit" in document.warnings:
@@ -347,6 +429,17 @@ class ResearchController:
                 )
 
                 coverage = ledger.coverage()
+                if not coverage.sufficient:
+                    linked_candidates = _linked_candidates(
+                        document,
+                        spec,
+                        coverage.unresolved_gaps,
+                        discovered_urls | fetched_urls,
+                    )
+                    for linked in linked_candidates:
+                        candidates.append(linked)
+                        discovered_urls.add(linked.url)
+                    stats.followed_links_discovered += len(linked_candidates)
                 if coverage.sufficient:
                     sufficient_streak += 1
                 else:
@@ -389,8 +482,11 @@ class ResearchController:
             deadline_reached = True
             stop_reason = "internal_deadline_reached"
         except asyncio.CancelledError:
+            await _cancel_prefetch(prefetch_tasks)
             raise
 
+        stats.prefetch_unused = len(prefetch_tasks)
+        await _cancel_prefetch(prefetch_tasks)
         coverage = ledger.coverage()
         await callback(0.94, "Writing and validating the cited answer")
         try:
@@ -428,6 +524,14 @@ class ResearchController:
         stats.evidence_model_fallbacks = int(model_usage["fallbacks"])
         stats.evidence_model_disabled = bool(model_usage["disabled"])
         self.store.event(research_id, "evidence_model_usage", model_usage)
+        if self.reranker is not None:
+            reranker_usage = self.reranker.usage()
+            stats.reranker_model = self.reranker.model
+            stats.reranker_requests = reranker_usage.requests
+            stats.reranker_candidates = reranker_usage.candidates
+            stats.reranker_failures = reranker_usage.failures
+            stats.reranker_disabled = reranker_usage.disabled
+            self.store.event(research_id, "reranker_usage", asdict(reranker_usage))
         result = ResearchResult(
             research_id=research_id,
             answer_markdown=answer,
@@ -449,7 +553,7 @@ class ResearchController:
         *,
         deadline: _RunDeadline,
         reserve: float,
-    ) -> list[str]:
+    ) -> list[PlannedQuery]:
         try:
             assessment = await deadline.run(
                 lambda: self.agent.assess(spec, ledger),
@@ -457,13 +561,13 @@ class ResearchController:
             )
             queries = assessment.get("followup_queries")
             if isinstance(queries, list):
-                return [" ".join(str(item).split()) for item in queries if str(item).strip()]
+                return _coerce_planned_queries(queries)
         except _RunDeadlineExceeded:
             raise
         except Exception as exc:
             warnings.append(f"gap_assessment_failed: {type(exc).__name__}: {exc}")
         gap_questions = [
-            item.question
+            PlannedQuery(query=item.question, lane=item.search_lane)
             for item in spec.requirements
             if item.id in ledger.coverage().unresolved_gaps
         ]
@@ -473,6 +577,14 @@ class ResearchController:
 def _progress(stats: ResearchStats, coverage_score: float, budget: Budget) -> float:
     budget_fraction = stats.pages_fetched / max(1, budget.max_pages)
     return min(0.9, 0.08 + 0.42 * budget_fraction + 0.4 * coverage_score)
+
+
+def _rerank_query(spec, unresolved_requirement_ids: list[str]) -> str:
+    unresolved = set(unresolved_requirement_ids)
+    questions = [
+        item.question for item in spec.requirements if not unresolved or item.id in unresolved
+    ]
+    return "\n".join([spec.original_query, *questions])[:8_000]
 
 
 def _research_depth_satisfied(effort: str, stats: ResearchStats, ledger: EvidenceLedger) -> bool:
@@ -485,13 +597,134 @@ def _research_depth_satisfied(effort: str, stats: ResearchStats, ledger: Evidenc
     )
 
 
-def _depth_queries(query: str) -> list[str]:
+def _depth_queries(query: str) -> list[PlannedQuery]:
     return [
-        f"{query} publisher release notes documentation",
-        f"{query} independent analysis review",
-        f"{query} technical report documentation",
-        f"{query} expert coverage",
+        PlannedQuery(f"{query} publisher release notes documentation", SearchLane.DOCUMENTATION),
+        PlannedQuery(f"{query} independent analysis review"),
+        PlannedQuery(f"{query} technical report documentation", SearchLane.ACADEMIC),
+        PlannedQuery(f"{query} expert coverage"),
     ]
+
+
+def _coerce_planned_queries(values: list[object]) -> list[PlannedQuery]:
+    queries: list[PlannedQuery] = []
+    for value in values:
+        if isinstance(value, dict):
+            query = " ".join(str(value.get("query") or "").split())
+            lane_value = str(value.get("lane") or "web")
+        else:
+            query = " ".join(str(value).split())
+            lane_value = "web"
+        if not query:
+            continue
+        try:
+            lane = SearchLane(lane_value)
+        except ValueError:
+            lane = SearchLane.WEB
+        queries.append(PlannedQuery(query, lane))
+    return queries
+
+
+def _lane_query(query: str, lane: SearchLane) -> str:
+    if lane == SearchLane.DOCUMENTATION and "documentation" not in query.casefold():
+        return f"{query} documentation"
+    return query
+
+
+def _lane_categories(lane: SearchLane) -> str | None:
+    return {
+        SearchLane.ACADEMIC: "science",
+        SearchLane.COMMUNITY: "social media",
+    }.get(lane)
+
+
+def _lane_label(lane: SearchLane) -> str:
+    return "" if lane == SearchLane.WEB else f" [{lane}]"
+
+
+async def _search_with_lane(
+    search: SearchProvider,
+    browsing_budget: _ActiveTimeBudget,
+    query: str,
+    lane: SearchLane,
+    language: str | None,
+    time_range: str | None,
+) -> tuple[list[SearchResult], bool]:
+    results = await browsing_budget.run(
+        lambda: search.search(
+            _lane_query(query, lane),
+            language=language,
+            time_range=time_range,
+            categories=_lane_categories(lane),
+            limit=12,
+        )
+    )
+    if results or lane == SearchLane.WEB:
+        return results, False
+    fallback = await browsing_budget.run(
+        lambda: search.search(
+            query,
+            language=language,
+            time_range=time_range,
+            categories=None,
+            limit=12,
+        )
+    )
+    return fallback, True
+
+
+def _linked_candidates(
+    document: Document,
+    spec,
+    unresolved_requirement_ids: list[str],
+    seen_urls: set[str],
+    *,
+    limit: int = 6,
+) -> list[SearchResult]:
+    unresolved = set(unresolved_requirement_ids)
+    targets = [
+        item.question for item in spec.requirements if not unresolved or item.id in unresolved
+    ]
+    parent_domain = registrable_domain(document.final_url)
+    candidates: list[tuple[float, SearchResult]] = []
+    hints = {
+        "changelog",
+        "comparison",
+        "docs",
+        "documentation",
+        "pricing",
+        "release",
+        "review",
+        "spec",
+        "specification",
+        "support",
+    }
+    for rank, raw_url in enumerate(document.links, start=1):
+        try:
+            url = canonicalize_url(raw_url)
+        except ValueError:
+            continue
+        if url in seen_urls or registrable_domain(url) != parent_domain:
+            continue
+        parsed = urlsplit(url)
+        path_text = unquote(parsed.path.replace("-", " ").replace("_", " "))
+        path_tokens = {token.casefold() for token in path_text.replace("/", " ").split()}
+        relevance = max((lexical_similarity(path_text, target) for target in targets), default=0.0)
+        if relevance < 0.03 and not path_tokens.intersection(hints):
+            continue
+        title = path_text.strip(" /") or parsed.hostname or url
+        candidates.append(
+            (
+                relevance,
+                SearchResult(
+                    url=url,
+                    title=title,
+                    snippet=f"Linked from {document.title}",
+                    rank=rank,
+                ),
+            )
+        )
+    return [item for _, item in sorted(candidates, key=lambda pair: pair[0], reverse=True)[:limit]]
 
 
 def _search_batch_exhausted(
@@ -549,6 +782,9 @@ class _ActiveTimeBudget:
     def __init__(self, seconds: float) -> None:
         self.limit = max(0.0, seconds)
         self.remaining = self.limit
+        self._active = 0
+        self._active_started = 0.0
+        self._lock = asyncio.Lock()
 
     @property
     def elapsed(self) -> float:
@@ -559,13 +795,32 @@ class _ActiveTimeBudget:
         return self.remaining <= 0
 
     async def run(self, factory: Callable[[], Awaitable[T]]) -> T:
-        if self.exhausted:
-            raise TimeoutError("active browsing time budget exhausted")
-        started = time.monotonic()
+        async with self._lock:
+            if self.exhausted:
+                raise TimeoutError("active browsing time budget exhausted")
+            if self._active == 0:
+                self._active_started = time.monotonic()
+            self._active += 1
+            available = self.remaining
         try:
-            return await asyncio.wait_for(factory(), timeout=self.remaining)
+            return await asyncio.wait_for(factory(), timeout=available)
         finally:
-            self.remaining = max(0.0, self.remaining - (time.monotonic() - started))
+            async with self._lock:
+                self._active -= 1
+                if self._active == 0:
+                    self.remaining = max(
+                        0.0, self.remaining - (time.monotonic() - self._active_started)
+                    )
+
+
+async def _cancel_prefetch(tasks: dict[str, asyncio.Task[Document]]) -> None:
+    pending = list(tasks.values())
+    tasks.clear()
+    for task in pending:
+        if not task.done():
+            task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _searxng_time_range(freshness: str | None) -> str | None:

@@ -30,6 +30,13 @@ class SourceClass(StrEnum):
     UNKNOWN = "unknown"
 
 
+class SearchLane(StrEnum):
+    WEB = "web"
+    ACADEMIC = "academic"
+    COMMUNITY = "community"
+    DOCUMENTATION = "documentation"
+
+
 @dataclass(slots=True)
 class Requirement:
     id: str
@@ -38,6 +45,9 @@ class Requirement:
     subject: str | None = None
     criterion: str | None = None
     min_sources: int = 1
+    depends_on: list[str] = field(default_factory=list)
+    search_lane: SearchLane = SearchLane.WEB
+    freshness_required: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], index: int) -> Requirement:
@@ -46,6 +56,11 @@ class Requirement:
             importance = Importance(importance_value)
         except ValueError:
             importance = Importance.REQUIRED
+        try:
+            search_lane = SearchLane(str(data.get("search_lane", "web")))
+        except ValueError:
+            search_lane = SearchLane.WEB
+        depends_on = data.get("depends_on")
         return cls(
             id=str(data.get("id") or f"R{index}"),
             question=str(data.get("question") or data.get("description") or "").strip(),
@@ -53,6 +68,11 @@ class Requirement:
             subject=_optional_str(data.get("subject")),
             criterion=_optional_str(data.get("criterion")),
             min_sources=max(1, min(3, int(data.get("min_sources", 1)))),
+            depends_on=[str(item) for item in depends_on if str(item).strip()]
+            if isinstance(depends_on, list)
+            else [],
+            search_lane=search_lane,
+            freshness_required=bool(data.get("freshness_required", False)),
         )
 
 
@@ -82,6 +102,12 @@ class SearchResult:
 
 
 @dataclass(slots=True)
+class PlannedQuery:
+    query: str
+    lane: SearchLane = SearchLane.WEB
+
+
+@dataclass(slots=True)
 class Document:
     url: str
     final_url: str
@@ -90,6 +116,7 @@ class Document:
     method: str
     retrieved_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     published_at: str | None = None
+    published_at_source: str | None = None
     content_type: str = "text/html"
     warnings: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
@@ -104,6 +131,7 @@ class Source:
     source_class: SourceClass
     retrieved_at: str
     published_at: str | None = None
+    published_at_source: str | None = None
     extraction_method: str = "http"
     warnings: list[str] = field(default_factory=list)
 
@@ -117,6 +145,8 @@ class Claim:
     excerpt: str
     confidence: float = 0.5
     stance: str = "supports"
+    value_kind: str | None = None
+    normalized_value: str | None = None
 
 
 @dataclass(slots=True)
@@ -154,6 +184,14 @@ class ResearchStats:
     evidence_model_failures: int = 0
     evidence_model_fallbacks: int = 0
     evidence_model_disabled: bool = False
+    reranker_model: str = ""
+    reranker_requests: int = 0
+    reranker_candidates: int = 0
+    reranker_failures: int = 0
+    reranker_disabled: bool = False
+    prefetch_started: int = 0
+    prefetch_unused: int = 0
+    followed_links_discovered: int = 0
 
 
 @dataclass(slots=True)

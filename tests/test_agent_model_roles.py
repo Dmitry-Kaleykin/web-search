@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock
 
 from web_research.agent import ResearchAgent
-from web_research.models import Document, Requirement, ResearchSpec, TaskType
+from web_research.models import Document, PlannedQuery, Requirement, ResearchSpec, TaskType
 
 
 class ResearchAgentModelRoleTests(unittest.IsolatedAsyncioTestCase):
@@ -33,7 +33,7 @@ class ResearchAgentModelRoleTests(unittest.IsolatedAsyncioTestCase):
         queries = await agent.plan_queries(spec)
         await agent.analyze_document(spec, document)
 
-        self.assertEqual(queries, ["planned query"])
+        self.assertEqual(queries, [PlannedQuery(query="planned query")])
         self.assertEqual(main_model.complete_json.await_count, 1)
         self.assertEqual(
             main_model.complete_json.await_args.kwargs["schema_name"], "search_queries"

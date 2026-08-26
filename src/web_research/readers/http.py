@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 from urllib.parse import urlsplit
 
+from ..dates import published_at_from_html
 from ..models import Document
 from ..safety.urls import (
     UnsafeUrlError,
@@ -121,6 +122,7 @@ class HTTPReader:
 
         html_text = response.content.decode(response.encoding or "utf-8", errors="replace")
         fallback_title, fallback_content, links = extract_html_fallback(html_text, current)
+        published_at, published_at_source = published_at_from_html(html_text)
         content, method, warnings = _extract_main_content(html_text, current, fallback_content)
         title = fallback_title or _title_from_url(current)
         if len(content) < 200:
@@ -132,7 +134,8 @@ class HTTPReader:
             title=title,
             content=content,
             method=method,
-            published_at=None,
+            published_at=published_at,
+            published_at_source=published_at_source,
             content_type=content_type or "text/html",
             warnings=warnings,
             links=links[:500],

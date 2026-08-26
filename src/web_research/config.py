@@ -59,6 +59,12 @@ class Settings:
     evidence_model_timeout_seconds: float = 90.0
     evidence_model_max_tokens: int = 1600
     evidence_model_temperature: float = 0.1
+    reranker_base_url: str = ""
+    reranker_model_id: str = ""
+    reranker_api_key: str = ""
+    reranker_timeout_seconds: float = 30.0
+    reranker_max_candidates: int = 24
+    prefetch_pages: int = 2
 
     @classmethod
     def from_env(cls, *, env_file: Path | None = None) -> Settings:
@@ -113,6 +119,16 @@ class Settings:
             evidence_model_temperature=_float_env(
                 environment, "WEB_SEARCH_EVIDENCE_MODEL_TEMPERATURE", 0.1
             ),
+            reranker_base_url=_string_env(
+                environment, "WEB_SEARCH_RERANKER_BASE_URL", model_base_url
+            ),
+            reranker_model_id=_string_env(environment, "WEB_SEARCH_RERANKER_MODEL_ID"),
+            reranker_api_key=_string_env(environment, "WEB_SEARCH_RERANKER_API_KEY", model_api_key),
+            reranker_timeout_seconds=_float_env(
+                environment, "WEB_SEARCH_RERANKER_TIMEOUT_SECONDS", 30.0
+            ),
+            reranker_max_candidates=_int_env(environment, "WEB_SEARCH_RERANKER_MAX_CANDIDATES", 24),
+            prefetch_pages=max(1, _int_env(environment, "WEB_SEARCH_PREFETCH_PAGES", 2)),
         )
 
 

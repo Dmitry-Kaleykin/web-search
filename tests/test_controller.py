@@ -9,8 +9,20 @@ from pathlib import Path
 
 from web_research.agent import ResearchAgent
 from web_research.config import Budget
-from web_research.controller import ResearchController
-from web_research.models import Document, SearchResult
+from web_research.controller import (
+    ResearchController,
+    _ActiveTimeBudget,
+    _linked_candidates,
+    _search_with_lane,
+)
+from web_research.models import (
+    Document,
+    Requirement,
+    ResearchSpec,
+    SearchLane,
+    SearchResult,
+    TaskType,
+)
 from web_research.storage import SQLiteStore
 
 
@@ -112,6 +124,21 @@ class SlowSearch(FakeSearch):
     async def search(self, *_args, **_kwargs):
         await asyncio.sleep(0.1)
         return await super().search(*_args, **_kwargs)
+
+
+class ConcurrentReader(FakeReader):
+    def __init__(self) -> None:
+        self.active = 0
+        self.maximum_active = 0
+
+    async def read(self, url):
+        self.active += 1
+        self.maximum_active = max(self.maximum_active, self.active)
+        try:
+            await asyncio.sleep(0.03)
+            return await super().read(url)
+        finally:
+            self.active -= 1
 
 
 class DateCapturingModel(FakeModel):
@@ -499,6 +526,88 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(result.stats.browsing_elapsed_ms, 25)
             self.assertTrue(any("TimeoutError" in warning for warning in result.warnings))
             store.close()
+
+    async def test_prefetch_overlaps_page_retrieval_without_parallel_model_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            reader = ConcurrentReader()
+            controller = ResearchController(
+                search=FakeSearch(),
+                reader=reader,
+                agent=ResearchAgent(FakeModel()),
+                store=store,
+                prefetch_pages=2,
+            )
+
+            result = await controller.run(
+                "What is the verified value?",
+                effort="auto",
+                freshness=None,
+                budget=Budget(20, 2, 3, 2, 1, 0.05),
+            )
+
+            self.assertEqual(reader.maximum_active, 2)
+            self.assertGreaterEqual(result.stats.prefetch_started, 2)
+            self.assertTrue(result.coverage.sufficient)
+            store.close()
+
+    async def test_empty_specialized_lane_retries_general_web_search(self) -> None:
+        class EmptyLaneSearch:
+            def __init__(self) -> None:
+                self.categories: list[str | None] = []
+
+            async def search(self, *_args, **kwargs):
+                category = kwargs.get("categories")
+                self.categories.append(category)
+                if category:
+                    return []
+                return [
+                    SearchResult(
+                        url="https://paper.example/result",
+                        title="Result",
+                        snippet="Relevant paper",
+                        rank=1,
+                    )
+                ]
+
+        search = EmptyLaneSearch()
+        results, fell_back = await _search_with_lane(
+            search,
+            _ActiveTimeBudget(1),
+            "relevant paper",
+            SearchLane.ACADEMIC,
+            None,
+            None,
+        )
+
+        self.assertTrue(fell_back)
+        self.assertEqual(search.categories, ["science", None])
+        self.assertEqual(len(results), 1)
+
+    def test_discovers_only_relevant_same_site_links(self) -> None:
+        document = Document(
+            url="https://docs.example/start",
+            final_url="https://docs.example/start",
+            title="Start",
+            content="Entry point",
+            method="fixture",
+            links=[
+                "https://docs.example/releases/version-4",
+                "https://docs.example/account/login",
+                "https://other.example/releases/version-4",
+            ],
+        )
+        spec = ResearchSpec(
+            original_query="What changed in version 4?",
+            task_type=TaskType.FACT,
+            requirements=[Requirement(id="R1", question="What changed in version 4?")],
+        )
+
+        candidates = _linked_candidates(document, spec, ["R1"], set())
+
+        self.assertEqual(
+            [item.url for item in candidates], ["https://docs.example/releases/version-4"]
+        )
 
 
 if __name__ == "__main__":

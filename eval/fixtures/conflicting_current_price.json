@@ -1,0 +1,72 @@
+{
+  "name": "conflicting current price remains unresolved",
+  "spec": {
+    "original_query": "What is the current price?",
+    "task_type": "current_event",
+    "requirements": [
+      {
+        "id": "R1",
+        "question": "What is the current price?",
+        "importance": "required",
+        "min_sources": 2,
+        "freshness_required": true
+      }
+    ]
+  },
+  "pages": [
+    {
+      "document": {
+        "url": "https://one.example/price",
+        "final_url": "https://one.example/price",
+        "title": "Price one",
+        "content": "The current price is $49.",
+        "method": "fixture",
+        "published_at": "2026-08-25"
+      },
+      "evidence": {
+        "source_class": "independent",
+        "claims": [
+          {
+            "requirement_id": "R1",
+            "statement": "The current price is $49.",
+            "excerpt": "The current price is $49.",
+            "confidence": 0.9,
+            "stance": "supports",
+            "value_kind": "price",
+            "normalized_value": "$49"
+          }
+        ]
+      }
+    },
+    {
+      "document": {
+        "url": "https://two.example/price",
+        "final_url": "https://two.example/price",
+        "title": "Price two",
+        "content": "The current price is $59.",
+        "method": "fixture",
+        "published_at": "2026-08-25"
+      },
+      "evidence": {
+        "source_class": "independent",
+        "claims": [
+          {
+            "requirement_id": "R1",
+            "statement": "The current price is $59.",
+            "excerpt": "The current price is $59.",
+            "confidence": 0.9,
+            "stance": "supports",
+            "value_kind": "price",
+            "normalized_value": "$59"
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "sufficient": false,
+    "unresolved_gaps": ["R1"],
+    "minimum_conflicts": 1,
+    "minimum_accepted_claims": 2
+  }
+}

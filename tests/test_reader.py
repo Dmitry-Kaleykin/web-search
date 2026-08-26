@@ -40,6 +40,33 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("verified value is 42", document.content)
         self.assertIn(document.method, {"http+trafilatura", "http+basic_html"})
 
+    async def test_reader_extracts_publication_date_with_provenance(self) -> None:
+        html = """
+        <html><head><title>Dated page</title>
+        <script type="application/ld+json">
+        {"@type":"NewsArticle","datePublished":"2026-08-25T12:30:00Z"}
+        </script></head><body><main><p>Substantive dated article content.</p></main></body></html>
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"Content-Type": "text/html"},
+                content=html.encode(),
+            )
+
+        reader = HTTPReader(allow_private_urls=True)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            document = await reader.read("http://127.0.0.1/dated")
+        finally:
+            await reader.close()
+
+        self.assertEqual(document.published_at, "2026-08-25T12:30:00+00:00")
+        self.assertEqual(document.published_at_source, "json_ld:datePublished")
+
     async def test_reader_enforces_response_size_limit(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, request=request, content=b"x" * 200)

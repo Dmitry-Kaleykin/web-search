@@ -23,6 +23,31 @@ The recommended stack is:
 
 This is a strong local-first stack. SearXNG + Crawl4AI alone is not sufficient because neither component owns cross-domain question decomposition, source diversity, claim-level evidence, or answerability.
 
+### Current implementation notes
+
+The running vertical slice now adds several measured refinements to this baseline:
+
+- An optional OpenAI-compatible native `POST /v1/rerank` client reranks each new SearXNG
+  batch. It can reuse a model already served for another local project, but has no runtime
+  dependency on that project. Invalid or unavailable reranker responses fall back to the lexical
+  ranker and trip a per-run failure circuit instead of failing research.
+- Search plans carry lanes (`web`, `academic`, `community`, and `documentation`). A lane maps to a
+  SearXNG category or query specialization, then retries general web search if that category has no
+  results.
+- Requirements can depend on other requirements and explicitly require fresh evidence. Publication
+  dates retain their extraction provenance, while undated pages cannot satisfy a freshness gate.
+- Structured values and opposing claim stances are checked across independent domains. Unresolved
+  contradictions block sufficiency and are reported to synthesis.
+- The controller follows a small number of relevant same-site links and speculatively starts the next
+  few page reads. Only network/browser reads overlap; model inference and evidence mutation stay
+  sequential for deterministic attribution and to avoid competing for local GPU bandwidth.
+- Bundled offline fixtures exercise conflicting and corroborated evidence through
+  `web-search-eval`. They are the seed of the larger calibration set described below.
+
+Evidence-model batching is deliberately excluded for now: it would raise attribution and local GPU
+contention risks without a measured latency win. PDF/visual-document handling also remains a later
+reader milestone.
+
 ## 2. System boundary
 
 Pi should see one high-level tool. The lower-level tools stay private to the research service.

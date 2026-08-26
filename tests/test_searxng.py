@@ -66,10 +66,20 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
             provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
             try:
                 first = await provider.search(
-                    "product facts", page=2, language="en", time_range="month", limit=5
+                    "product facts",
+                    page=2,
+                    language="en",
+                    time_range="month",
+                    categories="science",
+                    limit=5,
                 )
                 second = await provider.search(
-                    "product facts", page=2, language="en", time_range="month", limit=5
+                    "product facts",
+                    page=2,
+                    language="en",
+                    time_range="month",
+                    categories="science",
+                    limit=5,
                 )
             finally:
                 await provider.close()
@@ -80,6 +90,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[0].url.params["pageno"], "2")
         self.assertEqual(requests[0].url.params["language"], "en")
         self.assertEqual(requests[0].url.params["time_range"], "month")
+        self.assertEqual(requests[0].url.params["categories"], "science")
         self.assertEqual(len(first), 1)
         self.assertEqual(first[0].url, "https://example.com/item")
         self.assertEqual(first[0].engines, ["brave", "duckduckgo"])

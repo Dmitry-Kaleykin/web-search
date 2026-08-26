@@ -47,6 +47,7 @@ class EvidenceLedger:
             source_class=batch.source_class,
             retrieved_at=document.retrieved_at,
             published_at=document.published_at,
+            published_at_source=document.published_at_source,
             extraction_method=document.method,
             warnings=list(document.warnings),
         )
@@ -86,6 +87,8 @@ class EvidenceLedger:
                 excerpt=excerpt,
                 confidence=max(0.0, min(1.0, confidence)),
                 stance=stance,
+                value_kind=_optional_value(raw.get("value_kind")),
+                normalized_value=_optional_value(raw.get("normalized_value")),
             )
             self.claims.append(claim)
             added += 1
@@ -98,24 +101,54 @@ class EvidenceLedger:
             if claim.stance == "supports" and claim.confidence >= 0.45:
                 claims_by_requirement[claim.requirement_id].append(claim)
 
+        conflicts_by_requirement, conflict_messages = self._detect_conflicts(sources_by_id)
+        self.conflicts = conflict_messages
+        base_coverage: dict[str, tuple[bool, int, str]] = {}
+        for requirement in self.spec.requirements:
+            requirement_claims = claims_by_requirement[requirement.id]
+            if requirement.freshness_required:
+                requirement_claims = [
+                    claim
+                    for claim in requirement_claims
+                    if sources_by_id[claim.source_id].published_at is not None
+                ]
+            source_ids = {claim.source_id for claim in requirement_claims}
+            source_domains = {sources_by_id[source_id].domain for source_id in source_ids}
+            enough_sources = len(source_domains) >= requirement.min_sources
+            if requirement.id in conflicts_by_requirement:
+                reason = "materially conflicting evidence requires resolution"
+                covered = False
+            elif not enough_sources and requirement.freshness_required:
+                reason = (
+                    f"needs {requirement.min_sources} dated source(s); has {len(source_domains)}"
+                )
+                covered = False
+            elif not enough_sources:
+                reason = f"needs {requirement.min_sources} source(s); has {len(source_domains)}"
+                covered = False
+            else:
+                reason = "evidence rule satisfied"
+                covered = True
+            base_coverage[requirement.id] = (covered, len(source_domains), reason)
+
         items: list[CoverageItem] = []
         total_weight = 0.0
         covered_weight = 0.0
         unresolved: list[str] = []
         for requirement in self.spec.requirements:
-            requirement_claims = claims_by_requirement[requirement.id]
-            source_ids = {claim.source_id for claim in requirement_claims}
-            source_domains = {sources_by_id[source_id].domain for source_id in source_ids}
-            enough_sources = len(source_domains) >= requirement.min_sources
-            covered = enough_sources
-            if not enough_sources:
-                reason = f"needs {requirement.min_sources} source(s); has {len(source_domains)}"
-            else:
-                reason = "evidence rule satisfied"
+            covered, source_count, reason = base_coverage[requirement.id]
+            blocked = [
+                dependency
+                for dependency in requirement.depends_on
+                if not base_coverage.get(dependency, (False, 0, ""))[0]
+            ]
+            if blocked:
+                covered = False
+                reason = f"blocked by unresolved prerequisite(s): {', '.join(blocked)}"
             item = CoverageItem(
                 requirement_id=requirement.id,
                 covered=covered,
-                source_count=len(source_domains),
+                source_count=source_count,
                 reason=reason,
             )
             items.append(item)
@@ -132,8 +165,59 @@ class EvidenceLedger:
             sufficient=not unresolved,
             items=items,
             unresolved_gaps=unresolved,
-            conflicts=list(self.conflicts),
+            conflicts=conflict_messages,
         )
+
+    def _detect_conflicts(self, sources_by_id: dict[str, Source]) -> tuple[set[str], list[str]]:
+        by_requirement: dict[str, list[Claim]] = defaultdict(list)
+        for claim in self.claims:
+            if claim.confidence >= 0.45:
+                by_requirement[claim.requirement_id].append(claim)
+
+        conflicted: set[str] = set()
+        messages: list[str] = []
+        for requirement_id, claims in by_requirement.items():
+            supporting_domains = {
+                sources_by_id[claim.source_id].domain
+                for claim in claims
+                if claim.stance == "supports"
+            }
+            refuting_domains = {
+                sources_by_id[claim.source_id].domain
+                for claim in claims
+                if claim.stance == "refutes"
+            }
+            if supporting_domains and refuting_domains and supporting_domains != refuting_domains:
+                conflicted.add(requirement_id)
+                messages.append(
+                    f"{requirement_id}: supporting and refuting evidence comes from "
+                    "different domains"
+                )
+
+            values_by_kind: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+            for claim in claims:
+                if (
+                    claim.stance != "supports"
+                    or claim.value_kind is None
+                    or claim.normalized_value is None
+                ):
+                    continue
+                value_key = _comparable_value_key(claim.normalized_value)
+                values_by_kind[claim.value_kind.casefold()][value_key].add(
+                    sources_by_id[claim.source_id].domain
+                )
+            for value_kind, value_domains in values_by_kind.items():
+                if len(value_domains) < 2:
+                    continue
+                all_domains = set().union(*value_domains.values())
+                if len(all_domains) < 2:
+                    continue
+                conflicted.add(requirement_id)
+                values = ", ".join(sorted(value_domains))
+                messages.append(
+                    f"{requirement_id}: sources report conflicting {value_kind} values: {values}"
+                )
+        return conflicted, list(dict.fromkeys(messages))
 
     def evidence_summary(self, *, max_chars: int = 30_000) -> str:
         source_by_id = {item.id: item for item in self.sources}
@@ -143,7 +227,10 @@ class EvidenceLedger:
             source = source_by_id[claim.source_id]
             line = (
                 f"{claim.id} requirement={claim.requirement_id} source={claim.source_id} "
-                f"class={source.source_class} stance={claim.stance}\n"
+                f"class={source.source_class} stance={claim.stance} "
+                f"published_at={source.published_at or 'unknown'} "
+                f"value_kind={claim.value_kind or 'none'} "
+                f"normalized_value={claim.normalized_value or 'none'}\n"
                 f"Statement: {claim.statement}\nExcerpt: {claim.excerpt}\n"
             )
             if size + len(line) > max_chars:
@@ -165,7 +252,22 @@ def _claim_supported(statement: str, excerpt: str) -> bool:
     return statement_facts <= excerpt_facts
 
 
+def _comparable_value_key(value: str) -> str:
+    """Prefer conservative numeric comparison over formatting-sensitive text equality."""
+    numeric_parts = re.findall(r"\d+(?:[.,:/+-]\d+)*", value.casefold())
+    if numeric_parts:
+        return "|".join(part.replace(",", "") for part in numeric_parts)
+    return compact_text(value).casefold()
+
+
 def _importance_weight(importance: Importance) -> float:
     return {Importance.REQUIRED: 3.0, Importance.IMPORTANT: 1.5, Importance.OPTIONAL: 0.5}[
         importance
     ]
+
+
+def _optional_value(value: object) -> str | None:
+    if value is None:
+        return None
+    text = compact_text(str(value))
+    return text[:200] or None

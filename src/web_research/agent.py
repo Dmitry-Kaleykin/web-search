@@ -10,8 +10,10 @@ from .model.base import ResearchModel
 from .models import (
     Document,
     Importance,
+    PlannedQuery,
     Requirement,
     ResearchSpec,
+    SearchLane,
     SourceClass,
     TaskType,
 )
@@ -82,8 +84,21 @@ class ResearchAgent:
                 if isinstance(item, dict)
             ]
         requirements = [item for item in requirements if item.question][:30]
+        valid_ids = {item.id for item in requirements}
+        for item in requirements:
+            item.depends_on = [
+                dependency
+                for dependency in item.depends_on
+                if dependency in valid_ids and dependency != item.id
+            ]
         if not requirements:
             requirements = heuristic_spec(query, freshness).requirements
+        if (task_type == TaskType.CURRENT_EVENT or freshness) and not any(
+            item.freshness_required for item in requirements
+        ):
+            for item in requirements:
+                if item.importance == Importance.REQUIRED:
+                    item.freshness_required = True
         subjects = data.get("subjects")
         return ResearchSpec(
             original_query=query,
@@ -97,7 +112,9 @@ class ResearchAgent:
             freshness=freshness,
         )
 
-    async def plan_queries(self, spec: ResearchSpec, gaps: list[str] | None = None) -> list[str]:
+    async def plan_queries(
+        self, spec: ResearchSpec, gaps: list[str] | None = None
+    ) -> list[PlannedQuery]:
         data = await self.model.complete_json(
             system=QUERY_SYSTEM,
             user=query_user(spec, gaps, self.current_date),
@@ -107,14 +124,20 @@ class ResearchAgent:
         raw = data.get("queries")
         if not isinstance(raw, list):
             return []
-        return _unique_queries([str(item) for item in raw])[:8]
+        return _planned_queries(raw)[:8]
 
     async def analyze_document(self, spec: ResearchSpec, document: Document) -> EvidenceBatch:
         content = _select_relevant_content(spec, document.content)
         data = await self.evidence_model.complete_json(
             system=EVIDENCE_SYSTEM,
             user=evidence_user(
-                spec, document.final_url, document.title, content, self.current_date
+                spec,
+                document.final_url,
+                document.title,
+                content,
+                self.current_date,
+                document.published_at,
+                document.published_at_source,
             ),
             schema_name="source_evidence",
             schema=EVIDENCE_SCHEMA,
@@ -196,6 +219,7 @@ def heuristic_spec(query: str, freshness: str | None) -> ResearchSpec:
         question=query,
         importance=Importance.REQUIRED,
         min_sources=min_sources,
+        freshness_required=task_type == TaskType.CURRENT_EVENT,
     )
     return ResearchSpec(
         original_query=query,
@@ -286,6 +310,28 @@ def _unique_queries(values: list[str]) -> list[str]:
         if normalized and key not in seen:
             result.append(normalized)
             seen.add(key)
+    return result
+
+
+def _planned_queries(values: list[Any]) -> list[PlannedQuery]:
+    result: list[PlannedQuery] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, dict):
+            query = " ".join(str(value.get("query") or "").split()).strip()
+            lane_value = str(value.get("lane") or "web")
+        else:
+            query = " ".join(str(value).split()).strip()
+            lane_value = "web"
+        key = query.casefold()
+        if not query or key in seen:
+            continue
+        try:
+            lane = SearchLane(lane_value)
+        except ValueError:
+            lane = SearchLane.WEB
+        result.append(PlannedQuery(query=query, lane=lane))
+        seen.add(key)
     return result
 
 

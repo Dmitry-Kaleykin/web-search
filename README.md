@@ -41,6 +41,7 @@ The first launch installs the console's small Node.js dependency set. Inside the
 - Run the full readiness doctor and follow SearXNG logs.
 - Select or disable a dedicated evidence model from every model exposed by the configured local
   OpenAI-compatible endpoint.
+- See whether the optional semantic reranker is reachable; failures retain deterministic ranking.
 
 The console does not replace or modify Pi. Pi continues to launch the single MCP server over stdio
 when it needs `web_search`; the console is only an operator interface for installation and local
@@ -127,6 +128,9 @@ Important settings:
 | `WEB_SEARCH_EVIDENCE_MODEL_BASE_URL` | saved endpoint or model base URL | Override the dedicated evidence-model API base |
 | `WEB_SEARCH_EVIDENCE_MODEL_ID` | saved selection or none | Override the dedicated evidence model selected in the terminal UI |
 | `WEB_SEARCH_EVIDENCE_MODEL_MAX_TOKENS` | `1600` | Maximum output for page-evidence extraction |
+| `WEB_SEARCH_RERANKER_MODEL_ID` | none | Optional model served through native `POST /v1/rerank` |
+| `WEB_SEARCH_RERANKER_BASE_URL` | model base URL | Reranker endpoint; compatible with oMLX and Cohere/Jina-style APIs |
+| `WEB_SEARCH_PREFETCH_PAGES` | `2` | Concurrent page retrieval window; model inference remains sequential |
 | `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
 | `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
 | `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Permit hostname-only `198.18.0.0/15` answers from a local TUN proxy |
@@ -210,6 +214,16 @@ Canceled calls are finalized in the run ledger with a `cancelled` event at any c
 The test suite is offline. It exercises the controller, evidence rules, citations, reader byte bounds,
 URL safety, SearXNG, MCP sampling and direct model-server adapters, Crawl4AI failure handling, and
 the MCP tool schema without requiring live SearXNG or model services.
+
+Replay the bundled deterministic evidence fixtures after changing prompts, coverage rules, or
+retrieval behavior:
+
+```bash
+.venv/bin/web-search-eval
+```
+
+The replay reports accepted claims, requirement coverage, unresolved gaps, and conflicts without
+depending on live search results.
 
 ## Security defaults
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 from typing import Any
 
+from ..dates import normalize_published_at
 from ..models import SearchResult
 from ..safety.urls import canonicalize_url
 from ..storage import SQLiteStore
@@ -45,9 +46,10 @@ class SearXNGSearchProvider:
         page: int = 1,
         language: str | None = None,
         time_range: str | None = None,
+        categories: str | None = None,
         limit: int = 10,
     ) -> list[SearchResult]:
-        cache_key = _cache_key(query, page, language, time_range, limit)
+        cache_key = _cache_key(query, page, language, time_range, categories, limit)
         if self.store:
             cached = self.store.get_search(cache_key, self.cache_ttl_seconds)
             if cached is not None:
@@ -63,6 +65,8 @@ class SearXNGSearchProvider:
         normalized_range = _normalize_time_range(time_range)
         if normalized_range:
             params["time_range"] = normalized_range
+        if categories:
+            params["categories"] = categories
 
         try:
             response = await self._client.get(f"{self.base_url}/search", params=params)
@@ -116,10 +120,16 @@ class SearXNGSearchProvider:
 
 
 def _cache_key(
-    query: str, page: int, language: str | None, time_range: str | None, limit: int
+    query: str,
+    page: int,
+    language: str | None,
+    time_range: str | None,
+    categories: str | None,
+    limit: int,
 ) -> str:
     value = json.dumps(
-        [query.strip(), page, language or "", time_range or "", limit], ensure_ascii=False
+        [query.strip(), page, language or "", time_range or "", categories or "", limit],
+        ensure_ascii=False,
     )
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -135,5 +145,5 @@ def _published_at(item: dict[str, Any]) -> str | None:
     for key in ("publishedDate", "published_at", "date"):
         value = item.get(key)
         if value:
-            return str(value)
+            return normalize_published_at(value)
     return None

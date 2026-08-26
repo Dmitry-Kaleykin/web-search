@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 from urllib.parse import urlsplit
 
+from ..dates import normalize_published_at
 from ..models import Document
 from ..safety.urls import canonicalize_url, validate_public_url
 from ..storage import SQLiteStore
@@ -71,6 +72,9 @@ class Crawl4AIReader:
             content=markdown.strip(),
             method="crawl4ai+chromium",
             published_at=_metadata_date(result.metadata or {}),
+            published_at_source="crawl4ai_metadata"
+            if _metadata_date(result.metadata or {})
+            else None,
             content_type="text/html",
             warnings=warnings,
             links=_result_links(result.links),
@@ -191,7 +195,7 @@ def _metadata_date(metadata: dict[str, Any]) -> str | None:
     for key in ("date", "published_time", "article:published_time"):
         value = metadata.get(key)
         if value:
-            return str(value)
+            return normalize_published_at(value)
     return None
 
 

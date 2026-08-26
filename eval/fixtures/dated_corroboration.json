@@ -1,0 +1,70 @@
+{
+  "name": "dated corroboration satisfies freshness",
+  "spec": {
+    "original_query": "What was released recently?",
+    "task_type": "current_event",
+    "requirements": [
+      {
+        "id": "R1",
+        "question": "What was released recently?",
+        "importance": "required",
+        "min_sources": 2,
+        "freshness_required": true
+      }
+    ]
+  },
+  "pages": [
+    {
+      "document": {
+        "url": "https://one.example/release",
+        "final_url": "https://one.example/release",
+        "title": "Release one",
+        "content": "Version 4 was released on August 25, 2026.",
+        "method": "fixture",
+        "published_at": "2026-08-25"
+      },
+      "evidence": {
+        "source_class": "news",
+        "claims": [
+          {
+            "requirement_id": "R1",
+            "statement": "Version 4 was released on August 25, 2026.",
+            "excerpt": "Version 4 was released on August 25, 2026.",
+            "confidence": 0.9,
+            "stance": "supports",
+            "value_kind": "version",
+            "normalized_value": "4"
+          }
+        ]
+      }
+    },
+    {
+      "document": {
+        "url": "https://two.example/release",
+        "final_url": "https://two.example/release",
+        "title": "Release two",
+        "content": "The team released version 4 on August 25, 2026.",
+        "method": "fixture",
+        "published_at": "2026-08-25"
+      },
+      "evidence": {
+        "source_class": "independent",
+        "claims": [
+          {
+            "requirement_id": "R1",
+            "statement": "The team released version 4 on August 25, 2026.",
+            "excerpt": "The team released version 4 on August 25, 2026.",
+            "confidence": 0.9,
+            "stance": "supports",
+            "value_kind": "version",
+            "normalized_value": "4"
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "sufficient": true,
+    "minimum_accepted_claims": 2
+  }
+}

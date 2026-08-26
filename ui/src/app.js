@@ -26,6 +26,7 @@ const PIP = path.join(PROJECT_DIR, ".venv", "bin", "python");
 const CRAWL4AI_SETUP = path.join(PROJECT_DIR, ".venv", "bin", "crawl4ai-setup");
 const MCP_SERVER = path.join(PROJECT_DIR, ".venv", "bin", "web-search-mcp");
 const DOCTOR = path.join(PROJECT_DIR, ".venv", "bin", "web-search-doctor");
+const EVALUATOR = path.join(PROJECT_DIR, ".venv", "bin", "web-search-eval");
 const CONFIG_FILENAME = "config.json";
 
 const ansi = {
@@ -67,6 +68,11 @@ const actions = [
     value: "evidence-model",
     label: "Configure evidence model",
     description: "Select a dedicated page-analysis model from the local endpoint",
+  },
+  {
+    value: "evaluation",
+    label: "Run offline evaluation",
+    description: "Replay deterministic coverage, freshness, and conflict fixtures",
   },
   {
     value: "logs",
@@ -280,6 +286,11 @@ function modelHeaders(environment) {
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
 }
 
+function rerankerHeaders(environment) {
+  const apiKey = environment.WEB_SEARCH_RERANKER_API_KEY || environment.WEB_SEARCH_MODEL_API_KEY || "";
+  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+}
+
 async function fetchOk(url, timeoutMs = 3500, headers = {}) {
   try {
     const response = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
@@ -331,6 +342,22 @@ async function refreshStatus() {
       : [];
     helper = { ...response, available: ids.includes(helperId) };
   }
+  const rerankerId = environment.WEB_SEARCH_RERANKER_MODEL_ID || "";
+  const rerankerBase = (
+    environment.WEB_SEARCH_RERANKER_BASE_URL ||
+    environment.WEB_SEARCH_MODEL_BASE_URL ||
+    "http://127.0.0.1:8000/v1"
+  ).replace(/\/$/, "");
+  let reranker = { ok: true, available: false };
+  if (rerankerId) {
+    const response = await fetchOk(`${rerankerBase}/models`, 3500, rerankerHeaders(environment));
+    const ids = Array.isArray(response.json?.data)
+      ? response.json.data
+          .filter((item) => item && typeof item === "object" && typeof item.id === "string")
+          .map((item) => item.id)
+      : [];
+    reranker = { ...response, available: ids.includes(rerankerId) };
+  }
   const pythonReady = await exists(PYTHON, true);
   const mcpReady = await exists(MCP_SERVER, true);
   const browserReady = await exists(BROWSER_DIR);
@@ -369,6 +396,15 @@ async function refreshStatus() {
             ? `${helperId} reachable`
             : `${helperId} unavailable; Pi model fallback remains active`
           : "Pi active model; no dedicated model selected",
+      ),
+      statusLine(
+        !rerankerId || (reranker.ok && reranker.available),
+        "Reranker",
+        rerankerId
+          ? reranker.ok && reranker.available
+            ? `${rerankerId} reachable`
+            : `${rerankerId} unavailable; lexical ranking remains active`
+          : "disabled; deterministic lexical ranking",
       ),
       statusLine(browserReady, "Chromium", browserReady ? "runtime installed" : "runtime missing"),
       statusLine(
@@ -546,6 +582,13 @@ async function runDoctor() {
   });
 }
 
+async function runEvaluation() {
+  if (!(await exists(EVALUATOR, true))) {
+    throw new Error("The evaluator is not installed yet. Run Install / update first.");
+  }
+  await run(EVALUATOR, [], { allowFailure: true });
+}
+
 function startLogs() {
   if (logChild) return;
   appendLog("docker compose logs --tail 100 --follow", "command");
@@ -601,6 +644,8 @@ async function performAction(value) {
       await runDoctor();
     } else if (value === "evidence-model") {
       await configureEvidenceModel();
+    } else if (value === "evaluation") {
+      await runEvaluation();
     } else if (value === "refresh") {
       await refreshStatus();
     }

@@ -12,6 +12,7 @@ def rank_candidates(
     spec: ResearchSpec,
     uncovered_requirement_ids: list[str],
     domain_counts: Counter[str],
+    semantic_scores: dict[str, float] | None = None,
 ) -> list[tuple[float, SearchResult]]:
     uncovered = [
         item for item in spec.requirements if item.id in set(uncovered_requirement_ids)
@@ -27,6 +28,16 @@ def rank_candidates(
         engine_bonus = min(0.15, 0.03 * len(set(candidate.engines)))
         domain = registrable_domain(candidate.url)
         diversity = 1.0 / (1.0 + domain_counts[domain])
-        score = 0.58 * relevance + 0.18 * result_rank + 0.16 * diversity + engine_bonus
+        if semantic_scores is None or candidate.url not in semantic_scores:
+            score = 0.58 * relevance + 0.18 * result_rank + 0.16 * diversity + engine_bonus
+        else:
+            semantic = max(0.0, min(1.0, semantic_scores[candidate.url]))
+            score = (
+                0.46 * semantic
+                + 0.32 * relevance
+                + 0.1 * result_rank
+                + 0.08 * diversity
+                + min(0.04, engine_bonus)
+            )
         ranked.append((score, candidate))
     return sorted(ranked, key=lambda item: item[0], reverse=True)

@@ -128,6 +128,22 @@ class SavedConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.evidence_model_api_key, "process-secret")
         self.assertEqual(settings.log_level, "WARNING")
 
+    def test_reranker_inherits_local_endpoint_and_authentication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text(
+                "WEB_SEARCH_MODEL_BASE_URL=http://omlx.test/v1\n"
+                "WEB_SEARCH_MODEL_API_KEY=local-token\n"
+                "WEB_SEARCH_RERANKER_MODEL_ID=reranker\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"WEB_SEARCH_DATA_DIR": directory}, clear=True):
+                settings = Settings.from_env(env_file=env_file)
+
+        self.assertEqual(settings.reranker_base_url, "http://omlx.test/v1")
+        self.assertEqual(settings.reranker_api_key, "local-token")
+        self.assertEqual(settings.reranker_model_id, "reranker")
+
 
 if __name__ == "__main__":
     unittest.main()

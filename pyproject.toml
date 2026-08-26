@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 web-search-mcp = "web_research.server:main"
 web-search-doctor = "web_research.cli:doctor_main"
+web-search-eval = "web_research.evaluation:evaluation_main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

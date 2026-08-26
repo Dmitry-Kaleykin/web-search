@@ -197,6 +197,159 @@ class EvidenceLedgerTests(unittest.TestCase):
         self.assertEqual(source.source_class, SourceClass.PRIMARY)
         self.assertTrue(ledger.coverage().sufficient)
 
+    def test_conflicting_structured_values_block_required_coverage(self) -> None:
+        spec = ResearchSpec(
+            original_query="What is the current price?",
+            task_type=TaskType.CURRENT_EVENT,
+            requirements=[Requirement(id="R1", question="What is the price?", min_sources=2)],
+        )
+        ledger = EvidenceLedger(spec)
+        for domain, value in (("one.example", "$49"), ("two.example", "$59")):
+            document = Document(
+                url=f"https://{domain}/price",
+                final_url=f"https://{domain}/price",
+                title="Price",
+                content=f"The current price is {value}.",
+                method="http",
+            )
+            ledger.add_document(
+                document,
+                EvidenceBatch(
+                    SourceClass.INDEPENDENT,
+                    [
+                        {
+                            "requirement_id": "R1",
+                            "statement": f"The current price is {value}.",
+                            "excerpt": f"The current price is {value}.",
+                            "confidence": 0.9,
+                            "stance": "supports",
+                            "value_kind": "price",
+                            "normalized_value": value,
+                        }
+                    ],
+                ),
+            )
+
+        coverage = ledger.coverage()
+        self.assertFalse(coverage.sufficient)
+        self.assertFalse(coverage.items[0].covered)
+        self.assertIn("conflicting price values", coverage.conflicts[0])
+
+    def test_equivalent_structured_value_formatting_does_not_create_conflict(self) -> None:
+        spec = ResearchSpec(
+            original_query="What is the current price?",
+            task_type=TaskType.CURRENT_EVENT,
+            requirements=[Requirement(id="R1", question="What is the price?", min_sources=2)],
+        )
+        ledger = EvidenceLedger(spec)
+        for domain, shown, normalized in (
+            ("one.example", "$49", "$49"),
+            ("two.example", "49 USD", "49 USD"),
+        ):
+            document = Document(
+                url=f"https://{domain}/price",
+                final_url=f"https://{domain}/price",
+                title="Price",
+                content=f"The current price is {shown}.",
+                method="http",
+            )
+            ledger.add_document(
+                document,
+                EvidenceBatch(
+                    SourceClass.INDEPENDENT,
+                    [
+                        {
+                            "requirement_id": "R1",
+                            "statement": f"The current price is {shown}.",
+                            "excerpt": f"The current price is {shown}.",
+                            "confidence": 0.9,
+                            "stance": "supports",
+                            "value_kind": "price",
+                            "normalized_value": normalized,
+                        }
+                    ],
+                ),
+            )
+
+        coverage = ledger.coverage()
+        self.assertTrue(coverage.sufficient)
+        self.assertEqual(coverage.conflicts, [])
+
+    def test_fresh_requirement_counts_only_dated_sources(self) -> None:
+        spec = ResearchSpec(
+            original_query="What is the latest release?",
+            task_type=TaskType.CURRENT_EVENT,
+            requirements=[
+                Requirement(
+                    id="R1",
+                    question="What is the latest release?",
+                    freshness_required=True,
+                )
+            ],
+        )
+        ledger = EvidenceLedger(spec)
+        document = Document(
+            url="https://news.example/release",
+            final_url="https://news.example/release",
+            title="Release",
+            content="Version 4 was released.",
+            method="http",
+        )
+        ledger.add_document(
+            document,
+            EvidenceBatch(
+                SourceClass.NEWS,
+                [
+                    {
+                        "requirement_id": "R1",
+                        "statement": "Version 4 was released.",
+                        "excerpt": "Version 4 was released.",
+                        "confidence": 0.9,
+                        "stance": "supports",
+                    }
+                ],
+            ),
+        )
+        self.assertFalse(ledger.coverage().sufficient)
+        ledger.sources[0].published_at = "2026-08-25"
+        self.assertTrue(ledger.coverage().sufficient)
+
+    def test_requirement_dependency_blocks_downstream_coverage(self) -> None:
+        spec = ResearchSpec(
+            original_query="Find a dependent fact",
+            task_type=TaskType.EXPLORATION,
+            requirements=[
+                Requirement(id="R1", question="Which entity?"),
+                Requirement(id="R2", question="What did it release?", depends_on=["R1"]),
+            ],
+        )
+        ledger = EvidenceLedger(spec)
+        document = Document(
+            url="https://two.example/release",
+            final_url="https://two.example/release",
+            title="Release",
+            content="The entity released version 4.",
+            method="http",
+        )
+        ledger.add_document(
+            document,
+            EvidenceBatch(
+                SourceClass.NEWS,
+                [
+                    {
+                        "requirement_id": "R2",
+                        "statement": "The entity released version 4.",
+                        "excerpt": "The entity released version 4.",
+                        "confidence": 0.9,
+                        "stance": "supports",
+                    }
+                ],
+            ),
+        )
+        coverage = ledger.coverage()
+        self.assertFalse(coverage.items[1].covered)
+        self.assertIn("R1", coverage.items[1].reason)
+
 
 if __name__ == "__main__":
     unittest.main()
