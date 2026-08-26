@@ -428,6 +428,7 @@ class ResearchController:
                     },
                 )
 
+                previous_conflicts = set(coverage.conflicts)
                 coverage = ledger.coverage()
                 if not coverage.sufficient:
                     linked_candidates = _linked_candidates(
@@ -446,8 +447,15 @@ class ResearchController:
                     sufficient_streak = 0
                 await callback(
                     _progress(stats, coverage.score, budget),
-                    f"Coverage {coverage.score:.0%}; "
-                    f"{len(coverage.unresolved_gaps)} required gap(s) remain",
+                    _evidence_checkpoint(
+                        ledger,
+                        source.domain,
+                        claims_added,
+                        coverage.score,
+                        coverage.unresolved_gaps,
+                        previous_conflicts,
+                        coverage.conflicts,
+                    ),
                 )
 
                 if analysis_hit_deadline:
@@ -577,6 +585,38 @@ class ResearchController:
 def _progress(stats: ResearchStats, coverage_score: float, budget: Budget) -> float:
     budget_fraction = stats.pages_fetched / max(1, budget.max_pages)
     return min(0.9, 0.08 + 0.42 * budget_fraction + 0.4 * coverage_score)
+
+
+def _evidence_checkpoint(
+    ledger: EvidenceLedger,
+    domain: str,
+    claims_added: int,
+    coverage_score: float,
+    unresolved_gaps: list[str],
+    previous_conflicts: set[str],
+    conflicts: list[str],
+) -> str:
+    new_conflicts = [item for item in conflicts if item not in previous_conflicts]
+    if new_conflicts:
+        summary = f"Conflict detected: {_short_progress_text(new_conflicts[0], 150)}"
+    elif claims_added:
+        latest = ledger.claims[-claims_added:]
+        statement = latest[0].statement if latest else "New supporting evidence"
+        extra = f" (+{claims_added - 1} more)" if claims_added > 1 else ""
+        summary = f"Found: {_short_progress_text(statement, 145)}{extra} [{domain}]"
+    else:
+        summary = f"No usable new evidence from {domain}"
+    return (
+        f"{summary}\nCoverage {coverage_score:.0%}; "
+        f"{len(unresolved_gaps)} required gap(s) remain"
+    )
+
+
+def _short_progress_text(value: str, limit: int) -> str:
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(1, limit - 1)].rstrip()}…"
 
 
 def _rerank_query(spec, unresolved_requirement_ids: list[str]) -> str:

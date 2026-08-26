@@ -474,6 +474,10 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.stats.distinct_domains, 2)
             self.assertIn("[S1]", result.answer_markdown)
             self.assertTrue(updates)
+            evidence_updates = [message for _, message in updates if message.startswith("Found:")]
+            self.assertTrue(evidence_updates)
+            self.assertIn("The verified value is 42.", evidence_updates[0])
+            self.assertIn("\nCoverage ", evidence_updates[0])
             store.close()
 
     async def test_model_latency_does_not_consume_browsing_budget(self) -> None:

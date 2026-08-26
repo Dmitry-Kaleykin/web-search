@@ -16,7 +16,7 @@ This repository currently implements the first vertical slice from [ARCHITECTURE
 - Expected-information-gain candidate ranking.
 - Adaptive stopping with hard safety ceilings.
 - Citation-ID validation and deterministic source lists.
-- SQLite traces/cache, MCP progress, and cooperative cancellation.
+- SQLite traces/cache, MCP progress with compact evidence summaries, and cooperative cancellation.
 
 Interactive Playwright actions, PDF/Docling, OCR, and MCP Tasks remain later milestones. Unsupported
 or blocked pages are reported rather than silently treated as evidence.
