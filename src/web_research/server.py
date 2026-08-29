@@ -116,6 +116,8 @@ class ToolStats(BaseModel):
     reranker_candidates: int
     reranker_failures: int
     reranker_disabled: bool
+    candidates_rejected_irrelevant: int
+    relevance_batches_rejected: int
     prefetch_started: int
     prefetch_unused: int
     followed_links_discovered: int
@@ -235,6 +237,9 @@ async def web_search(
         store=store,
         reranker=reranker,
         prefetch_pages=settings.prefetch_pages,
+        reranker_min_relevance_score=settings.reranker_min_relevance_score,
+        reranker_relative_relevance_ratio=settings.reranker_relative_relevance_ratio,
+        lexical_min_relevance_score=settings.lexical_min_relevance_score,
     )
 
     async def report(value: float, message: str) -> None:
@@ -269,6 +274,11 @@ async def web_search(
                     result.stats.reranker_failures,
                     result.stats.reranker_disabled,
                 )
+            LOGGER.info(
+                "Relevance gate: rejected_candidates=%d rejected_batches=%d",
+                result.stats.candidates_rejected_irrelevant,
+                result.stats.relevance_batches_rejected,
+            )
             return WebSearchOutput.model_validate(result.as_dict())
         finally:
             RUN_GATE.finish()

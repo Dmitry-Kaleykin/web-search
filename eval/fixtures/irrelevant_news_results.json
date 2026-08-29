@@ -1,0 +1,45 @@
+{
+  "name": "irrelevant news is rejected before reading",
+  "spec": {
+    "original_query": "Which VPN protocols have compatibility problems?",
+    "task_type": "fact",
+    "requirements": [
+      {
+        "id": "R1",
+        "question": "Which VPN protocols have compatibility problems?",
+        "importance": "required",
+        "min_sources": 1
+      }
+    ]
+  },
+  "pages": [],
+  "candidate_gate": {
+    "search_query": "VPN protocol incompatibilities",
+    "semantic_scores": {
+      "https://nytimes.example/city/article": 0.002,
+      "https://vpn.example/protocol-compatibility": 0.91
+    },
+    "candidates": [
+      {
+        "url": "https://nytimes.example/city/article",
+        "title": "New York culture and dining",
+        "snippet": "City reporting, restaurants and weekend events",
+        "rank": 1
+      },
+      {
+        "url": "https://vpn.example/protocol-compatibility",
+        "title": "VPN protocol compatibility matrix",
+        "snippet": "Known WireGuard and OpenVPN incompatibilities",
+        "rank": 2
+      }
+    ]
+  },
+  "expected": {
+    "accepted_candidate_urls": [
+      "https://vpn.example/protocol-compatibility"
+    ],
+    "rejected_candidate_urls": [
+      "https://nytimes.example/city/article"
+    ]
+  }
+}

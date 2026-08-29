@@ -31,6 +31,10 @@ The running vertical slice now adds several measured refinements to this baselin
   batch. It can reuse a model already served for another local project, but has no runtime
   dependency on that project. Invalid or unavailable reranker responses fall back to the lexical
   ranker and trip a per-run failure circuit instead of failing research.
+- Reranker relevance is also an eligibility gate before page prefetch. Raw semantic relevance—not
+  blended SERP rank or diversity bonuses—decides whether a result may consume a page read. Empty
+  eligible batches trigger gap-specific query refinement, progressively relaxed floors, and only
+  eventually a single low-confidence probe to retain obscure-source recall.
 - Search plans carry lanes (`web`, `academic`, `community`, and `documentation`). A lane maps to a
   SearXNG category or query specialization, then retries general web search if that category has no
   results.

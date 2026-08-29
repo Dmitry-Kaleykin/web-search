@@ -124,6 +124,8 @@ def _parse_scores(payload: Any, candidates: list[SearchResult]) -> dict[str, flo
             or not isinstance(score, (int, float))
             or isinstance(score, bool)
             or not math.isfinite(score)
+            or score < 0
+            or score > 1
         ):
             raise RerankingError("Reranker returned invalid candidate scores")
         seen_indexes.add(index)

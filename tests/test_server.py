@@ -62,6 +62,8 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("evidence_model_successes", stats_schema)
         self.assertIn("evidence_model_fallbacks", stats_schema)
         self.assertIn("reranker_requests", stats_schema)
+        self.assertIn("candidates_rejected_irrelevant", stats_schema)
+        self.assertIn("relevance_batches_rejected", stats_schema)
         self.assertIn("prefetch_started", stats_schema)
         self.assertIn("Never add a calendar year", tool.description)
         self.assertIn("do not invoke web_search in parallel", tool.description)

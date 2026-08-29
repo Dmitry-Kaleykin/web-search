@@ -23,6 +23,7 @@ from web_research.models import (
     SearchResult,
     TaskType,
 )
+from web_research.reranking import RerankerUsage
 from web_research.storage import SQLiteStore
 
 
@@ -555,6 +556,88 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.coverage.sufficient)
             store.close()
 
+    async def test_relevance_gate_rejects_noise_before_prefetch(self) -> None:
+        class NoisySearch:
+            async def search(self, *_args, **_kwargs):
+                return [
+                    SearchResult(
+                        url="https://nytimes.example/city/article",
+                        title="New York culture and dining",
+                        snippet="City reporting and restaurant news",
+                        rank=1,
+                    ),
+                    SearchResult(
+                        url="https://one.example/value",
+                        title="First verification",
+                        snippet="verified value 42",
+                        rank=2,
+                    ),
+                    SearchResult(
+                        url="https://two.example/value",
+                        title="Second verification",
+                        snippet="verified value 42",
+                        rank=3,
+                    ),
+                ]
+
+        class RecordingReader(FakeReader):
+            def __init__(self) -> None:
+                self.urls: list[str] = []
+
+            async def read(self, url):
+                self.urls.append(url)
+                return await super().read(url)
+
+        class FixedReranker:
+            model = "fixture-reranker"
+
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+                self.candidates = 0
+
+            async def rerank(self, query, candidates):
+                self.queries.append(query)
+                self.candidates += len(candidates)
+                return {item.url: 0.001 if "nytimes" in item.url else 0.9 for item in candidates}
+
+            def usage(self):
+                return RerankerUsage(1, self.candidates, 0, False)
+
+            async def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            reader = RecordingReader()
+            reranker = FixedReranker()
+            updates: list[str] = []
+
+            async def progress(_value, message):
+                updates.append(message)
+
+            controller = ResearchController(
+                search=NoisySearch(),
+                reader=reader,
+                agent=ResearchAgent(FakeModel()),
+                store=store,
+                reranker=reranker,
+                prefetch_pages=3,
+            )
+            result = await controller.run(
+                "What is the verified value?",
+                effort="auto",
+                freshness=None,
+                budget=Budget(20, 2, 3, 2, 1, 0.05),
+                progress=progress,
+            )
+
+            self.assertTrue(result.coverage.sufficient)
+            self.assertNotIn("https://nytimes.example/city/article", reader.urls)
+            self.assertEqual(result.stats.candidates_rejected_irrelevant, 1)
+            self.assertTrue(any("Skipped 1 low-relevance" in item for item in updates))
+            self.assertIn("Search target: verified example value", reranker.queries[0])
+            store.close()
+
     async def test_empty_specialized_lane_retries_general_web_search(self) -> None:
         class EmptyLaneSearch:
             def __init__(self) -> None:
@@ -587,6 +670,74 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fell_back)
         self.assertEqual(search.categories, ["science", None])
         self.assertEqual(len(results), 1)
+
+    async def test_fully_rejected_batch_triggers_a_refined_query(self) -> None:
+        class RejectThenUsefulSearch:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def search(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return [
+                        SearchResult(
+                            url="https://nytimes.example/city/article",
+                            title="New York culture and dining",
+                            snippet="City reporting and restaurant news",
+                            rank=1,
+                        )
+                    ]
+                return [
+                    SearchResult(
+                        url=f"https://source{index}.example/value",
+                        title="Value verification",
+                        snippet="verified value 42",
+                        rank=index,
+                    )
+                    for index in (1, 2)
+                ]
+
+        class QueryReranker:
+            model = "fixture-reranker"
+
+            def __init__(self) -> None:
+                self.requests = 0
+                self.candidates = 0
+
+            async def rerank(self, _query, candidates):
+                self.requests += 1
+                self.candidates += len(candidates)
+                return {item.url: 0.001 if "nytimes" in item.url else 0.9 for item in candidates}
+
+            def usage(self):
+                return RerankerUsage(self.requests, self.candidates, 0, False)
+
+            async def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            search = RejectThenUsefulSearch()
+            controller = ResearchController(
+                search=search,
+                reader=FakeReader(),
+                agent=ResearchAgent(FakeModel()),
+                store=store,
+                reranker=QueryReranker(),
+            )
+
+            result = await controller.run(
+                "What is the verified value?",
+                effort="auto",
+                freshness=None,
+                budget=Budget(20, 3, 4, 2, 1, 0.05),
+            )
+
+            self.assertTrue(result.coverage.sufficient)
+            self.assertEqual(search.calls, 2)
+            self.assertEqual(result.stats.relevance_batches_rejected, 1)
+            self.assertEqual(result.stats.candidates_rejected_irrelevant, 1)
+            store.close()
 
     def test_discovers_only_relevant_same_site_links(self) -> None:
         document = Document(

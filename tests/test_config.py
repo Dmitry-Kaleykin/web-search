@@ -143,6 +143,25 @@ class SavedConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.reranker_base_url, "http://omlx.test/v1")
         self.assertEqual(settings.reranker_api_key, "local-token")
         self.assertEqual(settings.reranker_model_id, "reranker")
+        self.assertEqual(settings.reranker_min_relevance_score, 0.08)
+        self.assertEqual(settings.reranker_relative_relevance_ratio, 0.15)
+        self.assertEqual(settings.lexical_min_relevance_score, 0.01)
+
+    def test_relevance_gate_thresholds_can_be_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text(
+                "WEB_SEARCH_RERANKER_MIN_RELEVANCE_SCORE=0.12\n"
+                "WEB_SEARCH_RERANKER_RELATIVE_RELEVANCE_RATIO=0.2\n"
+                "WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE=0.03\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"WEB_SEARCH_DATA_DIR": directory}, clear=True):
+                settings = Settings.from_env(env_file=env_file)
+
+        self.assertEqual(settings.reranker_min_relevance_score, 0.12)
+        self.assertEqual(settings.reranker_relative_relevance_ratio, 0.2)
+        self.assertEqual(settings.lexical_min_relevance_score, 0.03)
 
 
 if __name__ == "__main__":

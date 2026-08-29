@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from collections import Counter, deque
@@ -20,7 +21,7 @@ from .config import Budget
 from .dates import normalize_published_at
 from .evidence import EvidenceLedger
 from .models import Document, PlannedQuery, ResearchResult, ResearchStats, SearchLane, SearchResult
-from .ranking import rank_candidates
+from .ranking import gate_candidates, rank_candidates
 from .readers.base import Reader
 from .reranking import CandidateReranker, RerankingError
 from .safety.urls import canonicalize_url, registrable_domain
@@ -32,6 +33,7 @@ ProgressCallback = Callable[[float, str], Awaitable[None]]
 T = TypeVar("T")
 THOROUGH_MIN_SEARCHES = 3
 THOROUGH_MIN_USABLE_DOMAINS = 6
+LOGGER = logging.getLogger(__name__)
 
 
 async def _no_progress(_progress: float, _message: str) -> None:
@@ -48,6 +50,9 @@ class ResearchController:
         store: SQLiteStore,
         reranker: CandidateReranker | None = None,
         prefetch_pages: int = 1,
+        reranker_min_relevance_score: float = 0.08,
+        reranker_relative_relevance_ratio: float = 0.15,
+        lexical_min_relevance_score: float = 0.01,
     ) -> None:
         self.search = search
         self.reader = reader
@@ -55,6 +60,11 @@ class ResearchController:
         self.store = store
         self.reranker = reranker
         self.prefetch_pages = max(1, prefetch_pages)
+        self.reranker_min_relevance_score = max(0.0, min(1.0, reranker_min_relevance_score))
+        self.reranker_relative_relevance_ratio = max(
+            0.0, min(1.0, reranker_relative_relevance_ratio)
+        )
+        self.lexical_min_relevance_score = max(0.0, lexical_min_relevance_score)
 
     async def run(
         self,
@@ -140,6 +150,7 @@ class ResearchController:
         domain_counts: Counter[str] = Counter()
         attempts_in_search_batch = 0
         low_gain_streak = 0
+        rejected_batch_streak = 0
         rerank_scores: dict[str, float] = {}
         prefetch_tasks: dict[str, asyncio.Task[Document]] = {}
         sufficient_streak = 0
@@ -220,24 +231,26 @@ class ResearchController:
                                 candidates.append(result)
                                 novel_results.append(result)
                                 discovered_urls.add(result.url)
+                        batch_rerank_scores: dict[str, float] = {}
                         if self.reranker is not None and novel_results:
                             await callback(
                                 _progress(stats, coverage.score, budget),
                                 f"Reranking {len(novel_results)} search candidates with "
                                 f"{self.reranker.model}",
                             )
-                            rerank_query = _rerank_query(spec, coverage.unresolved_gaps)
+                            rerank_query = _rerank_query(
+                                spec, coverage.unresolved_gaps, search_query
+                            )
                             try:
-                                rerank_scores.update(
-                                    await run_deadline.run(
-                                        partial(
-                                            self.reranker.rerank,
-                                            rerank_query,
-                                            novel_results,
-                                        ),
-                                        reserve=synthesis_reserve,
-                                    )
+                                batch_rerank_scores = await run_deadline.run(
+                                    partial(
+                                        self.reranker.rerank,
+                                        rerank_query,
+                                        novel_results,
+                                    ),
+                                    reserve=synthesis_reserve,
                                 )
+                                rerank_scores.update(batch_rerank_scores)
                             except _RunDeadlineExceeded:
                                 raise
                             except RerankingError as exc:
@@ -246,6 +259,77 @@ class ResearchController:
                                     _progress(stats, coverage.score, budget),
                                     "Semantic reranker unavailable; using deterministic ranking",
                                 )
+                        if novel_results:
+                            gate = gate_candidates(
+                                novel_results,
+                                search_query=search_query,
+                                spec=spec,
+                                uncovered_requirement_ids=coverage.unresolved_gaps,
+                                semantic_scores=batch_rerank_scores,
+                                semantic_min_score=self.reranker_min_relevance_score,
+                                semantic_relative_ratio=self.reranker_relative_relevance_ratio,
+                                lexical_min_score=self.lexical_min_relevance_score,
+                                rejected_batch_streak=rejected_batch_streak,
+                            )
+                            rejected_urls = {item.url for item, _ in gate.rejected}
+                            if rejected_urls:
+                                candidates = [
+                                    item for item in candidates if item.url not in rejected_urls
+                                ]
+                                for rejected_url in rejected_urls:
+                                    discovered_urls.discard(rejected_url)
+                                    rerank_scores.pop(rejected_url, None)
+                                stats.candidates_rejected_irrelevant += len(gate.rejected)
+                                self.store.event(
+                                    research_id,
+                                    "candidates_rejected_irrelevant",
+                                    {
+                                        "query": search_query,
+                                        "mode": gate.mode,
+                                        "threshold": gate.threshold,
+                                        "rejected": [
+                                            {
+                                                "url": item.url,
+                                                "title": item.title,
+                                                "relevance": score,
+                                            }
+                                            for item, score in gate.rejected
+                                        ],
+                                    },
+                                )
+                                LOGGER.debug(
+                                    "Relevance gate query=%r mode=%s threshold=%.4f "
+                                    "accepted=%d rejected=%d",
+                                    search_query,
+                                    gate.mode,
+                                    gate.threshold,
+                                    len(gate.accepted),
+                                    len(gate.rejected),
+                                )
+                                if gate.accepted:
+                                    relevance_message = (
+                                        f"Skipped {len(gate.rejected)} low-relevance result(s); "
+                                        f"kept {len(gate.accepted)} candidate(s)"
+                                    )
+                                else:
+                                    relevance_message = (
+                                        f"Skipped {len(gate.rejected)} low-relevance result(s); "
+                                        "refining the query"
+                                    )
+                                await callback(
+                                    _progress(stats, coverage.score, budget), relevance_message
+                                )
+                            if gate.probing:
+                                await callback(
+                                    _progress(stats, coverage.score, budget),
+                                    "Several searches remained weak; cautiously probing the "
+                                    "best candidate",
+                                )
+                            if gate.accepted:
+                                rejected_batch_streak = 0
+                            elif novel_results:
+                                rejected_batch_streak += 1
+                                stats.relevance_batches_rejected += 1
                         continue
 
                     needs_depth = not _research_depth_satisfied(effort, stats, ledger)
@@ -264,6 +348,18 @@ class ResearchController:
                             for item in followups
                             if f"{item.lane}:{item.query.casefold().strip()}" not in seen_queries
                         ]
+                        if not novel and rejected_batch_streak:
+                            gap_queries = [
+                                PlannedQuery(query=item.question, lane=item.search_lane)
+                                for item in spec.requirements
+                                if item.id in coverage.unresolved_gaps
+                            ]
+                            novel = [
+                                item
+                                for item in gap_queries
+                                if f"{item.lane}:{item.query.casefold().strip()}"
+                                not in seen_queries
+                            ]
                         if not novel and needs_depth:
                             novel = [
                                 item
@@ -607,8 +703,7 @@ def _evidence_checkpoint(
     else:
         summary = f"No usable new evidence from {domain}"
     return (
-        f"{summary}\nCoverage {coverage_score:.0%}; "
-        f"{len(unresolved_gaps)} required gap(s) remain"
+        f"{summary}\nCoverage {coverage_score:.0%}; {len(unresolved_gaps)} required gap(s) remain"
     )
 
 
@@ -619,12 +714,12 @@ def _short_progress_text(value: str, limit: int) -> str:
     return f"{text[: max(1, limit - 1)].rstrip()}…"
 
 
-def _rerank_query(spec, unresolved_requirement_ids: list[str]) -> str:
+def _rerank_query(spec, unresolved_requirement_ids: list[str], search_query: str) -> str:
     unresolved = set(unresolved_requirement_ids)
     questions = [
         item.question for item in spec.requirements if not unresolved or item.id in unresolved
     ]
-    return "\n".join([spec.original_query, *questions])[:8_000]
+    return "\n".join([f"Search target: {search_query}", *questions[:4]])[:8_000]
 
 
 def _research_depth_satisfied(effort: str, stats: ResearchStats, ledger: EvidenceLedger) -> bool:

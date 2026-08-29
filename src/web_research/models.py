@@ -189,6 +189,8 @@ class ResearchStats:
     reranker_candidates: int = 0
     reranker_failures: int = 0
     reranker_disabled: bool = False
+    candidates_rejected_irrelevant: int = 0
+    relevance_batches_rejected: int = 0
     prefetch_started: int = 0
     prefetch_unused: int = 0
     followed_links_discovered: int = 0

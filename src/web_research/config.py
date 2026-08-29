@@ -64,6 +64,9 @@ class Settings:
     reranker_api_key: str = ""
     reranker_timeout_seconds: float = 30.0
     reranker_max_candidates: int = 24
+    reranker_min_relevance_score: float = 0.08
+    reranker_relative_relevance_ratio: float = 0.15
+    lexical_min_relevance_score: float = 0.01
     prefetch_pages: int = 2
 
     @classmethod
@@ -128,6 +131,15 @@ class Settings:
                 environment, "WEB_SEARCH_RERANKER_TIMEOUT_SECONDS", 30.0
             ),
             reranker_max_candidates=_int_env(environment, "WEB_SEARCH_RERANKER_MAX_CANDIDATES", 24),
+            reranker_min_relevance_score=_float_env(
+                environment, "WEB_SEARCH_RERANKER_MIN_RELEVANCE_SCORE", 0.08
+            ),
+            reranker_relative_relevance_ratio=_float_env(
+                environment, "WEB_SEARCH_RERANKER_RELATIVE_RELEVANCE_RATIO", 0.15
+            ),
+            lexical_min_relevance_score=_float_env(
+                environment, "WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE", 0.01
+            ),
             prefetch_pages=max(1, _int_env(environment, "WEB_SEARCH_PREFETCH_PAGES", 2)),
         )
 

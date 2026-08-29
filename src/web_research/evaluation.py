@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .evidence import EvidenceBatch, EvidenceLedger
-from .models import Document, Requirement, ResearchSpec, SourceClass, TaskType
+from .models import Document, Requirement, ResearchSpec, SearchResult, SourceClass, TaskType
+from .ranking import gate_candidates
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,8 @@ class FixtureResult:
     sufficient: bool
     unresolved_gaps: list[str]
     conflicts: list[str]
+    candidate_accepted: int
+    candidate_rejected: int
     failures: list[str]
 
 
@@ -83,6 +86,45 @@ def evaluate_fixture(path: Path) -> FixtureResult:
         failures.append(
             f"expected at least {minimum_accepted} accepted claim(s), got {len(ledger.claims)}"
         )
+    candidate_accepted = 0
+    candidate_rejected = 0
+    candidate_gate = payload.get("candidate_gate")
+    if candidate_gate is not None:
+        gate_data = _object(candidate_gate, "candidate_gate")
+        raw_candidates = gate_data.get("candidates")
+        if not isinstance(raw_candidates, list):
+            raise ValueError(f"Fixture candidate_gate requires a candidates array: {path}")
+        candidates = [SearchResult(**_object(item, "candidate")) for item in raw_candidates]
+        semantic_scores = _object(gate_data.get("semantic_scores", {}), "semantic_scores")
+        decision = gate_candidates(
+            candidates,
+            search_query=str(gate_data.get("search_query") or spec.original_query),
+            spec=spec,
+            uncovered_requirement_ids=[item.id for item in spec.requirements],
+            semantic_scores={str(url): float(score) for url, score in semantic_scores.items()},
+            semantic_min_score=float(gate_data.get("semantic_min_score", 0.08)),
+            semantic_relative_ratio=float(gate_data.get("semantic_relative_ratio", 0.15)),
+            lexical_min_score=float(gate_data.get("lexical_min_score", 0.01)),
+            rejected_batch_streak=int(gate_data.get("rejected_batch_streak", 0)),
+        )
+        accepted_urls = sorted(item.url for item in decision.accepted)
+        rejected_urls = sorted(item.url for item, _ in decision.rejected)
+        candidate_accepted = len(accepted_urls)
+        candidate_rejected = len(rejected_urls)
+        expected_accepted_urls = sorted(
+            str(item) for item in expected.get("accepted_candidate_urls", [])
+        )
+        expected_rejected_urls = sorted(
+            str(item) for item in expected.get("rejected_candidate_urls", [])
+        )
+        if accepted_urls != expected_accepted_urls:
+            failures.append(
+                f"expected accepted_candidate_urls={expected_accepted_urls}, got {accepted_urls}"
+            )
+        if rejected_urls != expected_rejected_urls:
+            failures.append(
+                f"expected rejected_candidate_urls={expected_rejected_urls}, got {rejected_urls}"
+            )
     return FixtureResult(
         name=str(payload.get("name") or path.stem),
         passed=not failures,
@@ -92,6 +134,8 @@ def evaluate_fixture(path: Path) -> FixtureResult:
         sufficient=coverage.sufficient,
         unresolved_gaps=coverage.unresolved_gaps,
         conflicts=coverage.conflicts,
+        candidate_accepted=candidate_accepted,
+        candidate_rejected=candidate_rejected,
         failures=failures,
     )
 
@@ -119,7 +163,8 @@ def evaluation_main() -> None:
             print(
                 f"{status} {result.name}: coverage={result.coverage_score:.0%} "
                 f"claims={result.accepted_claims}/{result.proposed_claims} "
-                f"conflicts={len(result.conflicts)}"
+                f"conflicts={len(result.conflicts)} "
+                f"candidates={result.candidate_accepted}/{result.candidate_rejected}"
             )
             for failure in result.failures:
                 print(f"  - {failure}")

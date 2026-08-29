@@ -130,6 +130,9 @@ Important settings:
 | `WEB_SEARCH_EVIDENCE_MODEL_MAX_TOKENS` | `1600` | Maximum output for page-evidence extraction |
 | `WEB_SEARCH_RERANKER_MODEL_ID` | none | Optional model served through native `POST /v1/rerank` |
 | `WEB_SEARCH_RERANKER_BASE_URL` | model base URL | Reranker endpoint; compatible with oMLX and Cohere/Jina-style APIs |
+| `WEB_SEARCH_RERANKER_MIN_RELEVANCE_SCORE` | `0.08` | Raw semantic eligibility floor before a page may be fetched |
+| `WEB_SEARCH_RERANKER_RELATIVE_RELEVANCE_RATIO` | `0.15` | Reject results far below the best semantic result in a batch |
+| `WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE` | `0.01` | Conservative eligibility floor when the reranker is unavailable |
 | `WEB_SEARCH_PREFETCH_PAGES` | `2` | Concurrent page retrieval window; model inference remains sequential |
 | `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
 | `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
@@ -141,6 +144,13 @@ their own explicitly configured local endpoints; public result pages remain prot
 If a local proxy returns synthetic `198.18.0.x` DNS answers for every public hostname, enable
 `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS`. This exception does not permit literal fake-IP URLs or any other
 private, loopback, link-local, or metadata range.
+
+Candidate eligibility is separate from candidate ordering. When the semantic reranker is available,
+the controller rejects results below its raw relevance floor before HTTP or browser prefetch begins;
+SearXNG rank and source-diversity bonuses cannot override that decision. If a whole result batch is
+rejected, the controller searches again for the unresolved requirement and relaxes the floor across
+later attempts. After several weak batches it may probe one best candidate to preserve recall for
+obscure topics. Debug traces record rejected URLs, scores, gate mode, and the effective threshold.
 
 ## 4. Check the services
 
@@ -222,8 +232,9 @@ retrieval behavior:
 .venv/bin/web-search-eval
 ```
 
-The replay reports accepted claims, requirement coverage, unresolved gaps, and conflicts without
-depending on live search results.
+The replay reports accepted claims, requirement coverage, unresolved gaps, conflicts, and candidate
+gate decisions without depending on live search results. One bundled noisy-result fixture verifies
+that a plausible high-ranked news article is rejected before page reading.
 
 ## Security defaults
 
