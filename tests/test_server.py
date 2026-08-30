@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from mcp.client import Client
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -13,12 +16,16 @@ from web_research.model.fallback import FallbackModelClient
 from web_research.model.mcp_sampling import MCPSamplingModelClient
 from web_research.model.openai_compatible import OpenAICompatibleModelClient
 from web_research.model.unavailable import UnavailableModelClient
+from web_research.models import Document
 from web_research.server import (
     ConcurrentResearchError,
     _create_evidence_model,
     _create_model,
+    _create_reader_runtime,
+    _read_url_output,
     _SingleFlight,
     mcp,
+    read_url,
 )
 
 
@@ -44,20 +51,32 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             protocol_version = client.session.protocol_version
 
         self.assertEqual(protocol_version, "2025-11-25")
-        self.assertEqual([tool.name for tool in result.tools], ["web_search"])
+        self.assertEqual([tool.name for tool in result.tools], ["read_url", "web_search"])
 
-    async def test_server_exposes_exactly_one_structured_tool(self) -> None:
+    async def test_server_exposes_structured_search_and_url_reader_tools(self) -> None:
         async with Client(mcp) as client:
             result = await client.list_tools()
-        self.assertEqual([tool.name for tool in result.tools], ["web_search"])
-        tool = result.tools[0]
-        self.assertEqual(tool.input_schema["required"], ["query"])
-        self.assertIn("answer_markdown", tool.output_schema["properties"])
+        self.assertEqual([tool.name for tool in result.tools], ["read_url", "web_search"])
+        tools = {tool.name: tool for tool in result.tools}
+        read_tool = tools["read_url"]
+        search_tool = tools["web_search"]
+
+        self.assertEqual(read_tool.input_schema["required"], ["url"])
+        self.assertEqual(
+            read_tool.input_schema["properties"]["render"]["enum"],
+            ["auto", "never", "always"],
+        )
+        self.assertIn("content", read_tool.output_schema["properties"])
+        self.assertIn("content_truncated", read_tool.output_schema["properties"])
+        self.assertIn("instead of curl or wget", read_tool.description)
+
+        self.assertEqual(search_tool.input_schema["required"], ["query"])
+        self.assertIn("answer_markdown", search_tool.output_schema["properties"])
         self.assertNotIn(
             "has_primary",
-            tool.output_schema["$defs"]["ToolCoverageItem"]["properties"],
+            search_tool.output_schema["$defs"]["ToolCoverageItem"]["properties"],
         )
-        stats_schema = tool.output_schema["$defs"]["ToolStats"]["properties"]
+        stats_schema = search_tool.output_schema["$defs"]["ToolStats"]["properties"]
         self.assertIn("evidence_model", stats_schema)
         self.assertIn("evidence_model_successes", stats_schema)
         self.assertIn("evidence_model_fallbacks", stats_schema)
@@ -65,11 +84,80 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("candidates_rejected_irrelevant", stats_schema)
         self.assertIn("relevance_batches_rejected", stats_schema)
         self.assertIn("prefetch_started", stats_schema)
-        self.assertIn("Never add a calendar year", tool.description)
-        self.assertIn("do not invoke web_search in parallel", tool.description)
-        self.assertIn("do not add a year", tool.input_schema["properties"]["query"]["description"])
-        freshness_schema = tool.input_schema["properties"]["freshness"]
+        self.assertIn("Never add a calendar year", search_tool.description)
+        self.assertIn("do not invoke web_search in parallel", search_tool.description)
+        self.assertIn(
+            "do not add a year",
+            search_tool.input_schema["properties"]["query"]["description"],
+        )
+        freshness_schema = search_tool.input_schema["properties"]["freshness"]
         self.assertIn("Do not resolve relative wording", freshness_schema["description"])
+
+    async def test_shared_reader_runtime_can_disable_browser(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = _create_reader_runtime(
+                Settings(data_dir=Path(directory), enable_crawl4ai=False)
+            )
+            try:
+                self.assertIsNone(runtime.reader.browser)
+                self.assertTrue((Path(directory) / "research.sqlite3").exists())
+            finally:
+                await runtime.close()
+
+    async def test_read_url_output_is_bounded_and_reports_original_sizes(self) -> None:
+        document = Document(
+            url="https://example.com/page",
+            final_url="https://example.com/page",
+            title="Example",
+            content="abcdefghij",
+            method="http+trafilatura",
+            links=["https://example.com/a", "https://example.com/b"],
+        )
+
+        output = _read_url_output(
+            document,
+            Settings(read_url_max_chars=5, read_url_max_links=1),
+        )
+
+        self.assertEqual(output.content, "abcde")
+        self.assertEqual(output.content_characters, 10)
+        self.assertTrue(output.content_truncated)
+        self.assertEqual(output.links, ["https://example.com/a"])
+        self.assertEqual(output.link_count, 2)
+        self.assertTrue(output.links_truncated)
+        self.assertIn("tool_output_truncated:content", output.warnings)
+        self.assertIn("tool_output_truncated:links", output.warnings)
+
+    async def test_read_url_uses_shared_reader_and_requested_render_mode(self) -> None:
+        document = Document(
+            url="https://example.com/page",
+            final_url="https://example.com/page",
+            title="Example",
+            content="Extracted content",
+            method="crawl4ai+chromium",
+        )
+        reader = SimpleNamespace(read=AsyncMock(return_value=document))
+        runtime = SimpleNamespace(reader=reader, close=AsyncMock())
+        context = SimpleNamespace(report_progress=AsyncMock())
+        settings = Settings(read_url_max_chars=100, read_url_max_links=10)
+
+        with (
+            patch("web_research.server.Settings.from_env", return_value=settings),
+            patch("web_research.server._create_reader_runtime", return_value=runtime),
+        ):
+            output = await read_url(
+                "https://example.com/page",
+                context,
+                render="always",
+            )
+
+        reader.read.assert_awaited_once_with(
+            "https://example.com/page",
+            render="always",
+        )
+        runtime.close.assert_awaited_once()
+        self.assertEqual(output.extraction_method, "crawl4ai+chromium")
+        self.assertEqual(output.content, "Extracted content")
 
     async def test_dynamic_client_model_takes_precedence_over_direct_fallback(self) -> None:
         context = SimpleNamespace(

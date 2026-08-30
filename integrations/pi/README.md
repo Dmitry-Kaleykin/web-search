@@ -1,6 +1,7 @@
 # Pi integration
 
-The server exposes exactly one stdio MCP tool named `web_search`.
+The server exposes two stdio MCP tools: `read_url` for a known URL and `web_search` for source
+discovery and cited multi-source research.
 
 Pi currently connects to MCP servers through an extension/adapter. Configure that adapter to launch
 the absolute `web-search-mcp` executable inside this project's virtual environment. The generic
@@ -9,7 +10,7 @@ chosen Pi MCP extension uses a different key or filename.
 
 Required behavior from the Pi adapter:
 
-- Import the server's `web_search` tool without renaming it.
+- Import the server's `read_url` and `web_search` tools without renaming them.
 - Advertise MCP sampling and run sampling requests through Pi's current model.
 - Forward cancellation when Pi aborts the tool call.
 - Forward MCP progress messages to Pi's tool-update UI.
@@ -39,9 +40,10 @@ Users of TUN proxies with fake-IP DNS may need `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS=
 only synthetic `198.18.0.0/15` answers for hostname URLs; it does not disable the private-network
 guard.
 
-The MCP server returns structured output containing `answer_markdown`, `sources`, `coverage`,
+The `web_search` tool returns structured output containing `answer_markdown`, `sources`, `coverage`,
 `stop_reason`, `stats`, and `warnings`. Pi should use `answer_markdown` as the researched answer and
-retain the other fields for transparency.
+retain the other fields for transparency. The `read_url` tool returns extracted page content,
+metadata, links, extraction method, warnings, and explicit output-truncation fields.
 
 Effort-level time limits count only active search and page retrieval. Pi model inference and
 approval time use the independent `WEB_SEARCH_MODEL_TIMEOUT_SECONDS` limit, so a slow planning call

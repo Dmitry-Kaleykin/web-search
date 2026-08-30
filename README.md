@@ -1,9 +1,10 @@
 # Local Agentic Web Search
 
-A local-first MCP research service for Pi. It exposes one tool, `web_search`, which searches through
-SearXNG, reads promising pages, tracks evidence requirements, stops adaptively, and returns a cited
-synthesis. Through MCP sampling it automatically uses the model active in the calling Pi session;
-an OpenAI-compatible endpoint can be configured as a fallback for clients without sampling support.
+A local-first MCP research service for Pi. It exposes `read_url` for extracting an already-known URL
+and `web_search` for discovering sources, tracking evidence requirements, stopping adaptively, and
+returning a cited synthesis. Through MCP sampling, research automatically uses the model active in
+the calling Pi session; an OpenAI-compatible endpoint can be configured as a fallback for clients
+without sampling support.
 
 This repository currently implements the first vertical slice from [ARCHITECTURE.md](ARCHITECTURE.md):
 
@@ -135,6 +136,8 @@ Important settings:
 | `WEB_SEARCH_RERANKER_RELATIVE_RELEVANCE_RATIO` | `0.15` | Reject results far below the best semantic result in a batch |
 | `WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE` | `0.01` | Conservative eligibility floor when the reranker is unavailable |
 | `WEB_SEARCH_PREFETCH_PAGES` | `2` | Concurrent page retrieval window; model inference remains sequential |
+| `WEB_SEARCH_READ_URL_MAX_CHARS` | `60000` | Maximum extracted characters returned by one `read_url` call |
+| `WEB_SEARCH_READ_URL_MAX_LINKS` | `100` | Maximum extracted links returned by one `read_url` call |
 | `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
 | `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
 | `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Permit hostname-only `198.18.0.0/15` answers from a local TUN proxy |
@@ -180,14 +183,21 @@ needs several server-to-client sampling requests during one tool call, while the
 requires sampling to be represented as multi-round input. `pi-mcp-adapter` negotiates automatically
 and falls back to this compatible handshake path.
 
-The tool signature is:
+The tool signatures are:
 
 ```text
+read_url(url, render="auto")
 web_search(query, effort="auto", freshness=null)
 ```
 
-Send the complete research request in one call. The server permits one active run at a time and
-rejects overlapping calls rather than letting two searches contend for the same local model.
+Use `read_url` when the URL is already known. Its `auto` rendering mode uses the shared HTTP,
+Trafilatura, basic-HTML, and conditional Chromium stack; `never` prevents Chromium from launching,
+and `always` attempts Chromium while preserving the HTTP result if browser rendering fails. Direct
+page output is bounded and reports whether content or links were truncated.
+
+Send a complete research request to `web_search` in one call. The server permits one active research
+run at a time and rejects overlapping calls rather than letting two searches contend for the same
+local model.
 
 Pi should pass the user's temporal wording faithfully. For requests such as "latest", "recent",
 "current", or "today", it must not insert a calendar year unless the user supplied one. The server

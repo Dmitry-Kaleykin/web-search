@@ -11,7 +11,7 @@ The recommended stack is:
 
 | Layer | Default | Escalation / fallback |
 |---|---|---|
-| External interface | One MCP tool: `web_search` | Pi extension/adapter presents the MCP tool to Pi |
+| External interface | MCP tools: `read_url`, `web_search` | Pi extension/adapter presents both tools to Pi |
 | Research planning | Calling client's active model through MCP sampling | Optional direct OpenAI-compatible fallback, then deterministic templates |
 | Discovery | Self-hosted SearXNG with JSON enabled | Pluggable direct search provider; later, specialized sources |
 | Ordinary HTML | HTTP fetch + Trafilatura | Crawl4AI single-page render |
@@ -54,17 +54,19 @@ reader milestone.
 
 ## 2. System boundary
 
-Pi should see one high-level tool. The lower-level tools stay private to the research service.
+Pi should see a direct reader for known URLs and a high-level research tool. Lower-level retrieval
+components stay private to the service and are shared by both public tools.
 
 ```mermaid
 flowchart LR
     U[User] --> P[Pi agent]
-    P -->|web_search| M[MCP server]
-    M --> C[Research controller]
+    P -->|web_search / read_url| M[MCP server]
+    M -->|web_search| C[Research controller]
+    M -->|read_url| R[Reader router]
     C -->|MCP sampling| P
     C -. optional direct fallback .-> L[OpenAI-compatible model API]
     C --> S[SearXNG]
-    C --> R[Reader router]
+    C --> R
     R --> T[HTTP + Trafilatura]
     R --> W[Crawl4AI]
     R --> B[Playwright / vision]
@@ -80,7 +82,10 @@ Do not start by launching another Pi process inside the MCP server. A purpose-bu
 
 ## 3. Public MCP contract
 
-Expose one tool, with a self-contained natural-language task and a small number of policy controls:
+Expose `read_url` for a supplied URL and `web_search` for discovery and multi-source research.
+`read_url` accepts a rendering policy (`auto`, `never`, or `always`) and returns extracted content,
+metadata, links, warnings, and explicit truncation fields. `web_search` keeps a self-contained
+natural-language task and a small number of policy controls:
 
 ```json
 {

@@ -11,6 +11,19 @@ from web_research.config import Settings
 
 
 class SavedConfigurationTests(unittest.TestCase):
+    def test_read_url_output_limits_can_be_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text(
+                "WEB_SEARCH_READ_URL_MAX_CHARS=12345\nWEB_SEARCH_READ_URL_MAX_LINKS=17\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"WEB_SEARCH_DATA_DIR": directory}, clear=True):
+                settings = Settings.from_env(env_file=env_file)
+
+        self.assertEqual(settings.read_url_max_chars, 12345)
+        self.assertEqual(settings.read_url_max_links, 17)
+
     def test_reads_evidence_model_saved_by_terminal_ui(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)

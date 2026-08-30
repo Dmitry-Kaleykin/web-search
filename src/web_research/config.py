@@ -68,6 +68,8 @@ class Settings:
     reranker_relative_relevance_ratio: float = 0.15
     lexical_min_relevance_score: float = 0.01
     prefetch_pages: int = 2
+    read_url_max_chars: int = 60_000
+    read_url_max_links: int = 100
 
     @classmethod
     def from_env(cls, *, env_file: Path | None = None) -> Settings:
@@ -141,6 +143,10 @@ class Settings:
                 environment, "WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE", 0.01
             ),
             prefetch_pages=max(1, _int_env(environment, "WEB_SEARCH_PREFETCH_PAGES", 2)),
+            read_url_max_chars=max(
+                1, _int_env(environment, "WEB_SEARCH_READ_URL_MAX_CHARS", 60_000)
+            ),
+            read_url_max_links=max(0, _int_env(environment, "WEB_SEARCH_READ_URL_MAX_LINKS", 100)),
         )
 
 

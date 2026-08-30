@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Annotated, Literal
 
 import anyio
@@ -15,9 +16,10 @@ from .model.fallback import FallbackModelClient
 from .model.mcp_sampling import MCPSamplingModelClient
 from .model.openai_compatible import OpenAICompatibleModelClient
 from .model.unavailable import UnavailableModelClient
+from .models import Document
 from .readers.crawl4ai import Crawl4AIReader
 from .readers.http import HTTPReader
-from .readers.router import LayeredReader
+from .readers.router import LayeredReader, RenderMode
 from .reranking import OpenAICompatibleReranker
 from .search.searxng import SearXNGSearchProvider
 from .storage import SQLiteStore
@@ -37,10 +39,20 @@ LOGGER = logging.getLogger(__name__)
 
 WEB_SEARCH_TOOL_DESCRIPTION = (
     "Research a web-dependent question and return a cited, evidence-checked synthesis. "
+    "Use read_url instead when the user already supplied the URL and source discovery is not "
+    "needed. "
     "Make one self-contained call for the whole request; do not invoke web_search in parallel. "
     "Pass the user's temporal wording faithfully. For relative requests such as latest, recent, "
     "current, or today, keep that wording relative; the server resolves it from its own clock. "
     "Never add a calendar year unless the user explicitly supplied that year."
+)
+
+READ_URL_TOOL_DESCRIPTION = (
+    "Fetch and extract content from an already-known public HTTP(S) URL. Use read_url instead of "
+    "curl or wget whenever the user supplies a URL and asks to read, inspect, summarize, or "
+    "analyze that page. It uses safe bounded HTTP retrieval, Trafilatura with a basic HTML "
+    "fallback, and automatic headless-Chromium escalation when rendering appears necessary. "
+    "Use web_search instead when sources need to be discovered or corroborated."
 )
 
 
@@ -133,10 +145,30 @@ class WebSearchOutput(BaseModel):
     warnings: list[str]
 
 
+class ReadUrlOutput(BaseModel):
+    url: str
+    final_url: str
+    title: str
+    content: str
+    content_type: str
+    extraction_method: str
+    retrieved_at: str
+    published_at: str | None
+    published_at_source: str | None
+    links: list[str]
+    warnings: list[str]
+    content_characters: int
+    content_truncated: bool
+    link_count: int
+    links_truncated: bool
+
+
 mcp = MCPServer(
     "Local Agentic Web Search",
     instructions=(
-        "Use web_search for current or web-dependent research. Pass a self-contained request. "
+        "When the user supplies a URL and asks to read, inspect, summarize, or analyze that page, "
+        "use read_url instead of curl, wget, or shell-based downloading. Use web_search when "
+        "sources must be discovered, compared, or corroborated, and pass a self-contained request. "
         "Make one web_search call at a time; parallel calls contend for the same local model and "
         "are rejected. "
         "Preserve the user's temporal wording and never invent a calendar year for latest, "
@@ -144,6 +176,52 @@ mcp = MCPServer(
         "The tool reads sources, tracks evidence gaps, and returns a cited synthesis."
     ),
 )
+
+
+@mcp.tool(
+    name="read_url",
+    description=READ_URL_TOOL_DESCRIPTION,
+    structured_output=True,
+)
+async def read_url(
+    url: Annotated[
+        str,
+        Field(
+            description=(
+                "The exact public HTTP(S) URL supplied by the user. Pass it directly without "
+                "rewriting it into a search query."
+            )
+        ),
+    ],
+    ctx: Context,
+    render: Annotated[
+        RenderMode,
+        Field(
+            description=(
+                "Rendering policy: auto uses Chromium only when HTTP extraction appears "
+                "incomplete; never does not launch Chromium; always attempts Chromium and "
+                "preserves the HTTP result if browser rendering fails."
+            )
+        ),
+    ] = "auto",
+) -> ReadUrlOutput:
+    """Read one known URL through the shared layered retrieval stack."""
+
+    if not url.strip():
+        raise ValueError("url must not be empty")
+    settings = Settings.from_env()
+    runtime = _create_reader_runtime(settings)
+    try:
+        await ctx.report_progress(progress=0.1, total=1.0, message="Fetching the supplied URL")
+        document = await runtime.reader.read(url.strip(), render=render)
+        await ctx.report_progress(
+            progress=1.0,
+            total=1.0,
+            message=f"URL read with {document.method}",
+        )
+        return _read_url_output(document, settings)
+    finally:
+        await runtime.close()
 
 
 @mcp.tool(
@@ -183,37 +261,15 @@ async def web_search(
     if not query.strip():
         raise ValueError("query must not be empty")
     settings = Settings.from_env()
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("CRAWL4_AI_BASE_DIRECTORY", str(settings.data_dir.resolve()))
-    os.environ.setdefault(
-        "PLAYWRIGHT_BROWSERS_PATH", str((settings.data_dir / "ms-playwright").resolve())
-    )
-    store = SQLiteStore(settings.data_dir / "research.sqlite3")
+    runtime = _create_reader_runtime(settings)
+    store = runtime.store
     search = SearXNGSearchProvider(
         settings.searxng_url,
         store=store,
         cache_ttl_seconds=settings.search_cache_ttl_seconds,
         user_agent=settings.user_agent,
     )
-    http_reader = HTTPReader(
-        store=store,
-        cache_ttl_seconds=settings.document_cache_ttl_seconds,
-        user_agent=settings.user_agent,
-        max_response_bytes=settings.max_response_bytes,
-        allow_private_urls=settings.allow_private_urls,
-        allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
-    )
-    browser_reader = (
-        Crawl4AIReader(
-            store=store,
-            user_agent=settings.user_agent,
-            allow_private_urls=settings.allow_private_urls,
-            allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
-        )
-        if settings.enable_crawl4ai
-        else None
-    )
-    reader = LayeredReader(http_reader, browser_reader)
+    reader = runtime.reader
     model = _create_model(ctx, settings)
     evidence_model = _create_evidence_model(settings, model)
     reranker = _create_reranker(settings)
@@ -284,13 +340,83 @@ async def web_search(
             RUN_GATE.finish()
     finally:
         await search.close()
-        await reader.close()
+        await runtime.close()
         if reranker is not None:
             await reranker.close()
         if evidence_model is not model:
             await evidence_model.close()
         await model.close()
-        store.close()
+
+
+@dataclass(slots=True)
+class _ReaderRuntime:
+    store: SQLiteStore
+    reader: LayeredReader
+
+    async def close(self) -> None:
+        try:
+            await self.reader.close()
+        finally:
+            self.store.close()
+
+
+def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("CRAWL4_AI_BASE_DIRECTORY", str(settings.data_dir.resolve()))
+    os.environ.setdefault(
+        "PLAYWRIGHT_BROWSERS_PATH", str((settings.data_dir / "ms-playwright").resolve())
+    )
+    store = SQLiteStore(settings.data_dir / "research.sqlite3")
+    http_reader = HTTPReader(
+        store=store,
+        cache_ttl_seconds=settings.document_cache_ttl_seconds,
+        user_agent=settings.user_agent,
+        max_response_bytes=settings.max_response_bytes,
+        allow_private_urls=settings.allow_private_urls,
+        allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
+    )
+    browser_reader = (
+        Crawl4AIReader(
+            store=store,
+            user_agent=settings.user_agent,
+            allow_private_urls=settings.allow_private_urls,
+            allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
+        )
+        if settings.enable_crawl4ai
+        else None
+    )
+    return _ReaderRuntime(store=store, reader=LayeredReader(http_reader, browser_reader))
+
+
+def _read_url_output(document: Document, settings: Settings) -> ReadUrlOutput:
+    content_limit = settings.read_url_max_chars
+    link_limit = settings.read_url_max_links
+    full_content = document.content
+    all_links = document.links
+    content_truncated = len(full_content) > content_limit
+    links_truncated = len(all_links) > link_limit
+    warnings = list(document.warnings)
+    if content_truncated:
+        warnings.append("tool_output_truncated:content")
+    if links_truncated:
+        warnings.append("tool_output_truncated:links")
+    return ReadUrlOutput(
+        url=document.url,
+        final_url=document.final_url,
+        title=document.title,
+        content=full_content[:content_limit],
+        content_type=document.content_type,
+        extraction_method=document.method,
+        retrieved_at=document.retrieved_at,
+        published_at=document.published_at,
+        published_at_source=document.published_at_source,
+        links=all_links[:link_limit],
+        warnings=warnings,
+        content_characters=len(full_content),
+        content_truncated=content_truncated,
+        link_count=len(all_links),
+        links_truncated=links_truncated,
+    )
 
 
 def _create_model(ctx: Context, settings: Settings) -> ResearchModel:

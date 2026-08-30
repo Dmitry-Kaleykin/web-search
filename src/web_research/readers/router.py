@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from ..models import Document
 from .base import Reader
 from .quality import rendering_signals
+
+RenderMode = Literal["auto", "never", "always"]
 
 
 class LayeredReader:
@@ -15,7 +19,9 @@ class LayeredReader:
         if self.browser is not None:
             await self.browser.close()
 
-    async def read(self, url: str) -> Document:
+    async def read(self, url: str, *, render: RenderMode = "auto") -> Document:
+        if render not in {"auto", "never", "always"}:
+            raise ValueError(f"Unsupported render mode: {render}")
         primary_error: Exception | None = None
         document: Document | None = None
         try:
@@ -23,7 +29,15 @@ class LayeredReader:
         except Exception as exc:
             primary_error = exc
 
-        if document is not None and not _browser_recommended(document):
+        if render == "never":
+            if document is not None:
+                if _browser_recommended(document):
+                    document.warnings.append("browser_render_skipped:render_never")
+                return document
+            assert primary_error is not None
+            raise primary_error
+
+        if render == "auto" and document is not None and not _browser_recommended(document):
             return document
         if self.browser is None:
             if document is not None:
