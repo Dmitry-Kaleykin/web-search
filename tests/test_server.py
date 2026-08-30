@@ -68,6 +68,11 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("content", read_tool.output_schema["properties"])
         self.assertIn("content_truncated", read_tool.output_schema["properties"])
+        self.assertIn("status_code", read_tool.output_schema["properties"])
+        self.assertIn("page_status", read_tool.output_schema["properties"])
+        self.assertIn("next_cursor", read_tool.output_schema["properties"])
+        self.assertEqual(read_tool.input_schema["properties"]["max_chars"]["default"], 4_000)
+        self.assertFalse(read_tool.input_schema["properties"]["include_links"]["default"])
         self.assertIn("instead of curl or wget", read_tool.description)
 
         self.assertEqual(search_tool.input_schema["required"], ["query"])
@@ -117,6 +122,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         output = _read_url_output(
             document,
             Settings(read_url_max_chars=5, read_url_max_links=1),
+            include_links=True,
         )
 
         self.assertEqual(output.content, "abcde")
@@ -127,6 +133,51 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(output.links_truncated)
         self.assertIn("tool_output_truncated:content", output.warnings)
         self.assertIn("tool_output_truncated:links", output.warnings)
+
+    async def test_read_url_output_supports_cached_content_pagination(self) -> None:
+        document = Document(
+            url="https://example.com/page",
+            final_url="https://example.com/page",
+            title="Example",
+            content="abcdefghij",
+            method="http+trafilatura",
+            status_code=200,
+            links=["https://example.com/a"],
+        )
+
+        output = _read_url_output(
+            document,
+            Settings(read_url_max_chars=20, read_url_max_links=10),
+            cursor=4,
+            max_chars=3,
+            include_links=False,
+        )
+
+        self.assertEqual(output.content, "efg")
+        self.assertEqual(output.content_start, 4)
+        self.assertEqual(output.content_end, 7)
+        self.assertTrue(output.has_more_content)
+        self.assertEqual(output.next_cursor, 7)
+        self.assertEqual(output.status_code, 200)
+        self.assertEqual(output.page_status, "ok")
+        self.assertFalse(output.links_included)
+        self.assertEqual(output.links, [])
+
+    async def test_read_url_output_surfaces_suspected_error_page(self) -> None:
+        document = Document(
+            url="https://example.com/error",
+            final_url="https://example.com/error",
+            title="Example | 525: SSL handshake failed",
+            content="Cloudflare origin error",
+            method="http+trafilatura",
+            status_code=200,
+        )
+
+        output = _read_url_output(document, Settings())
+
+        self.assertEqual(output.status_code, 200)
+        self.assertEqual(output.page_status, "suspected_error")
+        self.assertIn("suspected_error_page:cloudflare_525", output.warnings)
 
     async def test_read_url_uses_shared_reader_and_requested_render_mode(self) -> None:
         document = Document(

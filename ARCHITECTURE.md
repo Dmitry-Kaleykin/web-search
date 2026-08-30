@@ -83,9 +83,10 @@ Do not start by launching another Pi process inside the MCP server. A purpose-bu
 ## 3. Public MCP contract
 
 Expose `read_url` for a supplied URL and `web_search` for discovery and multi-source research.
-`read_url` accepts a rendering policy (`auto`, `never`, or `always`) and returns extracted content,
-metadata, links, warnings, and explicit truncation fields. `web_search` keeps a self-contained
-natural-language task and a small number of policy controls:
+`read_url` accepts a rendering policy (`auto`, `never`, or `always`) plus bounded content pagination.
+It returns extracted content, HTTP and semantic page status, metadata, links, warnings, and the next
+cursor. `web_search` keeps a self-contained natural-language task and a small number of policy
+controls:
 
 ```json
 {

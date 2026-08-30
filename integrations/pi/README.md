@@ -43,7 +43,9 @@ guard.
 The `web_search` tool returns structured output containing `answer_markdown`, `sources`, `coverage`,
 `stop_reason`, `stats`, and `warnings`. Pi should use `answer_markdown` as the researched answer and
 retain the other fields for transparency. The `read_url` tool returns extracted page content,
-metadata, links, extraction method, warnings, and explicit output-truncation fields.
+HTTP and semantic page status, metadata, links, extraction method, warnings, and pagination fields.
+For fan-out calls, Pi should request a small `max_chars` value and omit links unless needed; it can
+continue a page with the returned `next_cursor` without repeating network retrieval.
 
 Effort-level time limits count only active search and page retrieval. Pi model inference and
 approval time use the independent `WEB_SEARCH_MODEL_TIMEOUT_SECONDS` limit, so a slow planning call

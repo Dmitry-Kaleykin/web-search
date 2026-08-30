@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from web_research.readers.quality import assess_html_quality, rendering_signals
+from web_research.readers.quality import (
+    assess_html_quality,
+    page_diagnostics,
+    rendering_signals,
+)
 
 
 class HTMLQualityAssessmentTests(unittest.TestCase):
@@ -32,6 +36,17 @@ class HTMLQualityAssessmentTests(unittest.TestCase):
         )
 
         self.assertEqual(assessment.browser_reasons, ("empty_app_shell",))
+
+    def test_script_only_body_recommends_browser_even_when_title_was_extracted(self) -> None:
+        assessment = assess_html_quality(
+            "<html><head><title>Application</title></head><body>"
+            "<custom-shell></custom-shell><script src='/bundle.js'></script></body></html>",
+            "Application",
+            title="Application",
+            status_code=200,
+        )
+
+        self.assertEqual(assessment.browser_reasons, ("script_only_page",))
 
     def test_server_rendered_app_root_does_not_recommend_browser(self) -> None:
         assessment = assess_html_quality(
@@ -71,6 +86,33 @@ class HTMLQualityAssessmentTests(unittest.TestCase):
         assessment = assess_html_quality("<html><body></body></html>", "")
 
         self.assertEqual(assessment.browser_reasons, ("no_extracted_content",))
+
+    def test_cloudflare_525_page_is_diagnosed_despite_success_status(self) -> None:
+        diagnostics = page_diagnostics(
+            "pi.dev | 525: SSL handshake failed",
+            "Cloudflare is unable to establish an SSL connection to the origin server.",
+            status_code=200,
+        )
+
+        self.assertEqual(diagnostics, ("cloudflare_525",))
+
+    def test_soft_404_title_is_diagnosed(self) -> None:
+        diagnostics = page_diagnostics(
+            "Documentation | Page Not Found",
+            "Return to the documentation home page.",
+            status_code=200,
+        )
+
+        self.assertEqual(diagnostics, ("soft_404",))
+
+    def test_article_about_server_errors_is_not_diagnosed_from_body_alone(self) -> None:
+        diagnostics = page_diagnostics(
+            "Troubleshooting reverse proxies",
+            "This guide explains 502 Bad Gateway and 525 SSL handshake failures.",
+            status_code=200,
+        )
+
+        self.assertEqual(diagnostics, ())
 
 
 if __name__ == "__main__":

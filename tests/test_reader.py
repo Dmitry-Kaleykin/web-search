@@ -69,6 +69,34 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(document.title, "Example page")
         self.assertIn("verified value is 42", document.content)
         self.assertIn(document.method, {"http+trafilatura", "http+basic_html"})
+        self.assertEqual(document.status_code, 200)
+
+    async def test_reader_marks_cloudflare_soft_error_page(self) -> None:
+        html = """
+        <html><head><title>pi.dev | 525: SSL handshake failed</title></head>
+        <body><main><h1>SSL handshake failed</h1>
+        <p>Cloudflare is unable to establish an SSL connection to the origin server.</p>
+        </main></body></html>
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"Content-Type": "text/html"},
+                content=html.encode(),
+            )
+
+        reader = HTTPReader(allow_private_urls=True)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            document = await reader.read("http://127.0.0.1/cloudflare-error")
+        finally:
+            await reader.close()
+
+        self.assertEqual(document.status_code, 200)
+        self.assertIn("suspected_error_page:cloudflare_525", document.warnings)
 
     async def test_reader_extracts_publication_date_with_provenance(self) -> None:
         html = """

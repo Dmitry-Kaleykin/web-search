@@ -136,7 +136,7 @@ Important settings:
 | `WEB_SEARCH_RERANKER_RELATIVE_RELEVANCE_RATIO` | `0.15` | Reject results far below the best semantic result in a batch |
 | `WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE` | `0.01` | Conservative eligibility floor when the reranker is unavailable |
 | `WEB_SEARCH_PREFETCH_PAGES` | `2` | Concurrent page retrieval window; model inference remains sequential |
-| `WEB_SEARCH_READ_URL_MAX_CHARS` | `60000` | Maximum extracted characters returned by one `read_url` call |
+| `WEB_SEARCH_READ_URL_MAX_CHARS` | `60000` | Server ceiling for extracted characters returned by one `read_url` call |
 | `WEB_SEARCH_READ_URL_MAX_LINKS` | `100` | Maximum extracted links returned by one `read_url` call |
 | `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
 | `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
@@ -186,14 +186,17 @@ and falls back to this compatible handshake path.
 The tool signatures are:
 
 ```text
-read_url(url, render="auto")
+read_url(url, render="auto", cursor=0, max_chars=4000, include_links=false)
 web_search(query, effort="auto", freshness=null)
 ```
 
 Use `read_url` when the URL is already known. Its `auto` rendering mode uses the shared HTTP,
 Trafilatura, basic-HTML, and conditional Chromium stack; `never` prevents Chromium from launching,
 and `always` attempts Chromium while preserving the HTTP result if browser rendering fails. Direct
-page output is bounded and reports whether content or links were truncated.
+page output includes the HTTP status, a separate semantic page status, and warnings for likely soft
+404s, CDN/upstream error documents, or incomplete browser output. Content is returned in bounded
+inline chunks; continue with `next_cursor`, and use a smaller `max_chars` with `include_links=false`
+for batched or fan-out calls.
 
 Send a complete research request to `web_search` in one call. The server permits one active research
 run at a time and rejects overlapping calls rather than letting two searches contend for the same

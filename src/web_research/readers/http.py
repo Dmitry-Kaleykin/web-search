@@ -126,7 +126,14 @@ class HTTPReader:
         published_at, published_at_source = published_at_from_html(html_text)
         content, method, warnings = _extract_main_content(html_text, current, fallback_content)
         title = fallback_title or _title_from_url(current)
-        warnings.extend(assess_html_quality(html_text, content).warnings())
+        warnings.extend(
+            assess_html_quality(
+                html_text,
+                content,
+                title=title,
+                status_code=response.status_code,
+            ).warnings()
+        )
 
         document = Document(
             url=canonical,
@@ -137,6 +144,7 @@ class HTTPReader:
             published_at=published_at,
             published_at_source=published_at_source,
             content_type=content_type or "text/html",
+            status_code=response.status_code,
             warnings=warnings,
             links=links[:500],
         )

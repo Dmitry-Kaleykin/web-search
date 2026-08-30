@@ -118,6 +118,7 @@ class Document:
     published_at: str | None = None
     published_at_source: str | None = None
     content_type: str = "text/html"
+    status_code: int | None = None
     warnings: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
 

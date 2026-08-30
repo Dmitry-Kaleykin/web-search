@@ -9,6 +9,7 @@ from ..models import Document
 from ..safety.urls import canonicalize_url, validate_public_url
 from ..storage import SQLiteStore
 from .http import ReaderError
+from .quality import page_diagnostics, rendering_signals
 
 
 class Crawl4AIReader:
@@ -65,6 +66,14 @@ class Crawl4AIReader:
         warnings = ["browser_escalation"]
         if recovered_structural_warning:
             warnings.append("crawl4ai_false_positive:minimal_text")
+        status_code = _status_code(result)
+        warnings.extend(
+            f"suspected_error_page:{reason}"
+            for reason in page_diagnostics(title, markdown, status_code=status_code)
+        )
+        warnings.extend(
+            f"browser_output_incomplete:{reason}" for reason in rendering_signals(markdown)
+        )
         document = Document(
             url=canonicalize_url(url),
             final_url=canonicalize_url(final_url),
@@ -76,6 +85,7 @@ class Crawl4AIReader:
             if _metadata_date(result.metadata or {})
             else None,
             content_type="text/html",
+            status_code=status_code,
             warnings=warnings,
             links=_result_links(result.links),
         )
@@ -197,6 +207,11 @@ def _metadata_date(metadata: dict[str, Any]) -> str | None:
         if value:
             return normalize_published_at(value)
     return None
+
+
+def _status_code(result: Any) -> int | None:
+    value = getattr(result, "status_code", None)
+    return value if isinstance(value, int) else None
 
 
 def _title_from_url(url: str) -> str:

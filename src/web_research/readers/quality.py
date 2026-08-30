@@ -34,6 +34,20 @@ _BROWSER_CHECK_RE = re.compile(
     r"performing security verification|please stand by)[.!… ]*$",
     re.IGNORECASE,
 )
+_SOFT_NOT_FOUND_RE = re.compile(
+    r"(?:^|\b)(?:404|page not found|not found|page (?:does not|doesn['\u2019]t) exist)(?:\b|$)",
+    re.IGNORECASE,
+)
+_SERVER_ERROR_RE = re.compile(
+    r"(?:^|\b)(?:500|502|503|504|internal server error|bad gateway|service unavailable|"
+    r"gateway timeout|web server is down|origin is unreachable)(?:\b|$)",
+    re.IGNORECASE,
+)
+_ACCESS_DENIED_RE = re.compile(
+    r"^(?:access denied|forbidden|request blocked|unauthorized)(?:\b|\s*[-:|])",
+    re.IGNORECASE,
+)
+_CLOUDFLARE_ERROR_RE = re.compile(r"\b(52[0-7])\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,16 +55,26 @@ class HTMLQualityAssessment:
     """Signals that the HTTP response probably needs JavaScript rendering."""
 
     browser_reasons: tuple[str, ...] = ()
+    diagnostic_reasons: tuple[str, ...] = ()
 
     @property
     def browser_recommended(self) -> bool:
         return bool(self.browser_reasons)
 
     def warnings(self) -> list[str]:
-        return [f"browser_recommended:{reason}" for reason in self.browser_reasons]
+        return [
+            *[f"browser_recommended:{reason}" for reason in self.browser_reasons],
+            *[f"suspected_error_page:{reason}" for reason in self.diagnostic_reasons],
+        ]
 
 
-def assess_html_quality(html_text: str, extracted_content: str) -> HTMLQualityAssessment:
+def assess_html_quality(
+    html_text: str,
+    extracted_content: str,
+    *,
+    title: str = "",
+    status_code: int | None = None,
+) -> HTMLQualityAssessment:
     """Assess render completeness from semantic signals rather than character counts.
 
     This deliberately answers only whether browser rendering is likely to recover more content.
@@ -72,12 +96,49 @@ def assess_html_quality(html_text: str, extracted_content: str) -> HTMLQualityAs
 
     if probe.app_root_seen and probe.script_count and not _has_meaningful_text(probe.app_root_text):
         reasons.append("empty_app_shell")
-    elif probe.script_count and not _has_meaningful_text(extracted_content):
+    elif probe.script_count and not _has_meaningful_text(probe.body_text):
         reasons.append("script_only_page")
     elif not _has_meaningful_text(extracted_content):
         reasons.append("no_extracted_content")
 
-    return HTMLQualityAssessment(tuple(dict.fromkeys(reasons)))
+    return HTMLQualityAssessment(
+        tuple(dict.fromkeys(reasons)),
+        page_diagnostics(title, extracted_content, status_code=status_code),
+    )
+
+
+def page_diagnostics(
+    title: str,
+    content: str,
+    *,
+    status_code: int | None = None,
+) -> tuple[str, ...]:
+    """Identify likely error documents that were delivered as ordinary HTML."""
+
+    normalized_title = compact_text(title)
+    content_prefix = compact_text(content[:4_000])
+    combined = f"{normalized_title} {content_prefix}"
+    reasons: list[str] = []
+
+    if status_code is not None and status_code >= 400:
+        reasons.append(f"http_{status_code}")
+
+    cloudflare_match = _CLOUDFLARE_ERROR_RE.search(normalized_title)
+    if cloudflare_match and (
+        "cloudflare" in combined.casefold()
+        or "ssl handshake failed" in combined.casefold()
+        or "web server" in combined.casefold()
+        or "origin" in combined.casefold()
+    ):
+        reasons.append(f"cloudflare_{cloudflare_match.group(1)}")
+    elif _SOFT_NOT_FOUND_RE.search(normalized_title):
+        reasons.append("soft_404")
+    elif _SERVER_ERROR_RE.search(normalized_title):
+        reasons.append("server_error")
+    elif _ACCESS_DENIED_RE.search(normalized_title):
+        reasons.append("access_denied")
+
+    return tuple(dict.fromkeys(reasons))
 
 
 def rendering_signals(content: str) -> tuple[str, ...]:
@@ -130,9 +191,11 @@ class _HTMLQualityProbe(HTMLParser):
         self._blocked_depth = 0
         self._noscript_depth = 0
         self._app_root_depth = 0
-        self._stack: list[tuple[str, bool, bool, bool]] = []
+        self._body_depth = 0
+        self._stack: list[tuple[str, bool, bool, bool, bool]] = []
         self._noscript_parts: list[str] = []
         self._app_root_parts: list[str] = []
+        self._body_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
@@ -140,7 +203,8 @@ class _HTMLQualityProbe(HTMLParser):
         starts_blocked = tag in self.BLOCKED
         starts_noscript = tag == "noscript"
         starts_app_root = _is_app_root(attributes)
-        self._stack.append((tag, starts_blocked, starts_noscript, starts_app_root))
+        starts_body = tag == "body"
+        self._stack.append((tag, starts_blocked, starts_noscript, starts_app_root, starts_body))
 
         if tag == "script":
             self.script_count += 1
@@ -151,6 +215,8 @@ class _HTMLQualityProbe(HTMLParser):
         if starts_app_root:
             self.app_root_seen = True
             self._app_root_depth += 1
+        if starts_body:
+            self._body_depth += 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -163,13 +229,15 @@ class _HTMLQualityProbe(HTMLParser):
                 continue
             closing = self._stack[index:]
             del self._stack[index:]
-            for _, blocked, noscript, app_root in reversed(closing):
+            for _, blocked, noscript, app_root, body in reversed(closing):
                 if blocked:
                     self._blocked_depth = max(0, self._blocked_depth - 1)
                 if noscript:
                     self._noscript_depth = max(0, self._noscript_depth - 1)
                 if app_root:
                     self._app_root_depth = max(0, self._app_root_depth - 1)
+                if body:
+                    self._body_depth = max(0, self._body_depth - 1)
             return
 
     def handle_data(self, data: str) -> None:
@@ -177,6 +245,8 @@ class _HTMLQualityProbe(HTMLParser):
             self._noscript_parts.append(data)
         if self._app_root_depth and not self._blocked_depth:
             self._app_root_parts.append(data)
+        if self._body_depth and not self._blocked_depth and not self._noscript_depth:
+            self._body_parts.append(data)
 
     @property
     def noscript_text(self) -> str:
@@ -185,6 +255,10 @@ class _HTMLQualityProbe(HTMLParser):
     @property
     def app_root_text(self) -> str:
         return compact_text(" ".join(self._app_root_parts))
+
+    @property
+    def body_text(self) -> str:
+        return compact_text(" ".join(self._body_parts))
 
 
 def _is_app_root(attributes: dict[str, str]) -> bool:

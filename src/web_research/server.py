@@ -19,6 +19,7 @@ from .model.unavailable import UnavailableModelClient
 from .models import Document
 from .readers.crawl4ai import Crawl4AIReader
 from .readers.http import HTTPReader
+from .readers.quality import page_diagnostics
 from .readers.router import LayeredReader, RenderMode
 from .reranking import OpenAICompatibleReranker
 from .search.searxng import SearXNGSearchProvider
@@ -52,7 +53,8 @@ READ_URL_TOOL_DESCRIPTION = (
     "curl or wget whenever the user supplies a URL and asks to read, inspect, summarize, or "
     "analyze that page. It uses safe bounded HTTP retrieval, Trafilatura with a basic HTML "
     "fallback, and automatic headless-Chromium escalation when rendering appears necessary. "
-    "Use web_search instead when sources need to be discovered or corroborated."
+    "It reports HTTP and suspected error-page status and returns pageable inline content. Use "
+    "web_search instead when sources need to be discovered or corroborated."
 )
 
 
@@ -151,6 +153,8 @@ class ReadUrlOutput(BaseModel):
     title: str
     content: str
     content_type: str
+    status_code: int | None
+    page_status: Literal["ok", "incomplete", "suspected_error"]
     extraction_method: str
     retrieved_at: str
     published_at: str | None
@@ -159,7 +163,12 @@ class ReadUrlOutput(BaseModel):
     warnings: list[str]
     content_characters: int
     content_truncated: bool
+    content_start: int
+    content_end: int
+    has_more_content: bool
+    next_cursor: int | None
     link_count: int
+    links_included: bool
     links_truncated: bool
 
 
@@ -169,6 +178,7 @@ mcp = MCPServer(
         "When the user supplies a URL and asks to read, inspect, summarize, or analyze that page, "
         "use read_url instead of curl, wget, or shell-based downloading. Use web_search when "
         "sources must be discovered, compared, or corroborated, and pass a self-contained request. "
+        "For batched read_url calls, request a small max_chars value and omit links unless needed. "
         "Make one web_search call at a time; parallel calls contend for the same local model and "
         "are rejected. "
         "Preserve the user's temporal wording and never invent a calendar year for latest, "
@@ -204,6 +214,36 @@ async def read_url(
             )
         ),
     ] = "auto",
+    cursor: Annotated[
+        int,
+        Field(
+            ge=0,
+            description=(
+                "Zero-based character offset into the cached extracted content. Use next_cursor "
+                "from a previous result to continue reading the page."
+            ),
+        ),
+    ] = 0,
+    max_chars: Annotated[
+        int,
+        Field(
+            ge=1_000,
+            le=60_000,
+            description=(
+                "Maximum characters to return inline. Use 4000-8000 for batched or fan-out calls "
+                "to avoid client-side payload omission."
+            ),
+        ),
+    ] = 4_000,
+    include_links: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to include extracted links. Leave false for reading and batched calls; "
+                "set true only when the links are needed."
+            )
+        ),
+    ] = False,
 ) -> ReadUrlOutput:
     """Read one known URL through the shared layered retrieval stack."""
 
@@ -219,7 +259,13 @@ async def read_url(
             total=1.0,
             message=f"URL read with {document.method}",
         )
-        return _read_url_output(document, settings)
+        return _read_url_output(
+            document,
+            settings,
+            cursor=cursor,
+            max_chars=max_chars,
+            include_links=include_links,
+        )
     finally:
         await runtime.close()
 
@@ -388,35 +434,87 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
     return _ReaderRuntime(store=store, reader=LayeredReader(http_reader, browser_reader))
 
 
-def _read_url_output(document: Document, settings: Settings) -> ReadUrlOutput:
-    content_limit = settings.read_url_max_chars
+def _read_url_output(
+    document: Document,
+    settings: Settings,
+    *,
+    cursor: int = 0,
+    max_chars: int = 4_000,
+    include_links: bool = False,
+) -> ReadUrlOutput:
+    if cursor > len(document.content):
+        raise ValueError(
+            f"cursor {cursor} exceeds extracted content length {len(document.content)}"
+        )
+    content_limit = min(max_chars, settings.read_url_max_chars)
     link_limit = settings.read_url_max_links
     full_content = document.content
     all_links = document.links
-    content_truncated = len(full_content) > content_limit
-    links_truncated = len(all_links) > link_limit
+    content_end = min(len(full_content), cursor + content_limit)
+    has_more_content = content_end < len(full_content)
+    content_truncated = cursor > 0 or has_more_content
+    returned_links = all_links[:link_limit] if include_links else []
+    links_truncated = len(returned_links) < len(all_links)
     warnings = list(document.warnings)
+    for reason in page_diagnostics(
+        document.title,
+        document.content,
+        status_code=document.status_code,
+    ):
+        warning = f"suspected_error_page:{reason}"
+        if warning not in warnings:
+            warnings.append(warning)
     if content_truncated:
         warnings.append("tool_output_truncated:content")
-    if links_truncated:
+    if links_truncated and include_links:
         warnings.append("tool_output_truncated:links")
     return ReadUrlOutput(
         url=document.url,
         final_url=document.final_url,
         title=document.title,
-        content=full_content[:content_limit],
+        content=full_content[cursor:content_end],
         content_type=document.content_type,
+        status_code=document.status_code,
+        page_status=_page_status(document, warnings),
         extraction_method=document.method,
         retrieved_at=document.retrieved_at,
         published_at=document.published_at,
         published_at_source=document.published_at_source,
-        links=all_links[:link_limit],
+        links=returned_links,
         warnings=warnings,
         content_characters=len(full_content),
         content_truncated=content_truncated,
+        content_start=cursor,
+        content_end=content_end,
+        has_more_content=has_more_content,
+        next_cursor=content_end if has_more_content else None,
         link_count=len(all_links),
+        links_included=include_links,
         links_truncated=links_truncated,
     )
+
+
+def _page_status(
+    document: Document,
+    warnings: list[str] | None = None,
+) -> Literal["ok", "incomplete", "suspected_error"]:
+    effective_warnings = warnings if warnings is not None else document.warnings
+    if document.status_code is not None and document.status_code >= 400:
+        return "suspected_error"
+    if any(warning.startswith("suspected_error_page:") for warning in effective_warnings):
+        return "suspected_error"
+    if any(
+        warning.startswith(
+            (
+                "browser_recommended:",
+                "browser_output_incomplete:",
+                "browser_render_skipped:",
+            )
+        )
+        for warning in effective_warnings
+    ):
+        return "incomplete"
+    return "ok"
 
 
 def _create_model(ctx: Context, settings: Settings) -> ResearchModel:

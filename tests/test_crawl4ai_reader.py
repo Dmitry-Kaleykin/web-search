@@ -42,6 +42,7 @@ class Crawl4AIReaderTests(unittest.IsolatedAsyncioTestCase):
         document = await reader.read("http://127.0.0.1/product")
 
         self.assertEqual(document.content, "Rendered details")
+        self.assertEqual(document.status_code, 200)
         self.assertIn("crawl4ai_false_positive:minimal_text", document.warnings)
 
     async def test_rejects_high_confidence_anti_bot_failure(self):
