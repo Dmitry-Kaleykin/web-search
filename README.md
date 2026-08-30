@@ -10,7 +10,8 @@ This repository currently implements the first vertical slice from [ARCHITECTURE
 - SearXNG JSON discovery with caching and deduplication.
 - Safe, bounded HTTP fetching with redirect revalidation.
 - Trafilatura extraction with a basic HTML fallback.
-- Automatic Crawl4AI/Chromium escalation for failed, short, or JavaScript-shell pages.
+- Automatic Crawl4AI/Chromium escalation for failed retrievals, JavaScript shells, loading
+  placeholders, browser-check interstitials, and responses with no extracted content.
 - Model-generated research requirements and gap-specific queries.
 - Evidence ledger with claim-support, source-count, and domain-diversity gates.
 - Expected-information-gain candidate ranking.

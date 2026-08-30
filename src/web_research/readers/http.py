@@ -14,6 +14,7 @@ from ..safety.urls import (
 )
 from ..storage import SQLiteStore
 from ..text import extract_html_fallback
+from .quality import assess_html_quality, has_meaningful_text
 
 
 class ReaderError(RuntimeError):
@@ -125,8 +126,7 @@ class HTTPReader:
         published_at, published_at_source = published_at_from_html(html_text)
         content, method, warnings = _extract_main_content(html_text, current, fallback_content)
         title = fallback_title or _title_from_url(current)
-        if len(content) < 200:
-            warnings.append("possibly_incomplete: extracted content is very short")
+        warnings.extend(assess_html_quality(html_text, content).warnings())
 
         document = Document(
             url=canonical,
@@ -214,7 +214,7 @@ def _extract_main_content(
     except Exception as exc:  # extraction failure should fall back, not lose the page
         extracted = None
         warnings.append(f"trafilatura_failed: {type(exc).__name__}")
-    if extracted and len(extracted.strip()) >= 100:
+    if extracted and has_meaningful_text(extracted):
         return extracted.strip(), "http+trafilatura", warnings
     warnings.append("main_extraction_fallback")
     return fallback_content, "http+basic_html", warnings

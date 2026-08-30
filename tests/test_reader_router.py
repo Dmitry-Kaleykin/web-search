@@ -42,7 +42,7 @@ class LayeredReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.method, "http")
         self.assertEqual(browser.calls, 0)
 
-    async def test_short_http_page_escalates_to_browser(self) -> None:
+    async def test_javascript_shell_escalates_to_browser(self) -> None:
         primary = FakeReader(document("Enable JavaScript", "http"))
         browser = FakeReader(document("Rendered content " * 40, "crawl4ai+chromium"))
         router = LayeredReader(primary, browser)
@@ -50,8 +50,28 @@ class LayeredReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.method, "crawl4ai+chromium")
         self.assertEqual(browser.calls, 1)
 
-    async def test_browser_failure_preserves_usable_primary_result(self) -> None:
-        primary = FakeReader(document("Short but usable", "http"))
+    async def test_short_substantive_page_does_not_launch_browser(self) -> None:
+        primary = FakeReader(document("Version 4.2 released today.", "http"))
+        browser = FakeReader(document("Rendered", "browser"))
+        router = LayeredReader(primary, browser)
+        result = await router.read("https://example.com")
+        self.assertEqual(result.method, "http")
+        self.assertEqual(browser.calls, 0)
+
+    async def test_http_quality_warning_escalates_to_browser(self) -> None:
+        primary_document = document("Documentation", "http")
+        primary_document.warnings.append("browser_recommended:empty_app_shell")
+        primary = FakeReader(primary_document)
+        browser = FakeReader(document("Rendered documentation", "crawl4ai+chromium"))
+        router = LayeredReader(primary, browser)
+        result = await router.read("https://example.com")
+        self.assertEqual(result.method, "crawl4ai+chromium")
+        self.assertEqual(browser.calls, 1)
+
+    async def test_browser_failure_preserves_primary_result(self) -> None:
+        primary_document = document("Navigation", "http")
+        primary_document.warnings.append("browser_recommended:empty_app_shell")
+        primary = FakeReader(primary_document)
         browser = FakeReader(error=RuntimeError("not installed"))
         router = LayeredReader(primary, browser)
         result = await router.read("https://example.com")

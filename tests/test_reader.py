@@ -1,15 +1,45 @@
 from __future__ import annotations
 
 import gzip
+import sys
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 
-from web_research.readers.http import HTTPReader, ReaderError
+from web_research.readers.http import HTTPReader, ReaderError, _extract_main_content
 
 
 class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_short_valid_trafilatura_result_is_not_discarded(self) -> None:
+        fake_trafilatura = SimpleNamespace(extract=lambda *_args, **_kwargs: "Version 4.2")
+
+        with patch.dict(sys.modules, {"trafilatura": fake_trafilatura}):
+            content, method, warnings = _extract_main_content(
+                "<html><p>Version 4.2</p></html>",
+                "https://example.com/release",
+                "Version 4.2",
+            )
+
+        self.assertEqual(content, "Version 4.2")
+        self.assertEqual(method, "http+trafilatura")
+        self.assertNotIn("main_extraction_fallback", warnings)
+
+    async def test_empty_trafilatura_result_uses_basic_extraction(self) -> None:
+        fake_trafilatura = SimpleNamespace(extract=lambda *_args, **_kwargs: "   ")
+
+        with patch.dict(sys.modules, {"trafilatura": fake_trafilatura}):
+            content, method, warnings = _extract_main_content(
+                "<html><p>Fallback text</p></html>",
+                "https://example.com/release",
+                "Fallback text",
+            )
+
+        self.assertEqual(content, "Fallback text")
+        self.assertEqual(method, "http+basic_html")
+        self.assertIn("main_extraction_fallback", warnings)
+
     async def test_reader_extracts_html_with_bounded_mock_transport(self) -> None:
         html = """
         <html><head><title>Example page</title></head><body>
@@ -66,6 +96,31 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(document.published_at, "2026-08-25T12:30:00+00:00")
         self.assertEqual(document.published_at_source, "json_ld:datePublished")
+
+    async def test_reader_marks_empty_application_shell_for_browser(self) -> None:
+        html = (
+            "<html><head><title>Application</title></head><body>"
+            "<nav>Products</nav><div id='root'></div>"
+            "<script src='/application.js'></script></body></html>"
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"Content-Type": "text/html"},
+                content=html.encode(),
+            )
+
+        reader = HTTPReader(allow_private_urls=True)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            document = await reader.read("http://127.0.0.1/application")
+        finally:
+            await reader.close()
+
+        self.assertIn("browser_recommended:empty_app_shell", document.warnings)
 
     async def test_reader_enforces_response_size_limit(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

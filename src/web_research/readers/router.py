@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..models import Document
 from .base import Reader
+from .quality import rendering_signals
 
 
 class LayeredReader:
@@ -22,7 +23,7 @@ class LayeredReader:
         except Exception as exc:
             primary_error = exc
 
-        if document is not None and not _possibly_incomplete(document):
+        if document is not None and not _browser_recommended(document):
             return document
         if self.browser is None:
             if document is not None:
@@ -46,7 +47,11 @@ class LayeredReader:
             ) from browser_error
 
 
-def _possibly_incomplete(document: Document) -> bool:
-    if len(document.content.strip()) < 500:
+def _browser_recommended(document: Document) -> bool:
+    if rendering_signals(document.content):
         return True
-    return any(warning.startswith("possibly_incomplete") for warning in document.warnings)
+    # Honor the old warning until cached documents written by earlier versions expire.
+    return any(
+        warning.startswith(("browser_recommended:", "possibly_incomplete:"))
+        for warning in document.warnings
+    )
