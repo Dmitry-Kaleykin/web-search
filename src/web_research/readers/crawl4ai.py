@@ -38,18 +38,19 @@ class Crawl4AIReader:
             await self._crawler.close()
             self._crawler = None
 
-    async def read(self, url: str) -> Document:
+    async def read(self, url: str, *, query: str | None = None) -> Document:
         await validate_public_url(
             url,
             allow_private=self.allow_private_urls,
             allow_proxy_fake_ips=self.allow_proxy_fake_ips,
         )
         crawler, run_config = await self._ensure_crawler()
+        effective_config = _query_run_config(run_config, query) if query else run_config
         try:
-            result = await crawler.arun(url=url, config=run_config)
+            result = await crawler.arun(url=url, config=effective_config)
         except Exception as exc:
             raise ReaderError(f"Crawl4AI failed for {url}: {exc}") from exc
-        markdown = _markdown_text(result.markdown)
+        markdown, content_filtered = _markdown_text(result.markdown)
         recovered_structural_warning = _recoverable_structural_warning(result, markdown)
         if not result.success and not recovered_structural_warning:
             raise ReaderError(f"Crawl4AI failed for {url}: {result.error_message}")
@@ -64,6 +65,10 @@ class Crawl4AIReader:
             raise ReaderError(f"Crawl4AI produced no Markdown for {url}")
         title = str((result.metadata or {}).get("title") or _title_from_url(final_url))
         warnings = ["browser_escalation"]
+        if content_filtered:
+            warnings.append("browser_content_filtered")
+        if query:
+            warnings.append("query_focused_extraction")
         if recovered_structural_warning:
             warnings.append("crawl4ai_false_positive:minimal_text")
         status_code = _status_code(result)
@@ -89,7 +94,9 @@ class Crawl4AIReader:
             warnings=warnings,
             links=_result_links(result.links),
         )
-        if self.store:
+        # Query-filtered output is not a complete representation of the URL and must not replace
+        # the shared URL cache used by later research questions.
+        if self.store and not query:
             self.store.put_document(canonicalize_url(url), document)
         return document
 
@@ -99,6 +106,8 @@ class Crawl4AIReader:
                 return self._crawler, self._run_config
             try:
                 from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
+                from crawl4ai.content_filter_strategy import PruningContentFilter
+                from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
             except ImportError as exc:
                 raise ReaderError(
                     "Crawl4AI is unavailable; install the optional `browser` dependency"
@@ -117,6 +126,12 @@ class Crawl4AIReader:
                 delay_before_return_html=0.5,
                 flatten_shadow_dom=True,
                 word_count_threshold=1,
+                markdown_generator=DefaultMarkdownGenerator(
+                    content_filter=PruningContentFilter(
+                        threshold=0.42,
+                        threshold_type="dynamic",
+                    )
+                ),
             )
             self._crawler = AsyncWebCrawler(config=browser_config)
             self._install_network_guard(self._crawler)
@@ -166,11 +181,28 @@ class Crawl4AIReader:
         crawler.crawler_strategy.set_hook("on_page_context_created", on_page_context_created)
 
 
-def _markdown_text(value: Any) -> str:
+def _markdown_text(value: Any) -> tuple[str, bool]:
     if isinstance(value, str):
-        return value
+        return value, False
+    fit = getattr(value, "fit_markdown", None)
+    if isinstance(fit, str) and fit.strip():
+        return fit, True
     raw = getattr(value, "raw_markdown", None)
-    return str(raw or "")
+    return str(raw or ""), False
+
+
+def _query_run_config(run_config: Any, query: str) -> Any:
+    try:
+        from crawl4ai.content_filter_strategy import BM25ContentFilter
+        from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+
+        return run_config.clone(
+            markdown_generator=DefaultMarkdownGenerator(
+                content_filter=BM25ContentFilter(user_query=query, bm25_threshold=0.7)
+            )
+        )
+    except (AttributeError, ImportError, TypeError):
+        return run_config
 
 
 def _recoverable_structural_warning(result: Any, markdown: str) -> bool:

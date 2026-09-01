@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from ..models import Document
+from ..text import lexical_similarity
 from .base import Reader
 from .quality import rendering_signals
 
@@ -19,7 +20,13 @@ class LayeredReader:
         if self.browser is not None:
             await self.browser.close()
 
-    async def read(self, url: str, *, render: RenderMode = "auto") -> Document:
+    async def read(
+        self,
+        url: str,
+        *,
+        render: RenderMode = "auto",
+        query: str | None = None,
+    ) -> Document:
         if render not in {"auto", "never", "always"}:
             raise ValueError(f"Unsupported render mode: {render}")
         primary_error: Exception | None = None
@@ -37,7 +44,12 @@ class LayeredReader:
             assert primary_error is not None
             raise primary_error
 
-        if render == "auto" and document is not None and not _browser_recommended(document):
+        if (
+            render == "auto"
+            and document is not None
+            and not _browser_recommended(document)
+            and not _query_render_recommended(document, query)
+        ):
             return document
         if self.browser is None:
             if document is not None:
@@ -47,6 +59,8 @@ class LayeredReader:
             raise primary_error
 
         try:
+            if query:
+                return await self.browser.read(url, query=query)  # type: ignore[call-arg]
             return await self.browser.read(url)
         except Exception as browser_error:
             if document is not None:
@@ -60,6 +74,11 @@ class LayeredReader:
                 f"browser: {browser_error}"
             ) from browser_error
 
+    async def read_for_research(self, url: str, *, query: str) -> Document:
+        """Read with result-context available for relevance-based browser escalation."""
+
+        return await self.read(url, query=query)
+
 
 def _browser_recommended(document: Document) -> bool:
     if rendering_signals(document.content):
@@ -69,3 +88,14 @@ def _browser_recommended(document: Document) -> bool:
         warning.startswith(("browser_recommended:", "possibly_incomplete:"))
         for warning in document.warnings
     )
+
+
+def _query_render_recommended(document: Document, query: str | None) -> bool:
+    if not query or document.method.startswith("crawl4ai"):
+        return False
+    title_relevance = lexical_similarity(document.title, query)
+    content_relevance = lexical_similarity(document.content[:20_000], query)
+    if title_relevance >= 0.05 and content_relevance < 0.01:
+        document.warnings.append("browser_recommended:relevant_terms_missing")
+        return True
+    return False

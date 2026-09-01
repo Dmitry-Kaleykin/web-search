@@ -83,7 +83,8 @@ Do not start by launching another Pi process inside the MCP server. A purpose-bu
 ## 3. Public MCP contract
 
 Expose `read_url` for a supplied URL and `web_search` for discovery and multi-source research.
-`read_url` accepts a rendering policy (`auto`, `never`, or `always`) plus bounded content pagination.
+`read_url` accepts an optional focus query, a rendering policy (`auto`, `never`, or `always`), and
+bounded content pagination.
 It returns extracted content, HTTP and semantic page status, metadata, links, warnings, and the next
 cursor. `web_search` keeps a self-contained natural-language task and a small number of policy
 controls:
@@ -143,6 +144,8 @@ Return human-readable Markdown as the normal tool content and mirror the importa
     "unresolved_gaps": [],
     "conflicts": []
   },
+  "outcome": "success",
+  "retryable": false,
   "stop_reason": "requirements_satisfied_and_saturated",
   "stats": {
     "search_queries": 6,
@@ -156,6 +159,11 @@ Return human-readable Markdown as the normal tool content and mirror the importa
 ```
 
 The answer should not dump full pages into Pi's context. Return the synthesis, compact supporting excerpts when useful, source metadata, and honest gaps. Persist full extraction artifacts under the `research_id` for debugging and cache reuse.
+
+`outcome=no_evidence` and `outcome=backend_unavailable` describe the research run and do not impose
+a fallback policy on the MCP host. Store upstream SearXNG engine diagnostics with the run, retry
+aggregate engine failures briefly, and stop after repeated empty searches instead of exhausting the
+research budget.
 
 ## 4. Internal data model
 

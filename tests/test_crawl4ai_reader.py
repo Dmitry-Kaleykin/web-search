@@ -68,6 +68,20 @@ class Crawl4AIReaderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ReaderError, "minimal_text"):
             await reader.read("http://127.0.0.1/product")
 
+    async def test_prefers_filtered_markdown_over_navigation_heavy_raw_markdown(self):
+        result = crawl_result(
+            markdown=SimpleNamespace(
+                raw_markdown="Navigation " * 200,
+                fit_markdown="Browser support details",
+            )
+        )
+        reader = await self.reader_for(result)
+
+        document = await reader.read("http://127.0.0.1/product")
+
+        self.assertEqual(document.content, "Browser support details")
+        self.assertIn("browser_content_filtered", document.warnings)
+
 
 if __name__ == "__main__":
     unittest.main()

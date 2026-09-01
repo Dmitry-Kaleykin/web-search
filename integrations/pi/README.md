@@ -40,12 +40,16 @@ Users of TUN proxies with fake-IP DNS may need `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS=
 only synthetic `198.18.0.0/15` answers for hostname URLs; it does not disable the private-network
 guard.
 
-The `web_search` tool returns structured output containing `answer_markdown`, `sources`, `coverage`,
-`stop_reason`, `stats`, and `warnings`. Pi should use `answer_markdown` as the researched answer and
-retain the other fields for transparency. The `read_url` tool returns extracted page content,
+Pi may invoke `web_search` autonomously when web research is useful. The tool returns structured
+output containing `answer_markdown`, `sources`, `coverage`, `outcome`, `retryable`, `stop_reason`,
+`stats`, and `warnings`. Pi should use `answer_markdown` as the researched answer and retain the
+other fields for transparency. Outcome values describe this research run and do not constrain how
+Pi proceeds afterward. The `read_url` tool returns extracted page content,
 HTTP and semantic page status, metadata, links, extraction method, warnings, and pagination fields.
-For fan-out calls, Pi should request a small `max_chars` value and omit links unless needed; it can
-continue a page with the returned `next_cursor` without repeating network retrieval.
+For a long or navigation-heavy page, Pi should pass the user's question as `query` to focus the
+first content window. For fan-out calls, it should request a small `max_chars` value and omit links
+unless needed; it can continue a page with the returned `next_cursor` without repeating network
+retrieval.
 
 Effort-level time limits count only active search and page retrieval. Pi model inference and
 approval time use the independent `WEB_SEARCH_MODEL_TIMEOUT_SECONDS` limit, so a slow planning call

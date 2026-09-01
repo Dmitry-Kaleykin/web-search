@@ -173,6 +173,9 @@ class CoverageReport:
 @dataclass(slots=True)
 class ResearchStats:
     search_queries: int = 0
+    empty_searches: int = 0
+    search_failures: int = 0
+    search_backend_failures: int = 0
     pages_fetched: int = 0
     distinct_domains: int = 0
     elapsed_ms: int = 0
@@ -203,6 +206,8 @@ class ResearchResult:
     answer_markdown: str
     sources: list[Source]
     coverage: CoverageReport
+    outcome: str
+    retryable: bool
     stop_reason: str
     stats: ResearchStats
     warnings: list[str] = field(default_factory=list)

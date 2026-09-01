@@ -658,7 +658,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 ]
 
         search = EmptyLaneSearch()
-        results, fell_back = await _search_with_lane(
+        results, fell_back, warnings = await _search_with_lane(
             search,
             _ActiveTimeBudget(1),
             "relevant paper",
@@ -668,8 +668,48 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(fell_back)
+        self.assertEqual(warnings, [])
         self.assertEqual(search.categories, ["science", None])
         self.assertEqual(len(results), 1)
+
+    async def test_repeated_empty_searches_report_backend_unavailable(self) -> None:
+        class EmptySearch:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def search(self, *_args, **_kwargs):
+                self.calls += 1
+                return []
+
+        class ManyQueryModel(FakeModel):
+            async def complete_json(self, *, schema_name, **kwargs):
+                if schema_name == "search_queries":
+                    return {"queries": ["angle one", "angle two", "angle three", "angle four"]}
+                return await super().complete_json(schema_name=schema_name, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            search = EmptySearch()
+            controller = ResearchController(
+                search=search,
+                reader=FakeReader(),
+                agent=ResearchAgent(ManyQueryModel()),
+                store=store,
+            )
+
+            result = await controller.run(
+                "What is the verified value?",
+                effort="auto",
+                freshness=None,
+                budget=Budget(20, 8, 10, 2, 2, 0.05),
+            )
+
+            self.assertEqual(search.calls, 3)
+            self.assertEqual(result.stats.empty_searches, 3)
+            self.assertEqual(result.outcome, "backend_unavailable")
+            self.assertTrue(result.retryable)
+            self.assertEqual(result.stop_reason, "search_backend_unavailable")
+            store.close()
 
     async def test_fully_rejected_batch_triggers_a_refined_query(self) -> None:
         class RejectThenUsefulSearch:

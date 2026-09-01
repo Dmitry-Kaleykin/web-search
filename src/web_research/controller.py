@@ -33,6 +33,8 @@ ProgressCallback = Callable[[float, str], Awaitable[None]]
 T = TypeVar("T")
 THOROUGH_MIN_SEARCHES = 3
 THOROUGH_MIN_USABLE_DOMAINS = 6
+MAX_CONSECUTIVE_EMPTY_SEARCHES = 3
+MAX_CONSECUTIVE_SEARCH_FAILURES = 2
 LOGGER = logging.getLogger(__name__)
 
 
@@ -151,11 +153,12 @@ class ResearchController:
         attempts_in_search_batch = 0
         low_gain_streak = 0
         rejected_batch_streak = 0
+        consecutive_empty_searches = 0
+        consecutive_search_failures = 0
         rerank_scores: dict[str, float] = {}
         prefetch_tasks: dict[str, asyncio.Task[Document]] = {}
         sufficient_streak = 0
         stop_reason = "search_exhausted"
-
         try:
             while True:
                 if run_deadline.exhausted(reserve=synthesis_reserve):
@@ -185,7 +188,7 @@ class ResearchController:
                             f"Searching{_lane_label(planned_query.lane)}: {search_query}",
                         )
                         try:
-                            results, lane_fallback = await run_deadline.run(
+                            results, lane_fallback, search_warnings = await run_deadline.run(
                                 partial(
                                     _search_with_lane,
                                     self.search,
@@ -200,13 +203,31 @@ class ResearchController:
                         except _RunDeadlineExceeded:
                             raise
                         except Exception as exc:
+                            stats.search_failures += 1
+                            stats.search_backend_failures += 1
+                            consecutive_search_failures += 1
                             warnings.append(f"search_failed: {type(exc).__name__}: {exc}")
                             self.store.event(
                                 research_id,
                                 "search_failed",
                                 {"query": search_query, "error": str(exc)},
                             )
+                            if consecutive_search_failures >= MAX_CONSECUTIVE_SEARCH_FAILURES:
+                                stop_reason = "search_backend_unavailable"
+                                warnings.append(
+                                    "search_backend_unavailable: repeated search request failures"
+                                )
+                                break
                             continue
+                        consecutive_search_failures = 0
+                        for search_warning in search_warnings:
+                            if search_warning not in warnings:
+                                warnings.append(search_warning)
+                            self.store.event(
+                                research_id,
+                                "search_diagnostic",
+                                {"query": search_query, "warning": search_warning},
+                            )
                         if lane_fallback:
                             warnings.append(
                                 f"source_lane_empty:{planned_query.lane}:used_web_fallback"
@@ -224,6 +245,18 @@ class ResearchController:
                                 "count": len(results),
                             },
                         )
+                        if results:
+                            consecutive_empty_searches = 0
+                        else:
+                            stats.empty_searches += 1
+                            consecutive_empty_searches += 1
+                            if consecutive_empty_searches >= MAX_CONSECUTIVE_EMPTY_SEARCHES:
+                                stop_reason = "search_backend_unavailable"
+                                warnings.append(
+                                    "search_backend_unavailable: three consecutive searches "
+                                    "returned no results"
+                                )
+                                break
                         attempts_in_search_batch = 0
                         novel_results: list[SearchResult] = []
                         for result in results:
@@ -409,10 +442,19 @@ class ResearchController:
                 for prefetch_candidate in eligible_ranked[: self.prefetch_pages]:
                     if prefetch_candidate.url in prefetch_tasks:
                         continue
+                    prefetch_query = _reader_query(
+                        spec, coverage.unresolved_gaps, prefetch_candidate
+                    )
                     prefetch_tasks[prefetch_candidate.url] = asyncio.create_task(
                         run_deadline.run(
-                            lambda candidate=prefetch_candidate: browsing_budget.run(
-                                lambda: self.reader.read(candidate.url)
+                            lambda candidate=prefetch_candidate, query=prefetch_query: (
+                                browsing_budget.run(
+                                    lambda: _read_for_research(
+                                        self.reader,
+                                        candidate.url,
+                                        query,
+                                    )
+                                )
                             ),
                             reserve=synthesis_reserve,
                         )
@@ -436,9 +478,14 @@ class ResearchController:
                     if prefetched is not None:
                         document = await prefetched
                     else:
+                        selected_query = _reader_query(spec, coverage.unresolved_gaps, selected)
                         document = await run_deadline.run(
-                            lambda selected=selected: browsing_budget.run(
-                                lambda: self.reader.read(selected.url)
+                            lambda selected=selected, query=selected_query: browsing_budget.run(
+                                lambda: _read_for_research(
+                                    self.reader,
+                                    selected.url,
+                                    query,
+                                )
                             ),
                             reserve=synthesis_reserve,
                         )
@@ -636,11 +683,17 @@ class ResearchController:
             stats.reranker_failures = reranker_usage.failures
             stats.reranker_disabled = reranker_usage.disabled
             self.store.event(research_id, "reranker_usage", asdict(reranker_usage))
+        outcome = _research_outcome(stop_reason, coverage.sufficient, bool(ledger.claims))
         result = ResearchResult(
             research_id=research_id,
             answer_markdown=answer,
             sources=ledger.evidence_sources(),
             coverage=coverage,
+            outcome=outcome,
+            retryable=(
+                outcome in {"backend_unavailable", "no_evidence"}
+                or stop_reason == "search_backend_unavailable"
+            ),
             stop_reason=stop_reason,
             stats=stats,
             warnings=warnings,
@@ -784,7 +837,8 @@ async def _search_with_lane(
     lane: SearchLane,
     language: str | None,
     time_range: str | None,
-) -> tuple[list[SearchResult], bool]:
+) -> tuple[list[SearchResult], bool, list[str]]:
+    warnings: list[str] = []
     results = await browsing_budget.run(
         lambda: search.search(
             _lane_query(query, lane),
@@ -794,8 +848,9 @@ async def _search_with_lane(
             limit=12,
         )
     )
+    warnings.extend(getattr(search, "last_warnings", []))
     if results or lane == SearchLane.WEB:
-        return results, False
+        return results, False, warnings
     fallback = await browsing_budget.run(
         lambda: search.search(
             query,
@@ -805,7 +860,33 @@ async def _search_with_lane(
             limit=12,
         )
     )
-    return fallback, True
+    warnings.extend(getattr(search, "last_warnings", []))
+    return fallback, True, list(dict.fromkeys(warnings))
+
+
+async def _read_for_research(reader: Reader, url: str, query: str) -> Document:
+    focused_reader = getattr(reader, "read_for_research", None)
+    if callable(focused_reader):
+        return await focused_reader(url, query=query)
+    return await reader.read(url)
+
+
+def _reader_query(spec, unresolved_requirement_ids: list[str], candidate: SearchResult) -> str:
+    unresolved = set(unresolved_requirement_ids)
+    requirements = [
+        item.question for item in spec.requirements if not unresolved or item.id in unresolved
+    ]
+    return "\n".join([candidate.title, candidate.snippet, *requirements[:4]])[:6_000]
+
+
+def _research_outcome(stop_reason: str, sufficient: bool, has_claims: bool) -> str:
+    if sufficient:
+        return "success"
+    if has_claims:
+        return "partial"
+    if stop_reason == "search_backend_unavailable":
+        return "backend_unavailable"
+    return "no_evidence"
 
 
 def _linked_candidates(

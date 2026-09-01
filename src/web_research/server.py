@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -24,6 +25,7 @@ from .readers.router import LayeredReader, RenderMode
 from .reranking import OpenAICompatibleReranker
 from .search.searxng import SearXNGSearchProvider
 from .storage import SQLiteStore
+from .text import lexical_similarity
 
 try:
     from mcp.server import MCPServer
@@ -45,7 +47,8 @@ WEB_SEARCH_TOOL_DESCRIPTION = (
     "Make one self-contained call for the whole request; do not invoke web_search in parallel. "
     "Pass the user's temporal wording faithfully. For relative requests such as latest, recent, "
     "current, or today, keep that wording relative; the server resolves it from its own clock. "
-    "Never add a calendar year unless the user explicitly supplied that year."
+    "Never add a calendar year unless the user explicitly supplied that year. Inspect outcome and "
+    "warnings before deciding whether to retry, answer partially, or use another approach."
 )
 
 READ_URL_TOOL_DESCRIPTION = (
@@ -54,7 +57,8 @@ READ_URL_TOOL_DESCRIPTION = (
     "analyze that page. It uses safe bounded HTTP retrieval, Trafilatura with a basic HTML "
     "fallback, and automatic headless-Chromium escalation when rendering appears necessary. "
     "It reports HTTP and suspected error-page status and returns pageable inline content. Use "
-    "web_search instead when sources need to be discovered or corroborated."
+    "the optional query parameter to focus a navigation-heavy or long page. Use web_search instead "
+    "when sources need to be discovered or corroborated."
 )
 
 
@@ -113,6 +117,9 @@ class ToolCoverage(BaseModel):
 
 class ToolStats(BaseModel):
     search_queries: int
+    empty_searches: int
+    search_failures: int
+    search_backend_failures: int
     pages_fetched: int
     distinct_domains: int
     elapsed_ms: int
@@ -142,6 +149,8 @@ class WebSearchOutput(BaseModel):
     answer_markdown: str
     sources: list[ToolSource]
     coverage: ToolCoverage
+    outcome: Literal["success", "partial", "no_evidence", "backend_unavailable"]
+    retryable: bool
     stop_reason: str
     stats: ToolStats
     warnings: list[str]
@@ -183,7 +192,9 @@ mcp = MCPServer(
         "are rejected. "
         "Preserve the user's temporal wording and never invent a calendar year for latest, "
         "recent, current, or today; web_search uses its server clock. "
-        "The tool reads sources, tracks evidence gaps, and returns a cited synthesis."
+        "The tool reads sources, tracks evidence gaps, and returns a cited synthesis. Inspect its "
+        "outcome, coverage, and warnings before deciding whether to retry or continue by another "
+        "method."
     ),
 )
 
@@ -204,6 +215,16 @@ async def read_url(
         ),
     ],
     ctx: Context,
+    query: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional question or topic to focus extraction on. On the first call, read_url "
+                "returns the most relevant content window instead of blindly returning page "
+                "navigation from the beginning."
+            )
+        ),
+    ] = None,
     render: Annotated[
         RenderMode,
         Field(
@@ -253,7 +274,7 @@ async def read_url(
     runtime = _create_reader_runtime(settings)
     try:
         await ctx.report_progress(progress=0.1, total=1.0, message="Fetching the supplied URL")
-        document = await runtime.reader.read(url.strip(), render=render)
+        document = await runtime.reader.read(url.strip(), render=render, query=query)
         await ctx.report_progress(
             progress=1.0,
             total=1.0,
@@ -265,6 +286,7 @@ async def read_url(
             cursor=cursor,
             max_chars=max_chars,
             include_links=include_links,
+            query=query,
         )
     finally:
         await runtime.close()
@@ -441,6 +463,7 @@ def _read_url_output(
     cursor: int = 0,
     max_chars: int = 4_000,
     include_links: bool = False,
+    query: str | None = None,
 ) -> ReadUrlOutput:
     if cursor > len(document.content):
         raise ValueError(
@@ -450,9 +473,14 @@ def _read_url_output(
     link_limit = settings.read_url_max_links
     full_content = document.content
     all_links = document.links
-    content_end = min(len(full_content), cursor + content_limit)
+    content_start = cursor
+    focused = False
+    if query and cursor == 0:
+        content_start = _focused_content_start(full_content, query)
+        focused = content_start > 0
+    content_end = min(len(full_content), content_start + content_limit)
     has_more_content = content_end < len(full_content)
-    content_truncated = cursor > 0 or has_more_content
+    content_truncated = content_start > 0 or has_more_content
     returned_links = all_links[:link_limit] if include_links else []
     links_truncated = len(returned_links) < len(all_links)
     warnings = list(document.warnings)
@@ -466,13 +494,15 @@ def _read_url_output(
             warnings.append(warning)
     if content_truncated:
         warnings.append("tool_output_truncated:content")
+    if focused:
+        warnings.append("tool_output_relevance_window")
     if links_truncated and include_links:
         warnings.append("tool_output_truncated:links")
     return ReadUrlOutput(
         url=document.url,
         final_url=document.final_url,
         title=document.title,
-        content=full_content[cursor:content_end],
+        content=full_content[content_start:content_end],
         content_type=document.content_type,
         status_code=document.status_code,
         page_status=_page_status(document, warnings),
@@ -484,7 +514,7 @@ def _read_url_output(
         warnings=warnings,
         content_characters=len(full_content),
         content_truncated=content_truncated,
-        content_start=cursor,
+        content_start=content_start,
         content_end=content_end,
         has_more_content=has_more_content,
         next_cursor=content_end if has_more_content else None,
@@ -492,6 +522,27 @@ def _read_url_output(
         links_included=include_links,
         links_truncated=links_truncated,
     )
+
+
+def _focused_content_start(content: str, query: str) -> int:
+    # A relevant page title/H1 is usually the safest entry point: it preserves definitions and
+    # status callouts that precede a later matching paragraph, while skipping global navigation.
+    for heading in re.finditer(r"(?m)^#\s+.+$", content):
+        if lexical_similarity(heading.group(0), query) > 0:
+            return heading.start()
+
+    spans: list[tuple[float, int]] = []
+    for match in re.finditer(r"[^\n]+(?:\n(?!\s*\n)[^\n]+)*", content):
+        paragraph = match.group(0).strip()
+        if paragraph:
+            spans.append((lexical_similarity(paragraph, query), match.start()))
+    if not spans:
+        return 0
+    score, start = max(spans, key=lambda item: item[0])
+    if score <= 0:
+        return 0
+    heading_start = content.rfind("\n#", max(0, start - 2_000), start)
+    return heading_start + 1 if heading_start >= 0 else start
 
 
 def _page_status(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any
@@ -23,6 +24,8 @@ class SearXNGSearchProvider:
         cache_ttl_seconds: int = 900,
         timeout_seconds: float = 20.0,
         user_agent: str = "LocalResearchBot/0.1",
+        max_retries: int = 2,
+        retry_base_seconds: float = 0.25,
     ) -> None:
         try:
             import httpx
@@ -31,6 +34,9 @@ class SearXNGSearchProvider:
         self.base_url = base_url.rstrip("/")
         self.store = store
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.max_retries = max(0, max_retries)
+        self.retry_base_seconds = max(0.0, retry_base_seconds)
+        self.last_warnings: list[str] = []
         self._client = httpx.AsyncClient(
             timeout=timeout_seconds,
             headers={"User-Agent": user_agent, "Accept": "application/json"},
@@ -49,6 +55,7 @@ class SearXNGSearchProvider:
         categories: str | None = None,
         limit: int = 10,
     ) -> list[SearchResult]:
+        self.last_warnings = []
         cache_key = _cache_key(query, page, language, time_range, categories, limit)
         if self.store:
             cached = self.store.get_search(cache_key, self.cache_ttl_seconds)
@@ -68,16 +75,40 @@ class SearXNGSearchProvider:
         if categories:
             params["categories"] = categories
 
-        try:
-            response = await self._client.get(f"{self.base_url}/search", params=params)
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
-            raise SearXNGError(f"SearXNG request failed: {exc}") from exc
-
-        raw_results = payload.get("results")
-        if not isinstance(raw_results, list):
-            raise SearXNGError("SearXNG returned no JSON results array")
+        payload: dict[str, Any] = {}
+        raw_results: list[Any] = []
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await self._client.get(f"{self.base_url}/search", params=params)
+                response.raise_for_status()
+                decoded = response.json()
+            except Exception as exc:
+                if attempt < self.max_retries:
+                    await _retry_delay(self.retry_base_seconds, attempt)
+                    continue
+                raise SearXNGError(
+                    f"SearXNG request failed after {attempt + 1} attempt(s): {exc}"
+                ) from exc
+            if not isinstance(decoded, dict):
+                raise SearXNGError("SearXNG returned a non-object JSON response")
+            payload = decoded
+            candidate_results = payload.get("results")
+            if not isinstance(candidate_results, list):
+                raise SearXNGError("SearXNG returned no JSON results array")
+            raw_results = candidate_results
+            engine_failures = _unresponsive_engines(payload)
+            if engine_failures:
+                warning = "search_engines_unresponsive:" + ", ".join(engine_failures)
+                self.last_warnings = [warning]
+            if raw_results or not engine_failures:
+                break
+            if attempt < self.max_retries:
+                await _retry_delay(self.retry_base_seconds, attempt)
+                continue
+            raise SearXNGError(
+                "SearXNG returned no results because upstream engines were unresponsive after "
+                f"{attempt + 1} attempt(s): {', '.join(engine_failures)}"
+            )
 
         results: list[SearchResult] = []
         seen: set[str] = set()
@@ -117,6 +148,31 @@ class SearXNGSearchProvider:
         if self.store and results:
             self.store.put_search(cache_key, results)
         return results
+
+
+async def _retry_delay(base_seconds: float, attempt: int) -> None:
+    if base_seconds:
+        await asyncio.sleep(base_seconds * (2**attempt))
+
+
+def _unresponsive_engines(payload: dict[str, Any]) -> list[str]:
+    raw = payload.get("unresponsive_engines")
+    if not isinstance(raw, list):
+        return []
+    failures: list[str] = []
+    for item in raw[:12]:
+        if isinstance(item, (list, tuple)):
+            parts = [str(value).strip() for value in item[:2] if str(value).strip()]
+            text = ": ".join(parts)
+        elif isinstance(item, dict):
+            engine = str(item.get("engine") or item.get("name") or "unknown").strip()
+            error = str(item.get("error") or item.get("message") or "unresponsive").strip()
+            text = f"{engine}: {error}"
+        else:
+            text = str(item).strip()
+        if text and text not in failures:
+            failures.append(text[:240])
+    return failures
 
 
 def _cache_key(

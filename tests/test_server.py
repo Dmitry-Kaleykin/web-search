@@ -77,6 +77,8 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(search_tool.input_schema["required"], ["query"])
         self.assertIn("answer_markdown", search_tool.output_schema["properties"])
+        self.assertIn("outcome", search_tool.output_schema["properties"])
+        self.assertIn("retryable", search_tool.output_schema["properties"])
         self.assertNotIn(
             "has_primary",
             search_tool.output_schema["$defs"]["ToolCoverageItem"]["properties"],
@@ -89,6 +91,11 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("candidates_rejected_irrelevant", stats_schema)
         self.assertIn("relevance_batches_rejected", stats_schema)
         self.assertIn("prefetch_started", stats_schema)
+        self.assertIn("empty_searches", stats_schema)
+        self.assertIn("search_backend_failures", stats_schema)
+        self.assertIn("Inspect outcome", search_tool.description)
+        self.assertNotIn("ask permission", search_tool.description)
+        self.assertNotIn("model memory", search_tool.description)
         self.assertIn("Never add a calendar year", search_tool.description)
         self.assertIn("do not invoke web_search in parallel", search_tool.description)
         self.assertIn(
@@ -163,6 +170,29 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(output.links_included)
         self.assertEqual(output.links, [])
 
+    async def test_read_url_output_can_focus_past_navigation(self) -> None:
+        document = Document(
+            url="https://example.com/page",
+            final_url="https://example.com/page",
+            title="Example",
+            content=(
+                "Navigation products docs account\n\n" * 200
+                + "# Browser compatibility\n\nFirefox supports anchor-size from version 147."
+            ),
+            method="crawl4ai+chromium",
+        )
+
+        output = _read_url_output(
+            document,
+            Settings(read_url_max_chars=500),
+            max_chars=500,
+            query="anchor-size Firefox browser compatibility",
+        )
+
+        self.assertGreater(output.content_start, 0)
+        self.assertIn("Browser compatibility", output.content)
+        self.assertIn("tool_output_relevance_window", output.warnings)
+
     async def test_read_url_output_surfaces_suspected_error_page(self) -> None:
         document = Document(
             url="https://example.com/error",
@@ -205,6 +235,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         reader.read.assert_awaited_once_with(
             "https://example.com/page",
             render="always",
+            query=None,
         )
         runtime.close.assert_awaited_once()
         self.assertEqual(output.extraction_method, "crawl4ai+chromium")

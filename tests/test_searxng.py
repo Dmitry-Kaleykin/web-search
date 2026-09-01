@@ -6,11 +6,58 @@ from pathlib import Path
 
 import httpx
 
-from web_research.search.searxng import SearXNGSearchProvider
+from web_research.search.searxng import SearXNGError, SearXNGSearchProvider
 from web_research.storage import SQLiteStore
 
 
 class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unresponsive_engines_are_retried_and_reported(self):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={"results": [], "unresponsive_engines": [["brave", "timeout"]]},
+            )
+
+        provider = SearXNGSearchProvider(
+            "http://searxng.test",
+            max_retries=2,
+            retry_base_seconds=0,
+        )
+        await provider._client.aclose()
+        provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with self.assertRaisesRegex(SearXNGError, "upstream engines were unresponsive"):
+                await provider.search("browser support")
+        finally:
+            await provider.close()
+
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(provider.last_warnings, ["search_engines_unresponsive:brave: timeout"])
+
+    async def test_partial_engine_failure_is_exposed_with_usable_results(self):
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [{"url": "https://example.com", "title": "Example"}],
+                    "unresponsive_engines": [["google", "captcha"]],
+                },
+            )
+
+        provider = SearXNGSearchProvider("http://searxng.test")
+        await provider._client.aclose()
+        provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            results = await provider.search("example")
+        finally:
+            await provider.close()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(provider.last_warnings, ["search_engines_unresponsive:google: captcha"])
+
     async def test_empty_transient_results_are_not_cached(self):
         requests: list[httpx.Request] = []
 

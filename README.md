@@ -9,7 +9,9 @@ without sampling support.
 This repository currently implements the first vertical slice from [ARCHITECTURE.md](ARCHITECTURE.md):
 
 - SearXNG JSON discovery with caching and deduplication.
+- SearXNG upstream-engine health diagnostics, bounded retry, and empty-backend detection.
 - Safe, bounded HTTP fetching with redirect revalidation.
+- Structured JSON evidence retrieval, including `.json` resources served as plain text.
 - Trafilatura extraction with a basic HTML fallback.
 - Automatic Crawl4AI/Chromium escalation for failed retrievals, JavaScript shells, loading
   placeholders, browser-check interstitials, and responses with no extracted content.
@@ -186,7 +188,7 @@ and falls back to this compatible handshake path.
 The tool signatures are:
 
 ```text
-read_url(url, render="auto", cursor=0, max_chars=4000, include_links=false)
+read_url(url, query=null, render="auto", cursor=0, max_chars=4000, include_links=false)
 web_search(query, effort="auto", freshness=null)
 ```
 
@@ -195,12 +197,19 @@ Trafilatura, basic-HTML, and conditional Chromium stack; `never` prevents Chromi
 and `always` attempts Chromium while preserving the HTTP result if browser rendering fails. Direct
 page output includes the HTTP status, a separate semantic page status, and warnings for likely soft
 404s, CDN/upstream error documents, or incomplete browser output. Content is returned in bounded
-inline chunks; continue with `next_cursor`, and use a smaller `max_chars` with `include_links=false`
-for batched or fan-out calls.
+inline chunks; continue with `next_cursor`. Set `query` for a long or navigation-heavy page to
+return the most relevant content window first. Rendered pages use filtered Markdown when Crawl4AI
+can identify the main content. Use a smaller `max_chars` with `include_links=false` for batched or
+fan-out calls.
 
-Send a complete research request to `web_search` in one call. The server permits one active research
-run at a time and rejects overlapping calls rather than letting two searches contend for the same
-local model.
+Send a complete research request to `web_search` in one call. The calling model may invoke it
+autonomously when web research is useful. The server permits one active research run at a time and
+rejects overlapping calls rather than letting two searches contend for the same local model.
+
+`web_search` reports `outcome` as `success`, `partial`, `no_evidence`, or
+`backend_unavailable`, plus a `retryable` flag. These describe the research run rather than imposing
+a policy on what the calling model does next. Repeated empty searches and upstream-engine failures
+stop early and are recorded in warnings and SQLite events.
 
 Pi should pass the user's temporal wording faithfully. For requests such as "latest", "recent",
 "current", or "today", it must not insert a calendar year unless the user supplied one. The server

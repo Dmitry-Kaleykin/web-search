@@ -71,6 +71,33 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(document.method, {"http+trafilatura", "http+basic_html"})
         self.assertEqual(document.status_code, 200)
 
+    async def test_reader_accepts_structured_json_evidence(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                request=request,
+                # raw.githubusercontent.com commonly serves repository JSON as text/plain.
+                headers={"Content-Type": "text/plain"},
+                json={
+                    "support": {
+                        "chrome": {"version_added": "125"},
+                        "firefox": {"version_added": "147"},
+                    }
+                },
+            )
+
+        reader = HTTPReader(allow_private_urls=True)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            document = await reader.read("http://127.0.0.1/compat.json")
+        finally:
+            await reader.close()
+
+        self.assertEqual(document.method, "http+json")
+        self.assertIn('"version_added": "147"', document.content)
+        self.assertEqual(document.content_type, "text/plain")
+
     async def test_reader_marks_cloudflare_soft_error_page(self) -> None:
         html = """
         <html><head><title>pi.dev | 525: SSL handshake failed</title></head>

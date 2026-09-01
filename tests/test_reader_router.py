@@ -13,7 +13,7 @@ class FakeReader:
         self.calls = 0
         self.closed = False
 
-    async def read(self, _url):
+    async def read(self, _url, **_kwargs):
         self.calls += 1
         if self.error:
             raise self.error
@@ -99,6 +99,20 @@ class LayeredReaderTests(unittest.IsolatedAsyncioTestCase):
         result = await router.read("https://example.com")
         self.assertEqual(result.method, "http")
         self.assertTrue(any(item.startswith("browser_fallback_failed") for item in result.warnings))
+
+    async def test_relevant_title_with_missing_body_terms_escalates_to_browser(self) -> None:
+        primary = FakeReader(document("Account navigation and site links", "http"))
+        primary.result.title = "anchor-size browser compatibility"
+        browser = FakeReader(document("Firefox supports anchor-size in version 147", "browser"))
+        router = LayeredReader(primary, browser)
+
+        result = await router.read(
+            "https://example.com",
+            query="anchor-size browser compatibility Firefox",
+        )
+
+        self.assertEqual(result.method, "browser")
+        self.assertEqual(browser.calls, 1)
 
 
 if __name__ == "__main__":

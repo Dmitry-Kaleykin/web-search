@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 from urllib.parse import urlsplit
 
 from ..dates import published_at_from_html
@@ -115,13 +116,43 @@ class HTTPReader:
             raise UnsupportedContentError(
                 "PDF support is planned but not enabled in this milestone"
             )
-        if content_type and not (
-            content_type.startswith("text/")
-            or content_type in {"application/xhtml+xml", "application/xml"}
+        is_json = (
+            content_type == "application/json"
+            or content_type.endswith("+json")
+            or urlsplit(current).path.lower().endswith(".json")
+        )
+        if (
+            content_type
+            and not is_json
+            and not (
+                content_type.startswith("text/")
+                or content_type in {"application/xhtml+xml", "application/xml"}
+            )
         ):
             raise UnsupportedContentError(f"Unsupported content type: {content_type}")
 
-        html_text = response.content.decode(response.encoding or "utf-8", errors="replace")
+        decoded_text = response.content.decode(response.encoding or "utf-8", errors="replace")
+        if is_json:
+            try:
+                content = json.dumps(json.loads(decoded_text), ensure_ascii=False, indent=2)
+            except json.JSONDecodeError:
+                content = decoded_text.strip()
+            document = Document(
+                url=canonical,
+                final_url=canonicalize_url(current),
+                title=_title_from_url(current),
+                content=content,
+                method="http+json",
+                content_type=content_type,
+                status_code=response.status_code,
+                warnings=[],
+                links=[],
+            )
+            if self.store:
+                self.store.put_document(canonical, document)
+            return document
+
+        html_text = decoded_text
         fallback_title, fallback_content, links = extract_html_fallback(html_text, current)
         published_at, published_at_source = published_at_from_html(html_text)
         content, method, warnings = _extract_main_content(html_text, current, fallback_content)
