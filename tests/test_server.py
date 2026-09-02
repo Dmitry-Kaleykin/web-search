@@ -84,6 +84,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             search_tool.output_schema["$defs"]["ToolCoverageItem"]["properties"],
         )
         stats_schema = search_tool.output_schema["$defs"]["ToolStats"]["properties"]
+        self.assertIn("pipeline_profile", stats_schema)
         self.assertIn("evidence_model", stats_schema)
         self.assertIn("evidence_model_successes", stats_schema)
         self.assertIn("evidence_model_fallbacks", stats_schema)

@@ -216,17 +216,24 @@ Pi should pass the user's temporal wording faithfully. For requests such as "lat
 anchors those relative terms to its local date and includes that authoritative date in every model
 stage. Explicit requests such as "news from 2025" remain unchanged.
 
-- `quick`: a short lookup with a five-minute wall-clock ceiling.
-- `auto`: normal research and comparisons with a twelve-minute wall-clock ceiling.
+- `quick`: a low-latency lookup with one search, at most two fetched pages, 15 active browsing
+  seconds, and a one-minute wall-clock ceiling. It uses heuristic requirements, the original query,
+  deterministic ranking/evidence extraction, and one final synthesis call; semantic reranking,
+  follow-up planning, and link discovery are skipped.
+- `auto`: routes simple factual lookups to the quick pipeline and uses the standard research
+  pipeline for comparisons, recommendations, current events, explanations, and explorations. The
+  standard pipeline has a twelve-minute wall-clock ceiling.
 - `thorough`: a wider evidence search with a twenty-five-minute wall-clock ceiling; it does not stop for saturation
   before attempting at least three searches and collecting usable evidence from six domains.
 
-These modes set maximum wall-clock, active-browsing, search-call, and page budgets. Model inference
-and approval latency count toward the wall-clock ceiling but not the narrower browsing allowance;
-each individual model call also uses `WEB_SEARCH_MODEL_TIMEOUT_SECONDS`. The controller reserves
-time for final synthesis so it can return the best available evidence before Pi's outer timeout.
-It reads only a small candidate batch from each query before moving to another search angle, and it
-defers model-based gap assessment until a new query is actually needed.
+Modes select immutable pipeline profiles assembled from shared spec, query, reranking, retrieval,
+evidence, follow-up, and synthesis stages. Profiles also set maximum wall-clock, active-browsing,
+search-call, and page budgets. Model inference and approval latency count toward the wall-clock
+ceiling but not the narrower browsing allowance; each individual model call also uses
+`WEB_SEARCH_MODEL_TIMEOUT_SECONDS`. The controller reserves time for final synthesis so it can
+return the best available evidence before Pi's outer timeout. The standard and thorough profiles
+read only a small candidate batch from each query before moving to another search angle, and defer
+model-based gap assessment until a new query is actually needed.
 
 Evidence claims are accepted only when their statement is lexically supported by a verbatim page
 excerpt and every numeric/date token appears in that excerpt. Invalid excerpts may be replaced from

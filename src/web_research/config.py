@@ -215,15 +215,15 @@ class Budget:
 
 BUDGETS: dict[str, Budget] = {
     "quick": Budget(
-        30.0,
-        2,
-        5,
+        15.0,
+        1,
         2,
         1,
-        0.15,
-        max_wall_seconds=300.0,
-        synthesis_reserve_seconds=105.0,
-        max_attempts_per_search_batch=2,
+        1,
+        0.2,
+        max_wall_seconds=60.0,
+        synthesis_reserve_seconds=30.0,
+        max_attempts_per_search_batch=1,
     ),
     "auto": Budget(
         120.0,

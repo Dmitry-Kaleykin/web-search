@@ -21,6 +21,15 @@ from .config import Budget
 from .dates import normalize_published_at
 from .evidence import EvidenceLedger
 from .models import Document, PlannedQuery, ResearchResult, ResearchStats, SearchLane, SearchResult
+from .pipeline import (
+    EvidenceStrategy,
+    FollowupStrategy,
+    PipelineProfile,
+    QueryStrategy,
+    RerankingStrategy,
+    SpecStrategy,
+    pipeline_for_request,
+)
 from .ranking import gate_candidates, rank_candidates
 from .readers.base import Reader
 from .reranking import CandidateReranker, RerankingError
@@ -31,8 +40,6 @@ from .text import lexical_similarity
 
 ProgressCallback = Callable[[float, str], Awaitable[None]]
 T = TypeVar("T")
-THOROUGH_MIN_SEARCHES = 3
-THOROUGH_MIN_USABLE_DOMAINS = 6
 MAX_CONSECUTIVE_EMPTY_SEARCHES = 3
 MAX_CONSECUTIVE_SEARCH_FAILURES = 2
 LOGGER = logging.getLogger(__name__)
@@ -74,18 +81,21 @@ class ResearchController:
         *,
         effort: str,
         freshness: str | None,
-        budget: Budget,
+        budget: Budget | None = None,
+        pipeline: PipelineProfile | None = None,
         progress: ProgressCallback | None = None,
     ) -> ResearchResult:
+        selected_pipeline = pipeline or pipeline_for_request(effort, query, freshness)
+        selected_budget = budget or selected_pipeline.budget
         research_id = str(uuid.uuid4())
         started = time.monotonic()
         self.store.start_run(research_id, query, effort)
         try:
             return await self._run_started(
                 query,
-                effort=effort,
+                pipeline=selected_pipeline,
                 freshness=freshness,
-                budget=budget,
+                budget=selected_budget,
                 research_id=research_id,
                 started=started,
                 progress=progress,
@@ -98,7 +108,7 @@ class ResearchController:
         self,
         query: str,
         *,
-        effort: str,
+        pipeline: PipelineProfile,
         freshness: str | None,
         budget: Budget,
         research_id: str,
@@ -109,38 +119,46 @@ class ResearchController:
         browsing_budget = _ActiveTimeBudget(budget.max_seconds)
         run_deadline = _RunDeadline(budget.max_wall_seconds)
         synthesis_reserve = budget.synthesis_reserve_seconds
-        stats = ResearchStats()
+        stats = ResearchStats(pipeline_profile=pipeline.name)
         warnings: list[str] = []
         deadline_reached = False
 
-        await callback(0.02, "Compiling the research requirements")
-        try:
-            spec = await run_deadline.run(
-                lambda: self.agent.compile_spec(query, freshness),
-                reserve=synthesis_reserve,
-            )
-        except _RunDeadlineExceeded:
+        self.store.event(research_id, "pipeline_profile", _pipeline_payload(pipeline))
+        if pipeline.spec == SpecStrategy.HEURISTIC:
             spec = heuristic_spec(query, freshness)
-            deadline_reached = True
-            warnings.append("research_spec_fallback: internal research deadline reached")
-        except Exception as exc:
-            spec = heuristic_spec(query, freshness)
-            warnings.append(f"research_spec_fallback: {type(exc).__name__}: {exc}")
+            await callback(0.02, "Using heuristic research requirements")
+        else:
+            await callback(0.02, "Compiling the research requirements")
+            try:
+                spec = await run_deadline.run(
+                    lambda: self.agent.compile_spec(query, freshness),
+                    reserve=synthesis_reserve,
+                )
+            except _RunDeadlineExceeded:
+                spec = heuristic_spec(query, freshness)
+                deadline_reached = True
+                warnings.append("research_spec_fallback: internal research deadline reached")
+            except Exception as exc:
+                spec = heuristic_spec(query, freshness)
+                warnings.append(f"research_spec_fallback: {type(exc).__name__}: {exc}")
         self.store.event(research_id, "research_spec", _spec_payload(spec))
         ledger = EvidenceLedger(spec)
 
-        try:
-            initial_queries = await run_deadline.run(
-                lambda: self.agent.plan_queries(spec),
-                reserve=synthesis_reserve,
-            )
-        except _RunDeadlineExceeded:
+        if pipeline.queries == QueryStrategy.DIRECT:
             initial_queries = [PlannedQuery(query=query)]
-            deadline_reached = True
-            warnings.append("query_planning_fallback: internal research deadline reached")
-        except Exception as exc:
-            initial_queries = [PlannedQuery(query=query)]
-            warnings.append(f"query_planning_fallback: {type(exc).__name__}: {exc}")
+        else:
+            try:
+                initial_queries = await run_deadline.run(
+                    lambda: self.agent.plan_queries(spec),
+                    reserve=synthesis_reserve,
+                )
+            except _RunDeadlineExceeded:
+                initial_queries = [PlannedQuery(query=query)]
+                deadline_reached = True
+                warnings.append("query_planning_fallback: internal research deadline reached")
+            except Exception as exc:
+                initial_queries = [PlannedQuery(query=query)]
+                warnings.append(f"query_planning_fallback: {type(exc).__name__}: {exc}")
         if not initial_queries:
             initial_queries = [PlannedQuery(query=query)]
         pending_queries = deque(initial_queries)
@@ -265,7 +283,11 @@ class ResearchController:
                                 novel_results.append(result)
                                 discovered_urls.add(result.url)
                         batch_rerank_scores: dict[str, float] = {}
-                        if self.reranker is not None and novel_results:
+                        if (
+                            pipeline.reranking == RerankingStrategy.SEMANTIC
+                            and self.reranker is not None
+                            and novel_results
+                        ):
                             await callback(
                                 _progress(stats, coverage.score, budget),
                                 f"Reranking {len(novel_results)} search candidates with "
@@ -365,10 +387,12 @@ class ResearchController:
                                 stats.relevance_batches_rejected += 1
                         continue
 
-                    needs_depth = not _research_depth_satisfied(effort, stats, ledger)
+                    needs_depth = not _research_depth_satisfied(pipeline, stats, ledger)
                     if (
-                        not coverage.sufficient or needs_depth
-                    ) and stats.search_queries < budget.max_searches:
+                        (not coverage.sufficient or needs_depth)
+                        and stats.search_queries < budget.max_searches
+                        and (pipeline.followups == FollowupStrategy.MODEL)
+                    ):
                         followups = await self._followup_queries(
                             spec,
                             ledger,
@@ -463,7 +487,7 @@ class ResearchController:
                 candidates.remove(selected)
                 attempts_in_search_batch += 1
 
-                depth_satisfied = _research_depth_satisfied(effort, stats, ledger)
+                depth_satisfied = _research_depth_satisfied(pipeline, stats, ledger)
                 if coverage.sufficient and depth_satisfied and selected_score < budget.min_gain:
                     stop_reason = "requirements_satisfied_and_expected_gain_low"
                     break
@@ -518,36 +542,46 @@ class ResearchController:
                 stats.pages_fetched += 1
                 if "cache_hit" in document.warnings:
                     stats.cache_hits += 1
-                usage_before = self.agent.evidence_model_usage()
-                if usage_before["disabled"]:
-                    analysis_model = "Pi active model (dedicated evidence model disabled)"
-                elif usage_before["model"] == "pi-active":
-                    analysis_model = "Pi active model"
+                if pipeline.evidence == EvidenceStrategy.HEURISTIC:
+                    usage_before = self.agent.evidence_model_usage()
+                    await callback(
+                        _progress(stats, coverage.score, budget),
+                        "Extracting evidence with the quick deterministic path",
+                    )
+                    batch = heuristic_evidence(spec, document)
+                    analysis_hit_deadline = False
                 else:
-                    analysis_model = str(usage_before["model"])
-                await callback(
-                    _progress(stats, coverage.score, budget),
-                    f"Analyzing extracted evidence with {analysis_model}",
-                )
-                analysis_hit_deadline = False
-                try:
-                    batch = await run_deadline.run(
-                        lambda document=document: self.agent.analyze_document(spec, document),
-                        reserve=synthesis_reserve,
+                    usage_before = self.agent.evidence_model_usage()
+                    if usage_before["disabled"]:
+                        analysis_model = "Pi active model (dedicated evidence model disabled)"
+                    elif usage_before["model"] == "pi-active":
+                        analysis_model = "Pi active model"
+                    else:
+                        analysis_model = str(usage_before["model"])
+                    await callback(
+                        _progress(stats, coverage.score, budget),
+                        f"Analyzing extracted evidence with {analysis_model}",
                     )
-                except _RunDeadlineExceeded:
-                    batch = heuristic_evidence(spec, document)
-                    analysis_hit_deadline = True
-                    deadline_reached = True
-                    warnings.append(
-                        f"evidence_extraction_fallback {selected.url}: "
-                        "internal research deadline reached"
-                    )
-                except Exception as exc:
-                    batch = heuristic_evidence(spec, document)
-                    warnings.append(
-                        f"evidence_extraction_fallback {selected.url}: {type(exc).__name__}: {exc}"
-                    )
+                    analysis_hit_deadline = False
+                    try:
+                        batch = await run_deadline.run(
+                            lambda document=document: self.agent.analyze_document(spec, document),
+                            reserve=synthesis_reserve,
+                        )
+                    except _RunDeadlineExceeded:
+                        batch = heuristic_evidence(spec, document)
+                        analysis_hit_deadline = True
+                        deadline_reached = True
+                        warnings.append(
+                            f"evidence_extraction_fallback {selected.url}: "
+                            "internal research deadline reached"
+                        )
+                    except Exception as exc:
+                        batch = heuristic_evidence(spec, document)
+                        warnings.append(
+                            f"evidence_extraction_fallback {selected.url}: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
                 usage_after = self.agent.evidence_model_usage()
                 if int(usage_after["fallbacks"]) > int(usage_before["fallbacks"]):
                     fallback_message = (
@@ -573,7 +607,7 @@ class ResearchController:
 
                 previous_conflicts = set(coverage.conflicts)
                 coverage = ledger.coverage()
-                if not coverage.sufficient:
+                if not coverage.sufficient and pipeline.discover_links:
                     linked_candidates = _linked_candidates(
                         document,
                         spec,
@@ -613,9 +647,9 @@ class ResearchController:
                 at_checkpoint = stats.pages_fetched % budget.checkpoint_every_pages == 0
                 if at_checkpoint:
                     if coverage.sufficient:
-                        if not _research_depth_satisfied(effort, stats, ledger):
+                        if not _research_depth_satisfied(pipeline, stats, ledger):
                             sufficient_streak = 0
-                            if effort == "thorough" and pending_queries:
+                            if pipeline.min_searches and pending_queries:
                                 deferred_candidates.extend(candidates)
                                 candidates.clear()
                                 attempts_in_search_batch = 0
@@ -675,7 +709,7 @@ class ResearchController:
         stats.evidence_model_fallbacks = int(model_usage["fallbacks"])
         stats.evidence_model_disabled = bool(model_usage["disabled"])
         self.store.event(research_id, "evidence_model_usage", model_usage)
-        if self.reranker is not None:
+        if pipeline.reranking == RerankingStrategy.SEMANTIC and self.reranker is not None:
             reranker_usage = self.reranker.usage()
             stats.reranker_model = self.reranker.model
             stats.reranker_requests = reranker_usage.requests
@@ -775,14 +809,28 @@ def _rerank_query(spec, unresolved_requirement_ids: list[str], search_query: str
     return "\n".join([f"Search target: {search_query}", *questions[:4]])[:8_000]
 
 
-def _research_depth_satisfied(effort: str, stats: ResearchStats, ledger: EvidenceLedger) -> bool:
-    if effort != "thorough":
-        return True
+def _research_depth_satisfied(
+    pipeline: PipelineProfile, stats: ResearchStats, ledger: EvidenceLedger
+) -> bool:
     usable_domains = {source.domain for source in ledger.evidence_sources()}
     return (
-        stats.search_queries >= THOROUGH_MIN_SEARCHES
-        and len(usable_domains) >= THOROUGH_MIN_USABLE_DOMAINS
+        stats.search_queries >= pipeline.min_searches
+        and len(usable_domains) >= pipeline.min_usable_domains
     )
+
+
+def _pipeline_payload(pipeline: PipelineProfile) -> dict[str, object]:
+    return {
+        "name": pipeline.name,
+        "spec": pipeline.spec,
+        "queries": pipeline.queries,
+        "reranking": pipeline.reranking,
+        "evidence": pipeline.evidence,
+        "followups": pipeline.followups,
+        "discover_links": pipeline.discover_links,
+        "min_searches": pipeline.min_searches,
+        "min_usable_domains": pipeline.min_usable_domains,
+    }
 
 
 def _depth_queries(query: str) -> list[PlannedQuery]:

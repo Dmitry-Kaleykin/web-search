@@ -23,6 +23,7 @@ from web_research.models import (
     SearchResult,
     TaskType,
 )
+from web_research.pipeline import STANDARD_PIPELINE
 from web_research.reranking import RerankerUsage
 from web_research.storage import SQLiteStore
 
@@ -318,6 +319,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                     0.0,
                     max_attempts_per_search_batch=2,
                 ),
+                pipeline=STANDARD_PIPELINE,
             )
 
             read_positions = [
@@ -352,6 +354,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                     0.0,
                     max_attempts_per_search_batch=2,
                 ),
+                pipeline=STANDARD_PIPELINE,
             )
 
             self.assertTrue(result.coverage.sufficient)
@@ -373,9 +376,10 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             task = asyncio.create_task(
                 controller.run(
                     "What is the value?",
-                    effort="quick",
+                    effort="auto",
                     freshness=None,
                     budget=Budget(20, 1, 1, 1, 1, 0.1),
+                    pipeline=STANDARD_PIPELINE,
                 )
             )
             await asyncio.wait_for(model.started.wait(), timeout=1)
@@ -391,7 +395,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 events = connection.execute("SELECT event_type FROM events").fetchall()
             self.assertIsNotNone(row[0])
             self.assertIsNone(row[1])
-            self.assertEqual(events, [("cancelled",)])
+            self.assertEqual(events, [("pipeline_profile",), ("cancelled",)])
             store.close()
 
     async def test_thorough_research_requires_broader_source_mix(self) -> None:
@@ -430,9 +434,10 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
 
             await controller.run(
                 "What is the latest verified value?",
-                effort="quick",
+                effort="auto",
                 freshness=None,
                 budget=Budget(20, 2, 3, 2, 1, 0.1),
+                pipeline=STANDARD_PIPELINE,
             )
 
             self.assertEqual(
@@ -447,6 +452,50 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
             self.assertTrue(all("2031-04-05" in call["user"] for call in model.calls), model.calls)
+            store.close()
+
+    async def test_quick_pipeline_skips_expensive_optional_stages(self) -> None:
+        class RecordingSearch(FakeSearch):
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+
+            async def search(self, query, **kwargs):
+                self.queries.append(query)
+                return await super().search(query, **kwargs)
+
+        class ForbiddenReranker:
+            model = "must-not-run"
+
+            async def rerank(self, *_args, **_kwargs):
+                raise AssertionError("quick mode must not invoke the semantic reranker")
+
+            def usage(self):
+                raise AssertionError("quick mode must not report semantic reranker usage")
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            search = RecordingSearch()
+            model = DateCapturingModel()
+            controller = ResearchController(
+                search=search,
+                reader=FakeReader(),
+                agent=ResearchAgent(model),
+                store=store,
+                reranker=ForbiddenReranker(),
+            )
+
+            result = await controller.run(
+                "What is the verified value?",
+                effort="quick",
+                freshness=None,
+            )
+
+            self.assertEqual(search.queries, ["What is the verified value?"])
+            self.assertEqual([call["schema_name"] for call in model.calls], ["research_answer"])
+            self.assertEqual(result.stats.pipeline_profile, "quick")
+            self.assertEqual(result.stats.search_queries, 1)
+            self.assertLessEqual(result.stats.pages_fetched, 2)
+            self.assertEqual(result.stats.reranker_model, "")
             store.close()
 
     async def test_controller_reads_until_evidence_rule_is_met(self) -> None:
@@ -468,6 +517,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 effort="auto",
                 freshness=None,
                 budget=Budget(20, 4, 5, 2, 2, 0.05),
+                pipeline=STANDARD_PIPELINE,
                 progress=progress,
             )
             self.assertTrue(result.coverage.sufficient)
@@ -494,9 +544,10 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
 
             result = await controller.run(
                 "What is the value?",
-                effort="quick",
+                effort="auto",
                 freshness=None,
                 budget=Budget(0.03, 1, 1, 1, 1, 0.1),
+                pipeline=STANDARD_PIPELINE,
             )
 
             self.assertGreater(time.monotonic() - started, 0.12)
@@ -549,6 +600,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 effort="auto",
                 freshness=None,
                 budget=Budget(20, 2, 3, 2, 1, 0.05),
+                pipeline=STANDARD_PIPELINE,
             )
 
             self.assertEqual(reader.maximum_active, 2)
@@ -628,6 +680,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 effort="auto",
                 freshness=None,
                 budget=Budget(20, 2, 3, 2, 1, 0.05),
+                pipeline=STANDARD_PIPELINE,
                 progress=progress,
             )
 
@@ -702,6 +755,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 effort="auto",
                 freshness=None,
                 budget=Budget(20, 8, 10, 2, 2, 0.05),
+                pipeline=STANDARD_PIPELINE,
             )
 
             self.assertEqual(search.calls, 3)
@@ -771,6 +825,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
                 effort="auto",
                 freshness=None,
                 budget=Budget(20, 3, 4, 2, 1, 0.05),
+                pipeline=STANDARD_PIPELINE,
             )
 
             self.assertTrue(result.coverage.sufficient)

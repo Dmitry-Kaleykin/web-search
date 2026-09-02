@@ -172,6 +172,7 @@ class CoverageReport:
 
 @dataclass(slots=True)
 class ResearchStats:
+    pipeline_profile: str = "standard"
     search_queries: int = 0
     empty_searches: int = 0
     search_failures: int = 0

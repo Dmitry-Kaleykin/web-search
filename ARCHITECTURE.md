@@ -120,7 +120,13 @@ At invocation time, the server reads its local calendar date and supplies it as 
 every model stage. Relative temporal requests are anchored to that value rather than the model's
 training horizon. Explicit dates in the user's request remain constraints and are never rewritten.
 
-`effort` controls ceilings and evidence strictness, not a fixed number of pages. `auto` should infer the task class and select a suitable policy. `thorough` means a wider source mix, lower tolerance for missing comparison cells, and a higher time/page ceiling.
+`effort` selects an immutable pipeline profile rather than branching throughout the controller.
+Each profile assembles the same reusable spec-building, query-planning, reranking, retrieval,
+evidence-extraction, follow-up, and synthesis stages with different strategies and ceilings.
+`quick` chooses the low-latency strategies, while `thorough` adds a wider source mix, lower tolerance
+for missing comparison cells, and a higher time/page ceiling. `auto` routes heuristic fact tasks to
+the quick profile and all broader task classes to the standard profile; it does not select thorough
+automatically because that can create a surprising long-running call.
 
 Return human-readable Markdown as the normal tool content and mirror the important fields in structured content:
 
@@ -288,13 +294,20 @@ These prevent runaway work. They are not targets:
 
 | Mode | Initial ceiling to calibrate | Purpose |
 |---|---:|---|
-| Quick | 30 active browsing seconds, 2 search calls, 5 fetched pages | Simple lookup |
+| Quick | 15 active browsing seconds, 1 search call, 2 fetched pages | Simple lookup |
 | Auto | 2 active browsing minutes, 8 search calls, 20 fetched pages | Normal research/comparison |
 | Thorough | 10 active browsing minutes, 20 search calls, 60 fetched pages | Broad or high-confidence research |
 
 Active browsing time counts search and document-retrieval waits, not model inference or approval
 latency. Model requests have their own timeout. Also cap redirects, bytes per response, pages per
 domain, browser interactions, document pages, model tokens, and concurrent fetches.
+
+The quick profile constructs a heuristic one-requirement spec, searches the original request once,
+uses deterministic candidate ranking and verbatim-excerpt evidence extraction, does not discover
+links or plan follow-up queries, and retains the shared cited-answer synthesizer. This reduces the
+normal path to one model round trip while keeping fetched-source and citation validation guarantees.
+The standard and thorough profiles use model-built requirements and queries, optional semantic
+reranking, per-document model evidence extraction, gap-driven follow-ups, and link discovery.
 
 `thorough` additionally requires a breadth floor of three distinct search calls and six usable
 source domains before sufficiency/saturation may stop the run. Claim statements must be supported

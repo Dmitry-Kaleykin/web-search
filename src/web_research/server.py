@@ -10,7 +10,7 @@ import anyio
 from pydantic import BaseModel, Field
 
 from .agent import ResearchAgent
-from .config import Settings, budget_for
+from .config import Settings
 from .controller import ResearchController
 from .model.base import ResearchModel
 from .model.fallback import FallbackModelClient
@@ -116,6 +116,7 @@ class ToolCoverage(BaseModel):
 
 
 class ToolStats(BaseModel):
+    pipeline_profile: str
     search_queries: int
     empty_searches: int
     search_failures: int
@@ -376,7 +377,6 @@ async def web_search(
                 query.strip(),
                 effort=effort,
                 freshness=freshness,
-                budget=budget_for(effort),
                 progress=report,
             )
             LOGGER.info(
