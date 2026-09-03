@@ -15,6 +15,7 @@ from ..safety.urls import (
 )
 from ..storage import SQLiteStore
 from ..text import extract_html_fallback
+from .base import cap_content
 from .quality import assess_html_quality, has_meaningful_text
 
 
@@ -35,6 +36,7 @@ class HTTPReader:
         timeout_seconds: float = 25.0,
         user_agent: str = "LocalResearchBot/0.1",
         max_response_bytes: int = 5_000_000,
+        max_content_chars: int = 1_000_000,
         allow_private_urls: bool = False,
         allow_proxy_fake_ips: bool = False,
         max_redirects: int = 5,
@@ -46,6 +48,7 @@ class HTTPReader:
         self.store = store
         self.cache_ttl_seconds = cache_ttl_seconds
         self.max_response_bytes = max_response_bytes
+        self.max_content_chars = max_content_chars
         self.allow_private_urls = allow_private_urls
         self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.max_redirects = max_redirects
@@ -137,6 +140,9 @@ class HTTPReader:
                 content = json.dumps(json.loads(decoded_text), ensure_ascii=False, indent=2)
             except json.JSONDecodeError:
                 content = decoded_text.strip()
+            # Deliberately not character-capped: cutting JSON mid-string yields a payload that
+            # looks structured but no longer parses. The pre-fetch max_response_bytes ceiling
+            # already bounds this path, and the cache's payload ceiling evicts the rest.
             document = Document(
                 url=canonical,
                 final_url=canonicalize_url(current),
@@ -156,6 +162,9 @@ class HTTPReader:
         fallback_title, fallback_content, links = extract_html_fallback(html_text, current)
         published_at, published_at_source = published_at_from_html(html_text)
         content, method, warnings = _extract_main_content(html_text, current, fallback_content)
+        content, truncated = cap_content(content, self.max_content_chars, method=method)
+        if truncated:
+            warnings.append(truncated)
         title = fallback_title or _title_from_url(current)
         warnings.extend(
             assess_html_quality(

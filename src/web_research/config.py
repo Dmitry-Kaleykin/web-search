@@ -47,6 +47,10 @@ class Settings:
     allow_private_urls: bool = False
     allow_proxy_fake_ips: bool = False
     max_response_bytes: int = 5_000_000
+    document_max_chars: int = 1_000_000
+    cache_search_max_rows: int = 2_000
+    cache_document_max_rows: int = 400
+    cache_document_max_payload_bytes: int = 2_000_000
     document_cache_ttl_seconds: int = 21_600
     search_cache_ttl_seconds: int = 900
     enable_crawl4ai: bool = True
@@ -99,6 +103,14 @@ class Settings:
             allow_private_urls=_bool_env(environment, "WEB_SEARCH_ALLOW_PRIVATE_URLS", False),
             allow_proxy_fake_ips=_bool_env(environment, "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS", False),
             max_response_bytes=_int_env(environment, "WEB_SEARCH_MAX_RESPONSE_BYTES", 5_000_000),
+            document_max_chars=_int_env(environment, "WEB_SEARCH_DOCUMENT_MAX_CHARS", 1_000_000),
+            cache_search_max_rows=_int_env(environment, "WEB_SEARCH_CACHE_SEARCH_MAX_ROWS", 2_000),
+            cache_document_max_rows=_int_env(
+                environment, "WEB_SEARCH_CACHE_DOCUMENT_MAX_ROWS", 400
+            ),
+            cache_document_max_payload_bytes=_int_env(
+                environment, "WEB_SEARCH_CACHE_DOCUMENT_MAX_PAYLOAD_BYTES", 2_000_000
+            ),
             document_cache_ttl_seconds=_int_env(
                 environment, "WEB_SEARCH_DOCUMENT_CACHE_TTL_SECONDS", 21_600
             ),

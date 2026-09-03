@@ -8,6 +8,7 @@ from ..dates import normalize_published_at
 from ..models import Document
 from ..safety.urls import canonicalize_url, validate_public_url
 from ..storage import SQLiteStore
+from .base import cap_content
 from .http import ReaderError
 from .quality import page_diagnostics, rendering_signals
 
@@ -23,12 +24,17 @@ class Crawl4AIReader:
         allow_private_urls: bool = False,
         allow_proxy_fake_ips: bool = False,
         page_timeout_ms: int = 35_000,
+        max_content_chars: int = 1_000_000,
     ) -> None:
         self.store = store
         self.user_agent = user_agent
         self.allow_private_urls = allow_private_urls
         self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.page_timeout_ms = page_timeout_ms
+        # Unlike the HTTP reader this path has no pre-fetch byte cap: Chromium materialises the
+        # rendered document before we see it, so the ceiling has to be applied to the extracted
+        # Markdown. It is the only leverage available and it is what bounds cache growth.
+        self.max_content_chars = max_content_chars
         self._crawler: Any = None
         self._run_config: Any = None
         self._start_lock = asyncio.Lock()
@@ -79,11 +85,16 @@ class Crawl4AIReader:
         warnings.extend(
             f"browser_output_incomplete:{reason}" for reason in rendering_signals(markdown)
         )
+        markdown, markdown_truncated = cap_content(
+            markdown.strip(), self.max_content_chars, method="crawl4ai+chromium"
+        )
+        if markdown_truncated:
+            warnings.append(markdown_truncated)
         document = Document(
             url=canonicalize_url(url),
             final_url=canonicalize_url(final_url),
             title=title,
-            content=markdown.strip(),
+            content=markdown,
             method="crawl4ai+chromium",
             published_at=_metadata_date(result.metadata or {}),
             published_at_source="crawl4ai_metadata"

@@ -133,6 +133,35 @@ before changing it. Pass `engines=` **on its own**: adding `categories=` as well
 query the whole category, so the result count you read is an aggregate and tells you nothing about
 the engine you meant to test.
 
+### Storage and cache ceilings
+
+The database is the one part of a local research stack that grows without anyone deciding it
+should. Two rules keep it bounded:
+
+- **Cap at reader output, not at the cache boundary.** The evidence ledger verifies model excerpts
+  verbatim against `document.content`, so the cached copy and the live copy must be identical.
+  Truncating only one of them makes citation validity depend on whether the page happened to be
+  cached. `WEB_SEARCH_DOCUMENT_MAX_CHARS` therefore applies inside the readers.
+- **TTL is eviction, not invisibility.** Rows are pruned on write (amortised every
+  `prune_every_n_writes`) against TTL, a row ceiling, and a per-row payload ceiling. Checking
+  `stored_at` on read alone leaves the file growing forever while appearing healthy.
+
+Structured JSON is intentionally exempt from the character cap: cutting JSON mid-string produces a
+payload that looks structured but no longer parses. It is bounded by `max_response_bytes` and by
+`WEB_SEARCH_CACHE_DOCUMENT_MAX_PAYLOAD_BYTES` instead.
+
+`web-search-doctor` reports cache size, and `web-search-maint` evicts and compacts:
+
+```bash
+.venv/bin/web-search-maint
+# evicted search_cache=164 document_cache=456
+# database 50.0 MB -> 2.1 MB
+```
+
+Run maintenance while the server is idle. WAL mode means freed pages can sit in the `-wal`
+sidecar, so maintenance checkpoints explicitly — without that the file keeps reporting its old
+size after the rows are gone.
+
 ## 3. Configure the research model
 
 No model ID is required when Pi connects through `pi-mcp-adapter`. The server requests model work

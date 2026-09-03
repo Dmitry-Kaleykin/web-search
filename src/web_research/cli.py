@@ -179,7 +179,104 @@ async def _doctor() -> int:
             except Exception as exc:
                 failed = True
                 print(f"FAIL semantic reranker endpoint: {exc}", file=sys.stderr)
+
+        failed = _storage_report(settings, failed)
     return 1 if failed else 0
+
+
+def _storage_report(settings: Settings, failed: bool) -> bool:
+    """Report cache growth so unbounded growth is visible instead of inferred from disk."""
+    from .storage import SQLiteStore
+
+    path = settings.data_dir / "research.sqlite3"
+    if not path.exists():
+        print("INFO no research database yet")
+        return failed
+    try:
+        store = SQLiteStore(
+            path,
+            search_ttl_seconds=settings.search_cache_ttl_seconds,
+            document_ttl_seconds=settings.document_cache_ttl_seconds,
+            search_max_rows=settings.cache_search_max_rows,
+            document_max_rows=settings.cache_document_max_rows,
+            document_max_payload_bytes=settings.cache_document_max_payload_bytes,
+        )
+        try:
+            stats = store.stats()
+        finally:
+            store.close()
+    except Exception as exc:
+        print(f"FAIL storage: {exc}", file=sys.stderr)
+        return True
+    file_mb = stats["file_bytes"] / 1e6
+    documents = stats["document_cache"]
+    largest_mb = documents["largest_row_bytes"] / 1e6
+    print(
+        f"OK   storage: {file_mb:.1f} MB | documents={documents['rows']} "
+        f"({documents['bytes'] / 1e6:.1f} MB, largest {largest_mb:.2f} MB) | "
+        f"searches={stats['search_cache']['rows']} | events={stats['events']['rows']}"
+    )
+    ceiling_mb = settings.cache_document_max_payload_bytes / 1e6
+    if largest_mb > ceiling_mb:
+        print(
+            f"WARN cached document exceeds the {ceiling_mb:.1f} MB ceiling; "
+            "run web-search-maint to evict and compact",
+            file=sys.stderr,
+        )
+    if file_mb > 100:
+        print("WARN database is over 100 MB; run web-search-maint to compact", file=sys.stderr)
+    return failed
+
+
+def _db_bytes(path: Path) -> int:
+    """Main database plus WAL and SHM sidecars, which hold committed data."""
+    total = path.stat().st_size if path.exists() else 0
+    for suffix in ("-wal", "-shm"):
+        sidecar = path.with_name(path.name + suffix)
+        if sidecar.exists():
+            total += sidecar.stat().st_size
+    return total
+
+
+def _maintenance() -> int:
+    from .storage import SQLiteStore
+
+    settings = Settings.from_env()
+    path = settings.data_dir / "research.sqlite3"
+    if not path.exists():
+        print("no database to maintain")
+        return 0
+    before = _db_bytes(path) / 1e6
+    store = SQLiteStore(
+        path,
+        search_ttl_seconds=settings.search_cache_ttl_seconds,
+        document_ttl_seconds=settings.document_cache_ttl_seconds,
+        search_max_rows=settings.cache_search_max_rows,
+        document_max_rows=settings.cache_document_max_rows,
+        document_max_payload_bytes=settings.cache_document_max_payload_bytes,
+    )
+    try:
+        report = store.maintenance()
+    finally:
+        store.close()
+    removed = report["rows_removed"]
+    after = report["file_bytes"] / 1e6
+    print(
+        f"evicted search_cache={removed['search_cache']} "
+        f"document_cache={removed['document_cache']}"
+    )
+    for table in ("search_cache", "document_cache", "research_runs", "events"):
+        entry = report[table]
+        print(
+            f"  {table:14} rows={entry['rows']:<5} "
+            f"{entry['bytes'] / 1e6:6.1f} MB largest={entry['largest_row_bytes'] / 1e6:.2f} MB"
+        )
+    print(f"database {before:.1f} MB -> {after:.1f} MB")
+    return 0
+
+
+def maintenance_main() -> None:
+    raise SystemExit(_maintenance())
 
 
 def _browser_runtime_present(directory: Path) -> bool:

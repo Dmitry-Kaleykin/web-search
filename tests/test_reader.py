@@ -8,7 +8,85 @@ from unittest.mock import patch
 
 import httpx
 
+from web_research.readers.base import cap_content
 from web_research.readers.http import HTTPReader, ReaderError, _extract_main_content
+from web_research.storage import SQLiteStore
+
+
+class ContentCapTests(unittest.IsolatedAsyncioTestCase):
+    def test_text_within_the_ceiling_is_untouched(self) -> None:
+        content, warning = cap_content("short text", 100, method="http+trafilatura")
+        self.assertEqual(content, "short text")
+        self.assertIsNone(warning)
+
+    def test_overlong_text_is_capped_and_the_cap_is_visible(self) -> None:
+        content, warning = cap_content("x" * 500, 100, method="crawl4ai+chromium")
+        self.assertEqual(len(content), 100)
+        self.assertEqual(warning, "content_truncated:500>100:crawl4ai+chromium")
+
+    def test_a_non_positive_ceiling_disables_capping(self) -> None:
+        content, warning = cap_content("x" * 500, 0, method="http+json")
+        self.assertEqual(len(content), 500)
+        self.assertIsNone(warning)
+
+    async def test_reader_caches_exactly_the_text_it_returns(self) -> None:
+        """Cached and live copies must be byte-identical: excerpt verification depends on it."""
+        import tempfile
+        from pathlib import Path
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                text=(
+                    "<html><body><article><p>"
+                    + "alpha beta gamma " * 2000
+                    + "</p></article></body></html>"
+                ),
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "cache.sqlite3")
+            reader = HTTPReader(store=store, allow_private_urls=True, max_content_chars=300)
+            await reader._client.aclose()
+            reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            try:
+                live = await reader.read("http://127.0.0.1/long-article")
+                cached = store.get_document("http://127.0.0.1/long-article", 3600)
+            finally:
+                await reader.close()
+                store.close()
+
+        self.assertEqual(len(live.content), 300)
+        self.assertTrue(
+            any(w.startswith("content_truncated:") for w in live.warnings), live.warnings
+        )
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached.content, live.content)
+
+    async def test_json_content_is_not_character_capped_because_that_corrupts_it(self) -> None:
+        import json
+
+        payload = {"data": "y" * 5000}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload, headers={"content-type": "application/json"})
+
+        reader = HTTPReader(allow_private_urls=True, max_content_chars=200)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            document = await reader.read("http://127.0.0.1/big.json")
+        finally:
+            await reader.close()
+
+        self.assertGreater(len(document.content), 200)
+        self.assertEqual(json.loads(document.content), payload)
+        self.assertFalse(
+            any(w.startswith("content_truncated:") for w in document.warnings),
+            document.warnings,
+        )
+
 
 
 class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):

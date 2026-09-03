@@ -439,12 +439,20 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
     os.environ.setdefault(
         "PLAYWRIGHT_BROWSERS_PATH", str((settings.data_dir / "ms-playwright").resolve())
     )
-    store = SQLiteStore(settings.data_dir / "research.sqlite3")
+    store = SQLiteStore(
+        settings.data_dir / "research.sqlite3",
+        search_ttl_seconds=settings.search_cache_ttl_seconds,
+        document_ttl_seconds=settings.document_cache_ttl_seconds,
+        search_max_rows=settings.cache_search_max_rows,
+        document_max_rows=settings.cache_document_max_rows,
+        document_max_payload_bytes=settings.cache_document_max_payload_bytes,
+    )
     http_reader = HTTPReader(
         store=store,
         cache_ttl_seconds=settings.document_cache_ttl_seconds,
         user_agent=settings.user_agent,
         max_response_bytes=settings.max_response_bytes,
+        max_content_chars=settings.document_max_chars,
         allow_private_urls=settings.allow_private_urls,
         allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
     )
@@ -452,6 +460,7 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
         Crawl4AIReader(
             store=store,
             user_agent=settings.user_agent,
+            max_content_chars=settings.document_max_chars,
             allow_private_urls=settings.allow_private_urls,
             allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
         )
