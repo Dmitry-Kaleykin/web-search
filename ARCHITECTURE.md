@@ -454,6 +454,27 @@ Canonicalize URLs, but preserve the original URL and redirect chain. Deduplicate
 
 Cache search responses briefly and page content according to freshness policy. Never silently reuse stale price/news content. Record `retrieved_at` on every source.
 
+### Storage as implemented
+
+The tables that exist today are `search_cache`, `document_cache`, `research_runs`, `events`, and
+`engine_health`. The remaining tables above remain planned and are not created implicitly.
+
+Every cache is bounded three ways, because a cache with no ceiling grows until it is investigated:
+
+- TTL, enforced by deletion rather than by filtering on read. Checking `stored_at` at query time
+  hides stale rows while the file keeps growing.
+- A row-count ceiling per table.
+- A per-row payload ceiling, which evicts rows that are too large even while fresh.
+
+Pruning runs amortised on write, and `web-search-maint` prunes plus compacts on demand. In WAL
+mode compaction must checkpoint explicitly, otherwise freed pages stay in the `-wal` sidecar and
+the database keeps reporting its previous size after the rows are gone.
+
+`engine_health` records upstream-engine cooldowns against wall-clock time. Monotonic values have an
+arbitrary origin per process, so persisting one would make every restored cooldown either already
+expired or permanently stuck. Persisting them means a restart does not look healthy merely because
+memory was cleared, and `web-search-doctor` can report what the running server learned.
+
 Start with FTS5/BM25. Add embeddings only after an evaluation shows missed evidence that lexical retrieval would have recovered. This keeps the first system small and fully local.
 
 ## 9. MCP lifecycle and Pi integration
@@ -490,6 +511,9 @@ If the chosen Pi MCP adapter does not correctly map cancellation/progress, a tin
 Web content is untrusted data. Enforce these in code, not only in prompts:
 
 - Strip or quarantine instructions embedded in pages; never let them change the research policy.
+  Quoted page text is fenced in `prompts.py`, and the fence markers inside that text are rewritten
+  so content cannot close its own quarantine; header fields collapse newlines so a hostile page
+  title cannot forge a provenance line. This is enforced in code, with tests.
 - No shell, arbitrary JavaScript, unrestricted downloads, or filesystem access for the research model.
 - SSRF protections across DNS resolution and redirects.
 - Isolated, ephemeral browser context without user logins.
@@ -536,7 +560,7 @@ Measure:
 
 Stopping thresholds should be calibrated from these results, not selected by intuition alone.
 
-## 12. Proposed repository layout
+## 12. Repository layout
 
 ```text
 web-search/
@@ -583,6 +607,17 @@ web-search/
 ```
 
 ## 13. Build order
+
+Status as implemented: milestones 0, 1, and 2 are complete (SearXNG adapter, HTTP/Trafilatura
+reader, research spec and evidence ledger, coverage and independence rules, information-gain
+ranking, adaptive stopping, citation validation, evaluation harness, SQLite persistence).
+Milestone 3 is partial: rendered-page fallback and SSRF/redirect revalidation ship, while
+adaptive same-site crawling, typed Playwright interaction, and browser network inspection do not.
+Milestones 4 and 5 have not started. The sections below are kept as the reasoning behind the
+ordering, not as a task list.
+
+The ordering holds for one reason: Pi/MCP/tool-call compatibility is the highest integration risk,
+so proving the interface before writing research logic keeps later changes cheap.
 
 ### Milestone 0: prove the interfaces
 

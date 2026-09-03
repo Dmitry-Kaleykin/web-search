@@ -6,7 +6,8 @@ returning a cited synthesis. Through MCP sampling, research automatically uses t
 the calling Pi session; an OpenAI-compatible endpoint can be configured as a fallback for clients
 without sampling support.
 
-This repository currently implements the first vertical slice from [ARCHITECTURE.md](ARCHITECTURE.md):
+This repository implements milestones 0–2 and the rendered-page fallback of milestone 3 from
+[ARCHITECTURE.md](ARCHITECTURE.md):
 
 - SearXNG JSON discovery with caching and deduplication.
 - SearXNG upstream-engine health diagnostics, bounded retry, and empty-backend detection.
@@ -23,9 +24,13 @@ This repository currently implements the first vertical slice from [ARCHITECTURE
 - Adaptive stopping with hard safety ceilings.
 - Citation-ID validation and deterministic source lists.
 - SQLite traces/cache, MCP progress with compact evidence summaries, and cooperative cancellation.
+- Bounded cache: TTL deletion, row and per-row payload ceilings, and `web-search-maint` compaction.
+- Persisted engine cooldowns, so a restart does not hide an upstream that was already blocked.
+- Prompt fences for quoted web content, with fence markers rewritten so a page cannot escape its own
+  quarantine and header fields that cannot forge provenance lines.
 
-Interactive Playwright actions, PDF/Docling, OCR, and MCP Tasks remain later milestones. Unsupported
-or blocked pages are reported rather than silently treated as evidence.
+Interactive Playwright actions, adaptive same-site crawling, PDF/Docling, OCR, and MCP Tasks remain
+later milestones. Unsupported or blocked pages are reported rather than silently treated as evidence.
 
 ## Terminal console
 
