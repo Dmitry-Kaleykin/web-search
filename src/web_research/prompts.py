@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
 
 from .models import CoverageReport, ResearchSpec, Source
+
+_UNTRUSTED_OPEN = "<UNTRUSTED_WEB_CONTENT>"
+_UNTRUSTED_CLOSE = "</UNTRUSTED_WEB_CONTENT>"
+# Case-insensitive: the model reads the fence literally, but a case-variant marker is still an
+# attempt to open or close it, and rewriting it costs nothing.
+_SENTINEL = re.compile(r"</?UNTRUSTED_WEB_CONTENT>", re.IGNORECASE)
 
 SPEC_SCHEMA = {
     "type": "object",
@@ -234,6 +241,22 @@ def query_user(spec: ResearchSpec, gaps: list[str] | None, current_date: str) ->
     )
 
 
+def _neutralise_content(content: str) -> str:
+    """Rewrite fence markers inside quoted web text so it cannot close its own quarantine.
+
+    The fence is the only boundary between instructions and data. Content that emits the closing
+    marker verbatim escapes the quarantine and addresses the model as authority, which defeats
+    the point of fencing it. The substituted guillemets stay readable and cannot be mistaken for
+    the real fence.
+    """
+    return _SENTINEL.sub(lambda match: f"«{match.group(0)[1:-1]}»", content)
+
+
+def _header_field(value: str) -> str:
+    """Collapse newlines so a hostile title or URL cannot forge extra header lines."""
+    return re.sub(r"[\r\n]+", " ", value)
+
+
 def evidence_user(
     spec: ResearchSpec,
     url: str,
@@ -255,12 +278,15 @@ def evidence_user(
     return (
         f"CURRENT DATE (AUTHORITATIVE): {current_date}\n\nREQUIREMENTS:\n"
         + json.dumps(requirements, ensure_ascii=False, indent=2)
-        + f"\n\nSOURCE URL: {url}\nSOURCE TITLE: {title}\n"
-        + f"SOURCE PUBLISHED AT: {published_at or 'unknown'}\n"
-        + f"PUBLICATION DATE PROVENANCE: {published_at_source or 'unknown'}\n"
-        + "\n<UNTRUSTED_WEB_CONTENT>\n"
-        + content
-        + "\n</UNTRUSTED_WEB_CONTENT>"
+        + f"\n\nSOURCE URL: {_header_field(url)}\nSOURCE TITLE: {_header_field(title)}\n"
+        + f"SOURCE PUBLISHED AT: {_header_field(published_at or 'unknown')}\n"
+        + (
+            "PUBLICATION DATE PROVENANCE: "
+            f"{_header_field(published_at_source or 'unknown')}\n"
+        )
+        + f"\n{_UNTRUSTED_OPEN}\n"
+        + _neutralise_content(content)
+        + f"\n{_UNTRUSTED_CLOSE}"
     )
 
 
