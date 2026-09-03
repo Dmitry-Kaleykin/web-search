@@ -10,6 +10,8 @@ This repository currently implements the first vertical slice from [ARCHITECTURE
 
 - SearXNG JSON discovery with caching and deduplication.
 - SearXNG upstream-engine health diagnostics, bounded retry, and empty-backend detection.
+- Engine cooldowns, anti-bot challenge detection, and automatic widening of single-engine result
+  sets, so a blocked upstream degrades into a visible warning instead of silent low-quality search.
 - Safe, bounded HTTP fetching with redirect revalidation.
 - Structured JSON evidence retrieval, including `.json` resources served as plain text.
 - Trafilatura extraction with a basic HTML fallback.
@@ -82,6 +84,31 @@ docker compose -f docker/searxng/compose.yaml up -d
 This binds SearXNG only to `127.0.0.1:8080` and enables JSON output. The configured upstream engines
 still receive search queries; self-hosting the intermediary is not the same as making upstream
 searches anonymous.
+
+### Engine health
+
+SearXNG answers `HTTP 200` with whatever survived even when most upstream engines failed, so a
+single reachable index can quietly answer every query. `docker/searxng/settings.yml` records the
+engine set measured on this instance, and the client layer tracks health at runtime:
+
+| Outcome | Behaviour |
+| --- | --- |
+| Anti-bot HTML page instead of JSON | `SearXNGChallengeError`, never retried — a challenge needs a browser, not another request |
+| `HTTP 403` on a JSON query | Reported as a missing `search.formats` or limiter misconfiguration, not retried |
+| `HTTP 429` / `503` | `Retry-After` is honoured; if it exceeds the retry budget the search is abandoned and earlier results are kept |
+| Engine CAPTCHA / suspension / rate limit | Engine goes on a cooldown (30 min CAPTCHA, 15 min rate limit, 2 min transient) and is skipped, not hammered |
+| Every result from one engine | Query is re-issued pinned to engines that are actually answering, and the half of the result set that is duplicated is replaced |
+
+Verify the live engine set with:
+
+```bash
+curl -s "http://127.0.0.1:8080/search?q=context+engineering&format=json" \
+  | python3 -c 'import sys,json,collections;d=json.load(sys.stdin);print(collections.Counter(e for r in d["results"] for e in r.get("engines",[])));print(d["unresponsive_engines"])'
+```
+
+If one engine still dominates and others are listed as unresponsive, the engine set in
+`settings.yml` no longer matches reality — re-measure it per engine with the `engines=` parameter
+before changing it.
 
 ## 3. Configure the research model
 

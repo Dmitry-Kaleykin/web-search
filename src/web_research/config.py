@@ -70,6 +70,11 @@ class Settings:
     prefetch_pages: int = 2
     read_url_max_chars: int = 60_000
     read_url_max_links: int = 100
+    search_retry_base_seconds: float = 1.0
+    search_max_retries: int = 2
+    search_healthy_engines: str = "google cse,mwmbl,searchmysite,mojeek,crowdview"
+    search_diversity_min_results: int = 3
+    search_max_retry_wait_seconds: float = 10.0
 
     @classmethod
     def from_env(cls, *, env_file: Path | None = None) -> Settings:
@@ -147,6 +152,21 @@ class Settings:
                 1, _int_env(environment, "WEB_SEARCH_READ_URL_MAX_CHARS", 60_000)
             ),
             read_url_max_links=max(0, _int_env(environment, "WEB_SEARCH_READ_URL_MAX_LINKS", 100)),
+            search_retry_base_seconds=_float_env(
+                environment, "WEB_SEARCH_SEARCH_RETRY_BASE_SECONDS", 1.0
+            ),
+            search_max_retries=_int_env(environment, "WEB_SEARCH_SEARCH_MAX_RETRIES", 2),
+            search_healthy_engines=_string_env(
+                environment,
+                "WEB_SEARCH_SEARCH_HEALTHY_ENGINES",
+                "google cse,mwmbl,searchmysite,mojeek,crowdview",
+            ),
+            search_diversity_min_results=max(
+                2, _int_env(environment, "WEB_SEARCH_SEARCH_DIVERSITY_MIN_RESULTS", 3)
+            ),
+            search_max_retry_wait_seconds=_float_env(
+                environment, "WEB_SEARCH_SEARCH_MAX_RETRY_WAIT_SECONDS", 10.0
+            ),
         )
 
 

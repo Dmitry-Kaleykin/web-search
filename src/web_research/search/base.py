@@ -15,6 +15,7 @@ class SearchProvider(Protocol):
         time_range: str | None = None,
         categories: str | None = None,
         limit: int = 10,
+        engines: str | None = None,
     ) -> list[SearchResult]: ...
 
     async def close(self) -> None: ...

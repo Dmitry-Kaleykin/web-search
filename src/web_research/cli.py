@@ -57,9 +57,45 @@ async def _doctor() -> int:
                 params={"q": "searxng", "format": "json"},
             )
             response.raise_for_status()
+            if "json" not in response.headers.get("content-type", "").casefold():
+                raise RuntimeError(
+                    "answered text/html instead of JSON; this is an anti-bot challenge page or "
+                    "'json' is missing from search.formats"
+                )
             payload = response.json()
-            count = len(payload.get("results", []))
+            results = payload.get("results", [])
+            count = len(results)
             print(f"OK   SearXNG JSON API: {count} result(s)")
+
+            # A non-empty result set can still mean the search is broken: SearXNG returns 200 with
+            # whatever survived, so one reachable index answering alone is a degraded instance.
+            engines: dict[str, int] = {}
+            for item in results:
+                for name in item.get("engines") or ([item["engine"]] if item.get("engine") else []):
+                    engines[str(name)] = engines.get(str(name), 0) + 1
+            unresponsive = payload.get("unresponsive_engines") or []
+            if unresponsive:
+                print(
+                    "WARN unresponsive upstream engines: "
+                    + ", ".join(
+                        f"{entry[0]} ({entry[1]})" if isinstance(entry, list) else str(entry)
+                        for entry in unresponsive[:8]
+                    )
+                )
+            if count and len(engines) == 1:
+                only = next(iter(engines))
+                print(
+                    f"WARN all {count} results came from the single engine '{only}'; widen the "
+                    "engine set in docker/searxng/settings.yml",
+                    file=sys.stderr,
+                )
+            elif engines:
+                print(
+                    "OK   engine diversity: "
+                    + ", ".join(f"{name}={hits}" for name, hits in sorted(engines.items()))
+                )
+            elif count:
+                print("WARN results carry no engine attribution; diversity cannot be verified")
         except Exception as exc:
             failed = True
             print(f"FAIL SearXNG JSON API: {exc}", file=sys.stderr)

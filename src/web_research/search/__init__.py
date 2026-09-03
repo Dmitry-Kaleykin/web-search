@@ -1,6 +1,15 @@
-"""Search-provider adapters."""
-
 from .base import SearchProvider
-from .searxng import SearXNGSearchProvider
+from .searxng import (
+    SearXNGChallengeError,
+    SearXNGError,
+    SearXNGRateLimitedError,
+    SearXNGSearchProvider,
+)
 
-__all__ = ["SearXNGSearchProvider", "SearchProvider"]
+__all__ = [
+    "SearXNGChallengeError",
+    "SearXNGError",
+    "SearXNGRateLimitedError",
+    "SearXNGSearchProvider",
+    "SearchProvider",
+]

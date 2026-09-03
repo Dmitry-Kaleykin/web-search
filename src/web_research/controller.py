@@ -698,6 +698,20 @@ class ResearchController:
                 {"max_wall_seconds": budget.max_wall_seconds},
             )
 
+        # Surface benched engines once per run rather than per query. SearXNG degrades silently
+        # behind HTTP 200, and a thin answer is far easier to interpret when the benched engines
+        # and the reasons they are benched are visible next to it.
+        engine_health = getattr(self.search, "engine_health", None)
+        if callable(engine_health):
+            cooling = engine_health()
+            if cooling:
+                warnings.append(
+                    "engine_cooldowns_active:"
+                    + ", ".join(
+                        f"{engine} ({reason})" for engine, reason in sorted(cooling.items())
+                    )
+                )
+
         stats.distinct_domains = len({item.domain for item in ledger.evidence_sources()})
         stats.elapsed_ms = int((time.monotonic() - started) * 1000)
         stats.browsing_elapsed_ms = int(browsing_budget.elapsed * 1000)

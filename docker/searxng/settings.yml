@@ -6,6 +6,9 @@ general:
 server:
   # This service is bound to 127.0.0.1 by compose. Replace the key before exposing it elsewhere.
   secret_key: local-only-change-before-exposing
+  # `limiter` is INBOUND bot protection for a public instance. It does not reduce the rate at
+  # which this instance calls upstream engines, so it does not fix upstream 429/CAPTCHA.
+  # Keep it off while bound to loopback; enable it (plus valkey) only if the port is exposed.
   limiter: false
   image_proxy: false
 
@@ -16,3 +19,87 @@ search:
     - html
     - json
 
+outgoing:
+  # Per-engine request timeout. Slow engines were stalling whole queries while returning nothing.
+  request_timeout: 4.0
+  max_request_timeout: 12.0
+  # SearXNG retries upstream itself, and the Python client retries on top of that. Nested
+  # retries multiply request volume against an engine that has already said "too many requests",
+  # which deepens the block instead of clearing it. Retry policy lives in the client layer.
+  retries: 0
+  pool_connections: 100
+  pool_maxsize: 10
+  keepalive_expiry: 5.0
+  # HTTP/2 fingerprints closer to a real modern browser than HTTP/1.1 does.
+  enable_http2: true
+  useragent_suffix: "local single-user research instance"
+
+# Engine policy. Measured on this instance, unauthenticated, one request per engine:
+#
+#   healthy + relevant : google cse, mwmbl, searchmysite
+#   healthy, sparse    : mojeek, crowdview, wikipedia, wikidata
+#   soft-blocked       : bing (answers, but returns locale junk), brave (rate-suspended)
+#   hard-blocked       : duckduckgo, startpage, qwant, infospace, fastbot, yahoo
+#
+# With only duckduckgo / startpage / brave / google cse enabled in the `general` tab, three of
+# the four real web indexes are hard-blocked, so every query silently collapses onto `google cse`
+# alone. Diversity is restored by enabling engines that answer, not by retrying the blocked ones.
+engines:
+  # --- hard walls: these fail on every request and only add latency + CAPTCHA pressure ---
+  - name: duckduckgo
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: qwant
+    disabled: true
+  - name: infospace
+    disabled: true
+  - name: fastbot
+    disabled: true
+  - name: yahoo
+    disabled: true
+
+  # --- enabled for diversity: independent / bot-tolerant indexes, no API key required ---
+  - name: mojeek
+    disabled: false
+    categories:
+      - general
+      - web
+    timeout: 5.0
+  - name: mwmbl
+    disabled: false
+    categories:
+      - general
+      - web
+    timeout: 5.0
+  - name: searchmysite
+    disabled: false
+    categories:
+      - general
+      - web
+    timeout: 5.0
+  - name: crowdview
+    disabled: false
+    categories:
+      - general
+      - web
+    timeout: 6.0
+
+  # --- keep, but de-weight: answers, sometimes with off-topic results ---
+  - name: bing
+    disabled: false
+    categories:
+      - general
+      - web
+    weight: 0.5
+    timeout: 5.0
+  # Rate-suspended rather than hard-blocked, so it stays enabled and is cooled down client-side.
+  - name: brave
+    weight: 0.7
+    timeout: 6.0
+
+  # --- news lane: second source so `news` is not single-engine by construction ---
+  - name: mojeek news
+    disabled: false
+    categories:
+      - news

@@ -337,6 +337,11 @@ async def web_search(
         store=store,
         cache_ttl_seconds=settings.search_cache_ttl_seconds,
         user_agent=settings.user_agent,
+        max_retries=settings.search_max_retries,
+        retry_base_seconds=settings.search_retry_base_seconds,
+        healthy_engines=settings.search_healthy_engines,
+        diversity_min_results=settings.search_diversity_min_results,
+        max_retry_wait_seconds=settings.search_max_retry_wait_seconds,
     )
     reader = runtime.reader
     model = _create_model(ctx, settings)
