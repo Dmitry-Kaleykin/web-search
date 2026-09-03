@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 from urllib.parse import urlsplit
@@ -67,7 +68,9 @@ class HTTPReader:
     async def read(self, url: str) -> Document:
         canonical = canonicalize_url(url)
         if self.store:
-            cached = self.store.get_document(canonical, self.cache_ttl_seconds)
+            cached = await asyncio.to_thread(
+                self.store.get_document, canonical, self.cache_ttl_seconds
+            )
             if cached is not None:
                 cached.warnings = [*cached.warnings, "cache_hit"]
                 return cached
@@ -155,7 +158,7 @@ class HTTPReader:
                 links=[],
             )
             if self.store:
-                self.store.put_document(canonical, document)
+                await asyncio.to_thread(self.store.put_document, canonical, document)
             return document
 
         html_text = decoded_text
@@ -189,7 +192,7 @@ class HTTPReader:
             links=links[:500],
         )
         if self.store:
-            self.store.put_document(canonical, document)
+            await asyncio.to_thread(self.store.put_document, canonical, document)
         return document
 
     async def _bounded_get(self, url: str, *, proxy_fake_dns: bool = False):

@@ -111,6 +111,7 @@ class SearXNGSearchProvider:
         self.last_warnings: list[str] = []
         self.last_engine_health: dict[str, str] = {}
         self._cooldowns: dict[str, _EngineCooldown] = {}
+        self._restore_cooldowns()
         self._client = httpx.AsyncClient(
             timeout=timeout_seconds,
             headers={"User-Agent": user_agent, "Accept": "application/json"},
@@ -132,12 +133,38 @@ class SearXNGSearchProvider:
         return snapshot
 
     def _cool(self, engine: str, reason: str, seconds: float | None = None) -> None:
-        expiry = time.monotonic() + (seconds if seconds is not None else _classify_failure(reason))
+        duration = seconds if seconds is not None else _classify_failure(reason)
+        expiry = time.monotonic() + duration
         existing = self._cooldowns.get(engine)
         # Never shorten an in-flight cooldown: a second failure is evidence, not a reset.
         if existing and existing.expires >= expiry:
             return
         self._cooldowns[engine] = _EngineCooldown(reason=reason, expires=expiry)
+        if self.store is None:
+            return
+        try:
+            # Persisted as wall clock: a monotonic expiry is meaningless in the next process.
+            self.store.record_engine_cooldown(engine, reason, time.time() + duration)
+        except Exception as exc:  # pragma: no cover - storage must not break search
+            self.last_warnings.append(f"engine_cooldown_not_persisted:{exc}")
+
+    def _restore_cooldowns(self) -> None:
+        """Reload penalties from a previous process so a restart does not re-probe dead engines.
+
+        Without this, every restart looks healthy for exactly as long as it takes to get blocked
+        again, which is precisely the blind spot that made the original failure so hard to see.
+        """
+        if self.store is None:
+            return
+        try:
+            active = self.store.active_engine_cooldowns()
+        except Exception as exc:  # pragma: no cover - storage must not break search
+            self.last_warnings.append(f"engine_cooldown_restore_failed:{exc}")
+            return
+        for engine, (reason, remaining) in active.items():
+            self._cooldowns[engine] = _EngineCooldown(
+                reason=f"{reason} (restored)", expires=time.monotonic() + remaining
+            )
 
     def _available_engines(self, *, exclude: set[str] | None = None) -> list[str]:
         """Known-good engines minus anything cooling down or already over-represented."""

@@ -48,6 +48,7 @@ class Settings:
     allow_proxy_fake_ips: bool = False
     max_response_bytes: int = 5_000_000
     document_max_chars: int = 1_000_000
+    browser_max_concurrent_renders: int = 2
     cache_search_max_rows: int = 2_000
     cache_document_max_rows: int = 400
     cache_document_max_payload_bytes: int = 2_000_000
@@ -104,6 +105,9 @@ class Settings:
             allow_proxy_fake_ips=_bool_env(environment, "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS", False),
             max_response_bytes=_int_env(environment, "WEB_SEARCH_MAX_RESPONSE_BYTES", 5_000_000),
             document_max_chars=_int_env(environment, "WEB_SEARCH_DOCUMENT_MAX_CHARS", 1_000_000),
+            browser_max_concurrent_renders=_int_env(
+                environment, "WEB_SEARCH_BROWSER_MAX_CONCURRENT_RENDERS", 2
+            ),
             cache_search_max_rows=_int_env(environment, "WEB_SEARCH_CACHE_SEARCH_MAX_ROWS", 2_000),
             cache_document_max_rows=_int_env(
                 environment, "WEB_SEARCH_CACHE_DOCUMENT_MAX_ROWS", 400

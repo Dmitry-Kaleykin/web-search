@@ -203,11 +203,18 @@ def _storage_report(settings: Settings, failed: bool) -> bool:
         )
         try:
             stats = store.stats()
+            # The payoff of persisting cooldowns: doctor runs in its own process, so this is how
+            # it can report what the running server (or an earlier one) already learned.
+            cooldowns = store.active_engine_cooldowns()
         finally:
             store.close()
     except Exception as exc:
         print(f"FAIL storage: {exc}", file=sys.stderr)
         return True
+    for engine, (reason, remaining) in sorted(cooldowns.items()):
+        print(
+            f"WARN engine cooldown on {engine}: {reason} ({int(remaining)}s left, survives restart)"
+        )
     file_mb = stats["file_bytes"] / 1e6
     documents = stats["document_cache"]
     largest_mb = documents["largest_row_bytes"] / 1e6

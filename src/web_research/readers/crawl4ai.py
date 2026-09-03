@@ -25,6 +25,7 @@ class Crawl4AIReader:
         allow_proxy_fake_ips: bool = False,
         page_timeout_ms: int = 35_000,
         max_content_chars: int = 1_000_000,
+        max_concurrent_renders: int = 2,
     ) -> None:
         self.store = store
         self.user_agent = user_agent
@@ -35,6 +36,12 @@ class Crawl4AIReader:
         # rendered document before we see it, so the ceiling has to be applied to the extracted
         # Markdown. It is the only leverage available and it is what bounds cache growth.
         self.max_content_chars = max_content_chars
+        # Prefetch fans out into unbounded concurrent tasks and every caller shares one Chromium.
+        # Without a ceiling a handful of simultaneous renders can exhaust memory and stall the
+        # event loop of the whole server, so renders are bounded here rather than in callers that
+        # cannot see each other.
+        self.max_concurrent_renders = max(1, max_concurrent_renders)
+        self._render_semaphore = asyncio.Semaphore(self.max_concurrent_renders)
         self._crawler: Any = None
         self._run_config: Any = None
         self._start_lock = asyncio.Lock()
@@ -53,7 +60,8 @@ class Crawl4AIReader:
         crawler, run_config = await self._ensure_crawler()
         effective_config = _query_run_config(run_config, query) if query else run_config
         try:
-            result = await crawler.arun(url=url, config=effective_config)
+            async with self._render_semaphore:
+                result = await crawler.arun(url=url, config=effective_config)
         except Exception as exc:
             raise ReaderError(f"Crawl4AI failed for {url}: {exc}") from exc
         markdown, content_filtered = _markdown_text(result.markdown)
@@ -108,7 +116,7 @@ class Crawl4AIReader:
         # Query-filtered output is not a complete representation of the URL and must not replace
         # the shared URL cache used by later research questions.
         if self.store and not query:
-            self.store.put_document(canonicalize_url(url), document)
+            await asyncio.to_thread(self.store.put_document, canonicalize_url(url), document)
         return document
 
     async def _ensure_crawler(self):

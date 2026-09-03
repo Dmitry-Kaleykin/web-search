@@ -17,7 +17,7 @@ def _search(url: str) -> list[SearchResult]:
     return [SearchResult(url=url, title="title")]
 
 
-class SQLiteStoreEvictionTests(unittest.TestCase):
+class SQLiteStoreCacheTests(unittest.TestCase):
     def _store(self, directory: str, **kwargs) -> SQLiteStore:
         return SQLiteStore(Path(directory) / "cache.sqlite3", **kwargs)
 
@@ -118,6 +118,41 @@ class SQLiteStoreEvictionTests(unittest.TestCase):
             self.assertEqual(report["rows_removed"]["document_cache"], 7)
             self.assertLess(after, before)
             self.assertEqual(report["document_cache"]["rows"], 1)
+            store.close()
+
+    def test_cooldowns_persist_and_are_restored_after_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.sqlite3"
+            store = SQLiteStore(path)
+            store.record_engine_cooldown("brave", "CAPTCHA challenge", time.time() + 1200)
+            store.close()
+
+            reopened = SQLiteStore(path)
+            active = reopened.active_engine_cooldowns()
+            self.assertIn("brave", active)
+            self.assertEqual(active["brave"][0], "CAPTCHA challenge")
+            self.assertGreater(active["brave"][1], 1100)
+            reopened.close()
+
+    def test_a_shorter_later_failure_never_shortens_a_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            store.record_engine_cooldown("brave", "CAPTCHA challenge", time.time() + 1800)
+            store.record_engine_cooldown("brave", "rate limited", time.time() + 60)
+            active = store.active_engine_cooldowns()
+            self.assertEqual(active["brave"][0], "CAPTCHA challenge")
+            self.assertGreater(active["brave"][1], 1700)
+            store.close()
+
+    def test_expired_cooldowns_are_dropped_not_just_hidden(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            store.record_engine_cooldown("brave", "CAPTCHA challenge", time.time() - 1)
+            self.assertEqual(store.active_engine_cooldowns(), {})
+            remaining = store._connection.execute(
+                "SELECT COUNT(*) FROM engine_health"
+            ).fetchone()[0]
+            self.assertEqual(remaining, 0)
             store.close()
 
 

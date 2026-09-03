@@ -29,6 +29,32 @@ class Crawl4AIReaderTests(unittest.IsolatedAsyncioTestCase):
         reader._ensure_crawler = AsyncMock(return_value=(crawler, object()))
         return reader
 
+    async def test_renders_are_bounded_concurrently(self) -> None:
+        """Prefetch fans out freely and every caller shares one Chromium, so renders are capped."""
+        import asyncio
+
+        inflight = 0
+        peak = 0
+
+        async def arun(**_kwargs):
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            await asyncio.sleep(0.01)
+            inflight -= 1
+            return crawl_result()
+
+        reader = Crawl4AIReader(allow_private_urls=True, max_concurrent_renders=1)
+        crawler = SimpleNamespace(arun=arun)
+        reader._ensure_crawler = AsyncMock(return_value=(crawler, object()))
+
+        documents = await asyncio.gather(
+            *[reader.read(f"http://127.0.0.1/{index}") for index in range(4)]
+        )
+
+        self.assertEqual(len(documents), 4)
+        self.assertEqual(peak, 1)
+
     async def test_recovers_minimal_text_false_positive_with_rendered_markdown(self):
         result = crawl_result(
             success=False,

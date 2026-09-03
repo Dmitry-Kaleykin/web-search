@@ -63,6 +63,12 @@ class SQLiteStore:
                     stored_at REAL NOT NULL,
                     payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS engine_health (
+                    engine TEXT PRIMARY KEY,
+                    reason TEXT NOT NULL,
+                    expires_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS research_runs (
                     id TEXT PRIMARY KEY,
                     started_at REAL NOT NULL,
@@ -112,6 +118,47 @@ class SQLiteStore:
             ttl_seconds=self.document_ttl_seconds,
             max_rows=self.document_max_rows,
         )
+
+    def record_engine_cooldown(self, engine: str, reason: str, expires_at: float) -> None:
+        """Persist an engine cooldown so it survives a restart and crosses processes.
+
+        ``expires_at`` must be wall-clock (``time.time()``). Monotonic values have an arbitrary
+        origin per process, so persisting one would make every restored cooldown either already
+        expired or permanently stuck.
+        """
+        now = time.time()
+        with self._lock, self._connection:
+            # A cooldown is evidence: never let a later, shorter failure shorten it.
+            self._connection.execute(
+                """
+                INSERT INTO engine_health(engine, reason, expires_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(engine) DO UPDATE SET
+                    reason = excluded.reason,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at
+                WHERE excluded.expires_at > engine_health.expires_at
+                """,
+                (engine, reason, expires_at, now),
+            )
+
+    def active_engine_cooldowns(self, now: float | None = None) -> dict[str, tuple[str, float]]:
+        """Restores cooldowns recorded by an earlier process; expired rows are dropped."""
+        current = time.time() if now is None else now
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                "SELECT engine, reason, expires_at FROM engine_health ORDER BY expires_at DESC"
+            ).fetchall()
+            expired = self._connection.execute(
+                "DELETE FROM engine_health WHERE expires_at <= ?", (current,)
+            ).rowcount
+            if expired:
+                self._connection.commit()
+        return {
+            engine: (reason, expires_at - current)
+            for engine, reason, expires_at in rows
+            if expires_at > current
+        }
 
     def start_run(self, research_id: str, query: str, effort: str) -> None:
         with self._lock, self._connection:
@@ -208,6 +255,12 @@ class SQLiteStore:
             ).rowcount
         return removed
 
+    def _prune_engine_health(self) -> int:
+        with self._lock, self._connection:
+            return self._connection.execute(
+                "DELETE FROM engine_health WHERE expires_at <= ?", (time.time(),)
+            ).rowcount
+
     def prune(self) -> dict[str, int]:
         """Evict expired, oversized, and over-ceiling cache rows."""
         return {
@@ -222,6 +275,7 @@ class SQLiteStore:
                 max_rows=self.document_max_rows,
                 max_payload_bytes=self.document_max_payload_bytes,
             ),
+            "engine_health": self._prune_engine_health(),
         }
 
     def maintenance(self) -> dict[str, Any]:
@@ -248,6 +302,7 @@ class SQLiteStore:
             "document_cache": "payload",
             "research_runs": "result",
             "events": "payload",
+            "engine_health": "reason",
         }
         out: dict[str, Any] = {}
         with self._lock:

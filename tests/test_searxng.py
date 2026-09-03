@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -340,6 +341,45 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 1)
         self.assertEqual(len(results), 5)
         self.assertEqual(provider.last_warnings, ["search_engines_unresponsive:google: captcha"])
+
+    async def test_engine_cooldowns_survive_a_restart(self) -> None:
+        """A restart must not look healthy simply because memory was cleared."""
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "research.sqlite3")
+            store.record_engine_cooldown("brave", "CAPTCHA challenge", time.time() + 1200)
+            provider = SearXNGSearchProvider(
+                "http://searxng.test",
+                store=store,
+                healthy_engines="brave,wiby",
+            )
+            try:
+                health = provider.engine_health()
+                self.assertIn("brave", health)
+                self.assertIn("restored", health["brave"])
+                self.assertEqual(provider._available_engines(), ["wiby"])
+            finally:
+                await provider.close()
+                store.close()
+
+    async def test_penalties_persist_as_wall_clock_not_monotonic(self) -> None:
+        """Monotonic expiries are meaningless in the next process, so this must be wall clock."""
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "research.sqlite3")
+            provider = SearXNGSearchProvider(
+                "http://searxng.test",
+                store=store,
+                healthy_engines="brave",
+            )
+            try:
+                provider._cool("brave", "CAPTCHA challenge")
+                active = store.active_engine_cooldowns()
+                self.assertIn("brave", active)
+                # A persisted monotonic value would land nowhere near the 1800s CAPTCHA window.
+                self.assertGreater(active["brave"][1], 1700)
+                self.assertLessEqual(active["brave"][1], 1800)
+            finally:
+                await provider.close()
+                store.close()
 
 
 if __name__ == "__main__":

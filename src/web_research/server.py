@@ -461,6 +461,7 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
             store=store,
             user_agent=settings.user_agent,
             max_content_chars=settings.document_max_chars,
+            max_concurrent_renders=settings.browser_max_concurrent_renders,
             allow_private_urls=settings.allow_private_urls,
             allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
         )
