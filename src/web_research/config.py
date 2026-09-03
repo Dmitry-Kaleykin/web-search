@@ -72,7 +72,7 @@ class Settings:
     read_url_max_links: int = 100
     search_retry_base_seconds: float = 1.0
     search_max_retries: int = 2
-    search_healthy_engines: str = "google cse,mwmbl,searchmysite,mojeek,crowdview"
+    search_healthy_engines: str = "google cse,duckduckgo web,mwmbl,searchmysite,mojeek,crowdview"
     search_diversity_min_results: int = 3
     search_max_retry_wait_seconds: float = 10.0
 
@@ -159,7 +159,7 @@ class Settings:
             search_healthy_engines=_string_env(
                 environment,
                 "WEB_SEARCH_SEARCH_HEALTHY_ENGINES",
-                "google cse,mwmbl,searchmysite,mojeek,crowdview",
+                "google cse,duckduckgo web,mwmbl,searchmysite,mojeek,crowdview",
             ),
             search_diversity_min_results=max(
                 2, _int_env(environment, "WEB_SEARCH_SEARCH_DIVERSITY_MIN_RESULTS", 3)

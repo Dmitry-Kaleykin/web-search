@@ -99,6 +99,27 @@ engine set measured on this instance, and the client layer tracks health at runt
 | Engine CAPTCHA / suspension / rate limit | Engine goes on a cooldown (30 min CAPTCHA, 15 min rate limit, 2 min transient) and is skipped, not hammered |
 | Every result from one engine | Query is re-issued pinned to engines that are actually answering, and the half of the result set that is duplicated is replaced |
 
+The engine set is the whole game on a free instance. Measured per engine with `engines=` pinning:
+
+| Lane | Answering | Disabled |
+| --- | --- | --- |
+| general | `google cse`, `duckduckgo web`, `mwmbl`, `searchmysite`, `mojeek`, `crowdview`, `bing`, `wiby`, `brave` | `google`, `duckduckgo`, `startpage`, `qwant`, `infospace`, `fastbot`, `yahoo` |
+| news | `duckduckgo news`, `reuters`, `bing news`, `brave.news`, `mojeek news`, `wikinews` | `google news`, `startpage news`, `fireball news`, `tusksearch news`, `tagesschau` |
+| it | `hackernews`, `lobste.rs`, `microsoft learn`, `npm`, `crates.io`, `pkg.go.dev`, `huggingface`, `discuss.python`, `national vulnerability database`, `alpine linux packages`, `codeberg` | `metacpan`, `nixos wiki` |
+| science | `crossref`, `openalex`, `arxiv`, `pubmed`, `semantic scholar` | `encyclosearch` |
+
+Two lessons worth keeping:
+
+- **Judge endpoints, not brands.** DuckDuckGo's legacy HTML endpoint is a permanent CAPTCHA wall,
+  while its `/web` and news endpoints answer normally. Disabling "DuckDuckGo" wholesale throws away
+  a working index because of a sibling that does not work.
+- **Do not buy two tickets to the same film.** `google` answers on a different endpoint than
+  `google cse`, but the index underneath is the same one. It got CAPTCHA'd on 1 of 2 probes, so it
+  is a fresh blocking risk purchased for almost no new coverage — the cse entry already has it.
+- **A timeout failure is not a dead engine.** `codeberg` failed at exactly the configured
+  `request_timeout`, and its origin answers in ~4.6s — it needed a per-engine `timeout`, not
+  removal. `nixos wiki` and `encyclosearch` by contrast fail at the origin and are genuinely gone.
+
 Verify the live engine set with:
 
 ```bash
@@ -108,7 +129,9 @@ curl -s "http://127.0.0.1:8080/search?q=context+engineering&format=json" \
 
 If one engine still dominates and others are listed as unresponsive, the engine set in
 `settings.yml` no longer matches reality — re-measure it per engine with the `engines=` parameter
-before changing it.
+before changing it. Pass `engines=` **on its own**: adding `categories=` as well makes SearXNG
+query the whole category, so the result count you read is an aggregate and tells you nothing about
+the engine you meant to test.
 
 ## 3. Configure the research model
 

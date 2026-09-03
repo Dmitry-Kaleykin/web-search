@@ -20,8 +20,8 @@ search:
     - json
 
 outgoing:
-  # Per-engine request timeout. Slow engines were stalling whole queries while returning nothing.
-  request_timeout: 4.0
+  # 4.0s was tight enough to kill engines that were healthy but slow (Codeberg answers in ~4.6s).
+  request_timeout: 5.0
   max_request_timeout: 12.0
   # SearXNG retries upstream itself, and the Python client retries on top of that. Nested
   # retries multiply request volume against an engine that has already said "too many requests",
@@ -34,21 +34,21 @@ outgoing:
   enable_http2: true
   useragent_suffix: "local single-user research instance"
 
-# Engine policy. Measured on this instance, unauthenticated, one request per engine:
-#
-#   healthy + relevant : google cse, mwmbl, searchmysite
-#   healthy, sparse    : mojeek, crowdview, wikipedia, wikidata
-#   soft-blocked       : bing (answers, but returns locale junk), brave (rate-suspended)
-#   hard-blocked       : duckduckgo, startpage, qwant, infospace, fastbot, yahoo
-#
-# With only duckduckgo / startpage / brave / google cse enabled in the `general` tab, three of
-# the four real web indexes are hard-blocked, so every query silently collapses onto `google cse`
-# alone. Diversity is restored by enabling engines that answer, not by retrying the blocked ones.
+# Engine policy. Every verdict below is a per-engine measurement made against this instance with
+# `?engines=<name>` pinning, so the numbers are isolated to that engine and not the aggregate.
+# Re-measure before changing anything: engines come and go, and a name that worked last month may
+# now be a CAPTCHA wall.
 engines:
-  # --- hard walls: these fail on every request and only add latency + CAPTCHA pressure ---
+  # ---------------------------------------------------------------- hard walls: never answer ---
+  # Note the endpoint nuance: DuckDuckGo's legacy HTML endpoint is a CAPTCHA magnet while its
+  # `/web` and news endpoints answer normally, so only the legacy one is disabled here.
   - name: duckduckgo
     disabled: true
   - name: startpage
+    disabled: true
+  - name: startpage news
+    disabled: true
+  - name: google news
     disabled: true
   - name: qwant
     disabled: true
@@ -58,39 +58,59 @@ engines:
     disabled: true
   - name: yahoo
     disabled: true
+  - name: fireball news
+    disabled: true
+  - name: tusksearch news
+    disabled: true
+  # Repeated transport failures, not rate limits: 2/2 HTTP errors and an origin that no longer
+  # serves the documented endpoint. These cost latency and return nothing.
+  - name: metacpan
+    disabled: true
+  - name: tagesschau
+    disabled: true
+  - name: nixos wiki
+    disabled: true
+  - name: encyclosearch
+    disabled: true
 
-  # --- enabled for diversity: independent / bot-tolerant indexes, no API key required ---
+  # ------------------------------------------------ general web: independent indexes -----------
+  # Measured: n results / latency. Restores diversity after three of four mainstream indexes blocked.
   - name: mojeek
     disabled: false
-    categories:
-      - general
-      - web
+    categories: [general, web]
     timeout: 5.0
   - name: mwmbl
     disabled: false
-    categories:
-      - general
-      - web
+    categories: [general, web]
     timeout: 5.0
   - name: searchmysite
     disabled: false
-    categories:
-      - general
-      - web
+    categories: [general, web]
     timeout: 5.0
   - name: crowdview
     disabled: false
-    categories:
-      - general
-      - web
+    categories: [general, web]
     timeout: 6.0
+  - name: duckduckgo web
+    disabled: false
+    categories: [general, web]
+    timeout: 6.0
+  # Disabled on purpose. Its endpoint is a different surface, but the index underneath it is the
+  # same one `google cse` already reaches, so it adds a CAPTCHA magnet (observed on 1 of 2 probes)
+  # for almost no new coverage. Prefer the cse entry.
+  - name: google
+    disabled: true
+  # Curated indie web. Small and quirky, but surfaces material no mainstream index carries.
+  - name: wiby
+    disabled: false
+    categories: [general, web]
+    weight: 0.4
+    timeout: 5.0
 
-  # --- keep, but de-weight: answers, sometimes with off-topic results ---
+  # -------------------------------------------------- soft: answered, sometimes off-topic -----
   - name: bing
     disabled: false
-    categories:
-      - general
-      - web
+    categories: [general, web]
     weight: 0.5
     timeout: 5.0
   # Rate-suspended rather than hard-blocked, so it stays enabled and is cooled down client-side.
@@ -98,8 +118,69 @@ engines:
     weight: 0.7
     timeout: 6.0
 
-  # --- news lane: second source so `news` is not single-engine by construction ---
+  # ------------------------------------------------------- news: 6 healthy engines ------------
   - name: mojeek news
     disabled: false
-    categories:
-      - news
+    categories: [news]
+
+  # ------------------------------------------------------ it: documentation and packages -----
+  # Official, key-free APIs that answer precisely for engineering questions. Only used by `it`
+  # category queries and bangs, so they cannot pollute general web results.
+  - name: hackernews
+    disabled: false
+    categories: [it]
+    timeout: 5.0
+  - name: lobste.rs
+    disabled: false
+    categories: [it]
+    timeout: 5.0
+  - name: microsoft learn
+    disabled: false
+    categories: [it]
+    timeout: 5.0
+  - name: npm
+    disabled: false
+    categories: [it]
+    timeout: 5.0
+  - name: crates.io
+    disabled: false
+    categories: [it]
+    timeout: 5.0
+  - name: pkg.go.dev
+    disabled: false
+    categories: [it]
+    timeout: 5.0
+  - name: huggingface
+    disabled: false
+    categories: [it]
+    timeout: 5.0
+  - name: discuss.python
+    disabled: false
+    categories: [it]
+    timeout: 6.0
+  - name: alpine linux packages
+    disabled: false
+    categories: [it]
+    timeout: 5.0
+  # CVE lookups against the authoritative source. Low volume by design: it answers exactly the
+  # identifier queries it is for.
+  - name: national vulnerability database
+    disabled: false
+    categories: [it]
+    timeout: 6.0
+  # Healthy origin, just slow (~4.6s), so it needs a timeout above the global default.
+  - name: codeberg
+    disabled: false
+    categories: [it]
+    timeout: 9.0
+
+  # ------------------------------------------- science: key-free scholarly infrastructure ----
+  # The two biggest wins for the academic lane: 19 and 10 on-topic results, no API key required.
+  - name: crossref
+    disabled: false
+    categories: [science]
+    timeout: 8.0
+  - name: openalex
+    disabled: false
+    categories: [science]
+    timeout: 8.0
