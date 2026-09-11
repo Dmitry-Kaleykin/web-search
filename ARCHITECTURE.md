@@ -48,7 +48,7 @@ The running vertical slice now adds several measured refinements to this baselin
 - Bundled offline fixtures exercise conflicting and corroborated evidence through
   `web-search-eval`. They are the seed of the larger calibration set described below.
 
-Evidence-model batching is deliberately excluded for now: it would raise attribution and local GPU
+Page-analysis batching is deliberately excluded for now: it would raise attribution and local GPU
 contention risks without a measured latency win. PDF/visual-document handling also remains a later
 reader milestone.
 
@@ -418,18 +418,12 @@ All outputs should use validated JSON schemas. The model never receives network 
 
 The default path is MCP sampling without a model hint. Pi's MCP adapter therefore resolves each
 request to the active session model, so the research service is provider-independent and follows
-model changes made in Pi. A dedicated evidence analyst may be selected from a separately configured
-OpenAI-compatible endpoint in the operator console. This does not place a model ID in Pi's MCP
-configuration: only page-evidence extraction uses the saved model, while all other roles remain
-dynamic through MCP sampling. Evidence-model failures fall back to the active Pi model and trip a
-per-run circuit breaker after repeated failures. The same direct endpoint remains available as a
-whole-service fallback when the MCP client does not advertise sampling. Deterministic planning and
-synthesis remain the final failure fallback.
+model changes made in Pi. All four roles use that same main model. An OpenAI-compatible
+endpoint remains available as a whole-service fallback when the MCP client does not advertise
+sampling. Deterministic planning and synthesis remain the final failure fallback.
 
 The operator console and MCP process load the same project `.env`; process-level environment
-variables override file values. The saved evidence-model selection contains only the endpoint and
-model ID, while endpoint credentials remain in `.env` or the process environment. Results and trace
-events record evidence-model attempts, successes, failures, fallbacks, and circuit-breaker state.
+variables override file values. Endpoint credentials remain in `.env` or the process environment.
 
 Sampling must remain text-only and bounded. The adapter should forward cancellation and enforce its
 normal authorization policy. A trusted local Pi scope may enable automatic sampling approval because

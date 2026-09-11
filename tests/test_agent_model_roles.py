@@ -4,45 +4,59 @@ import unittest
 from unittest.mock import AsyncMock
 
 from web_research.agent import ResearchAgent
-from web_research.models import Document, PlannedQuery, Requirement, ResearchSpec, TaskType
+from web_research.evidence import EvidenceBatch, EvidenceLedger
+from web_research.models import Document, SourceClass
 
 
 class ResearchAgentModelRoleTests(unittest.IsolatedAsyncioTestCase):
-    async def test_only_document_analysis_uses_dedicated_evidence_model(self) -> None:
-        main_model = AsyncMock()
-        main_model.complete_json.return_value = {"queries": ["planned query"]}
-        evidence_model = AsyncMock()
-        evidence_model.complete_json.return_value = {
-            "source_class": "independent",
-            "claims": [],
+    async def test_all_research_stages_use_the_main_model(self) -> None:
+        model = AsyncMock()
+        statement = "The product supports offline mode."
+        claim = {
+            "requirement_id": "R1",
+            "statement": statement,
+            "excerpt": statement,
+            "confidence": 0.9,
         }
-        agent = ResearchAgent(main_model, evidence_model=evidence_model)
-        spec = ResearchSpec(
-            original_query="Question",
-            task_type=TaskType.FACT,
-            requirements=[Requirement(id="R1", question="What happened?")],
-        )
+        model.complete_json.side_effect = [
+            {
+                "task_type": "fact",
+                "requirements": [{"id": "R1", "question": "Does it work offline?"}],
+            },
+            {"queries": ["product offline mode"]},
+            {"source_class": "primary", "claims": [claim]},
+            {"stop": True},
+            {"answer_markdown": "The product supports offline mode. [S1]"},
+        ]
+        agent = ResearchAgent(model)
+        spec = await agent.compile_spec("Does the product work offline?", None)
+        queries = await agent.plan_queries(spec)
         document = Document(
-            url="https://example.test/article",
-            final_url="https://example.test/article",
-            title="Article",
-            content="This is a sufficiently detailed article paragraph about what happened.",
+            url="https://example.test/product",
+            final_url="https://example.test/product",
+            title="Product",
+            content=statement,
             method="http",
         )
+        batch = await agent.analyze_document(spec, document)
+        self.assertEqual(batch, EvidenceBatch(source_class=SourceClass.PRIMARY, claims=[claim]))
+        ledger = EvidenceLedger(spec)
+        ledger.add_document(document, batch)
+        await agent.assess(spec, ledger)
+        answer = await agent.synthesize(spec, ledger)
 
-        queries = await agent.plan_queries(spec)
-        await agent.analyze_document(spec, document)
-
-        self.assertEqual(queries, [PlannedQuery(query="planned query")])
-        self.assertEqual(main_model.complete_json.await_count, 1)
+        self.assertEqual(queries[0].query, "product offline mode")
+        self.assertIn("The product supports offline mode. [S1]", answer)
         self.assertEqual(
-            main_model.complete_json.await_args.kwargs["schema_name"], "search_queries"
+            [call.kwargs["schema_name"] for call in model.complete_json.await_args_list],
+            [
+                "research_spec",
+                "search_queries",
+                "source_evidence",
+                "sufficiency_assessment",
+                "research_answer",
+            ],
         )
-        self.assertEqual(evidence_model.complete_json.await_count, 1)
-        self.assertEqual(
-            evidence_model.complete_json.await_args.kwargs["schema_name"], "source_evidence"
-        )
-        self.assertEqual(agent.evidence_model_usage()["model"], "pi-active")
 
 
 if __name__ == "__main__":

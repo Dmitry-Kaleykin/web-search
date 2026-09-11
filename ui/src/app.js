@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,6 @@ const CRAWL4AI_SETUP = path.join(PROJECT_DIR, ".venv", "bin", "crawl4ai-setup");
 const MCP_SERVER = path.join(PROJECT_DIR, ".venv", "bin", "web-search-mcp");
 const DOCTOR = path.join(PROJECT_DIR, ".venv", "bin", "web-search-doctor");
 const EVALUATOR = path.join(PROJECT_DIR, ".venv", "bin", "web-search-eval");
-const CONFIG_FILENAME = "config.json";
 
 const ansi = {
   accent: (text) => `\x1b[38;5;75m${text}\x1b[0m`,
@@ -63,11 +62,6 @@ const actions = [
     value: "doctor",
     label: "Run readiness checks",
     description: "Check browser, search API, model strategy, and configuration",
-  },
-  {
-    value: "evidence-model",
-    label: "Configure evidence model",
-    description: "Select a dedicated page-analysis model from the local endpoint",
   },
   {
     value: "evaluation",
@@ -142,7 +136,6 @@ let busy = false;
 let activeChild = null;
 let logChild = null;
 let logLines = [];
-let pickerCancel = null;
 
 function requestRender() {
   statusText.invalidate();
@@ -234,58 +227,6 @@ async function readEnvironment() {
   return { ...values, ...process.env };
 }
 
-function configuredDataDirectory(environment) {
-  const configured = environment.WEB_SEARCH_DATA_DIR || DATA_DIR;
-  return path.isAbsolute(configured) ? configured : path.resolve(PROJECT_DIR, configured);
-}
-
-async function readAppConfig(environment) {
-  const configPath = path.join(configuredDataDirectory(environment), CONFIG_FILENAME);
-  try {
-    const value = JSON.parse(await readFile(configPath, "utf8"));
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
-
-async function writeEvidenceModelConfig(environment, evidenceModel) {
-  const dataDirectory = configuredDataDirectory(environment);
-  const configPath = path.join(dataDirectory, CONFIG_FILENAME);
-  const current = await readAppConfig(environment);
-  const next = { ...current, version: 1 };
-  if (evidenceModel) next.evidence_model = evidenceModel;
-  else delete next.evidence_model;
-  await mkdir(dataDirectory, { recursive: true });
-  const temporaryPath = `${configPath}.tmp-${process.pid}`;
-  await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporaryPath, configPath);
-}
-
-function modelEndpoint(environment, config) {
-  const saved = config.evidence_model;
-  return (
-    environment.WEB_SEARCH_EVIDENCE_MODEL_BASE_URL ||
-    (saved && typeof saved === "object" ? saved.base_url : "") ||
-    environment.WEB_SEARCH_MODEL_BASE_URL ||
-    "http://127.0.0.1:8000/v1"
-  ).replace(/\/$/, "");
-}
-
-function evidenceModelId(environment, config) {
-  const saved = config.evidence_model;
-  return (
-    environment.WEB_SEARCH_EVIDENCE_MODEL_ID ||
-    (saved && typeof saved === "object" ? String(saved.model_id || "") : "")
-  );
-}
-
-function modelHeaders(environment) {
-  const apiKey =
-    environment.WEB_SEARCH_EVIDENCE_MODEL_API_KEY || environment.WEB_SEARCH_MODEL_API_KEY || "";
-  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
-}
-
 function rerankerHeaders(environment) {
   const apiKey = environment.WEB_SEARCH_RERANKER_API_KEY || environment.WEB_SEARCH_MODEL_API_KEY || "";
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
@@ -307,7 +248,6 @@ function statusLine(ok, label, detail) {
 
 async function refreshStatus() {
   const environment = await readEnvironment();
-  const appConfig = await readAppConfig(environment);
   const docker = await run("docker", ["info", "--format", "{{.ServerVersion}}"], {
     quiet: true,
     allowFailure: true,
@@ -329,18 +269,6 @@ async function refreshStatus() {
       ? { Authorization: `Bearer ${environment.WEB_SEARCH_MODEL_API_KEY}` }
       : {};
     model = await fetchOk(`${modelBase.replace(/\/$/, "")}/models`, 3500, modelHeaders);
-  }
-  const helperId = evidenceModelId(environment, appConfig);
-  const helperBase = modelEndpoint(environment, appConfig);
-  let helper = { ok: true, available: false };
-  if (helperId) {
-    const response = await fetchOk(`${helperBase}/models`, 3500, modelHeaders(environment));
-    const ids = Array.isArray(response.json?.data)
-      ? response.json.data
-          .filter((item) => item && typeof item === "object" && typeof item.id === "string")
-          .map((item) => item.id)
-      : [];
-    helper = { ...response, available: ids.includes(helperId) };
   }
   const rerankerId = environment.WEB_SEARCH_RERANKER_MODEL_ID || "";
   const rerankerBase = (
@@ -389,15 +317,6 @@ async function refreshStatus() {
           : "dynamic through MCP client sampling",
       ),
       statusLine(
-        !helperId || (helper.ok && helper.available),
-        "Evidence",
-        helperId
-          ? helper.ok && helper.available
-            ? `${helperId} reachable`
-            : `${helperId} unavailable; Pi model fallback remains active`
-          : "Pi active model; no dedicated model selected",
-      ),
-      statusLine(
         !rerankerId || (reranker.ok && reranker.available),
         "Reranker",
         rerankerId
@@ -415,102 +334,6 @@ async function refreshStatus() {
     ].join("\n"),
   );
   requestRender();
-}
-
-function chooseModel(items, selectedId, endpoint) {
-  const pickerHeader = new Text(
-    `${ansi.accent(ansi.bold("Select evidence model"))}\n${ansi.dim(endpoint)}`,
-    1,
-    0,
-  );
-  const picker = new SelectList(
-    [
-      {
-        value: "__pi_active__",
-        label: "Use Pi active model",
-        description: selectedId ? "Disable the dedicated evidence model" : "Currently selected",
-      },
-      ...items.map((id) => ({
-        value: id,
-        label: id,
-        description: id === selectedId ? "Currently selected" : "Available model",
-      })),
-    ],
-    Math.min(items.length + 1, 18),
-    {
-      selectedPrefix: (text) => ansi.accent(text),
-      selectedText: (text) => ansi.accent(ansi.bold(text)),
-      description: (text) => ansi.dim(text),
-      scrollInfo: (text) => ansi.dim(text),
-      noMatch: (text) => ansi.warning(text),
-    },
-  );
-  const pickerFooter = new Text(ansi.dim("↑↓ choose · enter save · esc/q cancel"), 1, 0);
-  const pickerLayout = new VStack(
-    [
-      { component: pickerHeader, basis: "auto" },
-      { component: picker, basis: 0, grow: 1, minSize: 4 },
-      { component: pickerFooter, basis: "auto" },
-    ],
-    { gap: 1 },
-  );
-  const selectedIndex = selectedId ? items.indexOf(selectedId) + 1 : 0;
-  if (selectedIndex >= 0) picker.setSelectedIndex(selectedIndex);
-
-  return new Promise((resolve) => {
-    const finish = (value) => {
-      pickerCancel = null;
-      tui.setLayoutRoot(layout);
-      tui.setFocus(menu);
-      tui.requestRender();
-      resolve(value);
-    };
-    picker.onSelect = (item) => finish(item.value);
-    picker.onCancel = () => finish(null);
-    pickerCancel = () => finish(null);
-    tui.setLayoutRoot(pickerLayout);
-    tui.setFocus(picker);
-    tui.requestRender();
-  });
-}
-
-async function configureEvidenceModel() {
-  const environment = await readEnvironment();
-  if (environment.WEB_SEARCH_EVIDENCE_MODEL_ID) {
-    throw new Error(
-      "WEB_SEARCH_EVIDENCE_MODEL_ID overrides the saved selection; remove it before using the picker.",
-    );
-  }
-  const config = await readAppConfig(environment);
-  const endpoint = modelEndpoint(environment, config);
-  const response = await fetchOk(`${endpoint}/models`, 10000, modelHeaders(environment));
-  if (!response.ok) {
-    throw new Error(
-      `Could not list models from ${endpoint}: ${response.error || `HTTP ${response.status}`}`,
-    );
-  }
-  const ids = Array.isArray(response.json?.data)
-    ? response.json.data
-        .filter((item) => item && typeof item === "object" && typeof item.id === "string")
-        .map((item) => item.id.trim())
-        .filter(Boolean)
-    : [];
-  const models = [...new Set(ids)].sort((left, right) => left.localeCompare(right));
-  if (models.length === 0) {
-    throw new Error(`${endpoint}/models returned no model IDs.`);
-  }
-  const selection = await chooseModel(models, evidenceModelId(environment, config), endpoint);
-  if (selection === null) {
-    setActivity("Evidence model selection cancelled", "normal");
-    return;
-  }
-  if (selection === "__pi_active__") {
-    await writeEvidenceModelConfig(environment, null);
-    appendLog("Dedicated evidence model disabled; Pi active model will handle every stage.");
-  } else {
-    await writeEvidenceModelConfig(environment, { base_url: endpoint, model_id: selection });
-    appendLog(`Evidence model saved: ${selection}`);
-  }
 }
 
 async function ensureDocker() {
@@ -642,8 +465,6 @@ async function performAction(value) {
       await restartServices();
     } else if (value === "doctor") {
       await runDoctor();
-    } else if (value === "evidence-model") {
-      await configureEvidenceModel();
     } else if (value === "evaluation") {
       await runEvaluation();
     } else if (value === "refresh") {
@@ -670,10 +491,6 @@ function shutdown(code) {
 menu.onSelect = (item) => void performAction(item.value);
 menu.onCancel = () => shutdown(0);
 tui.addInputListener((data) => {
-  if (data === "q" && pickerCancel) {
-    pickerCancel();
-    return { consume: true };
-  }
   if (matchesKey(data, Key.ctrl("c")) || data === "q") {
     shutdown(0);
     return { consume: true };

@@ -13,7 +13,6 @@ from .agent import ResearchAgent
 from .config import Settings
 from .controller import ResearchController
 from .model.base import ResearchModel
-from .model.fallback import FallbackModelClient
 from .model.mcp_sampling import MCPSamplingModelClient
 from .model.openai_compatible import OpenAICompatibleModelClient
 from .model.unavailable import UnavailableModelClient
@@ -127,12 +126,6 @@ class ToolStats(BaseModel):
     browsing_elapsed_ms: int
     cache_hits: int
     fetch_failures: int
-    evidence_model: str
-    evidence_model_attempts: int
-    evidence_model_successes: int
-    evidence_model_failures: int
-    evidence_model_fallbacks: int
-    evidence_model_disabled: bool
     reranker_model: str
     reranker_requests: int
     reranker_candidates: int
@@ -345,25 +338,11 @@ async def web_search(
     )
     reader = runtime.reader
     model = _create_model(ctx, settings)
-    evidence_model = _create_evidence_model(settings, model)
     reranker = _create_reranker(settings)
-    if settings.evidence_model_id:
-        LOGGER.info(
-            "Dedicated evidence model configured: %s at %s (authentication: %s)",
-            settings.evidence_model_id,
-            settings.evidence_model_base_url,
-            "configured" if settings.evidence_model_api_key else "none",
-        )
-    else:
-        LOGGER.info("Evidence analysis uses the Pi active model")
     controller = ResearchController(
         search=search,
         reader=reader,
-        agent=ResearchAgent(
-            model,
-            evidence_model=evidence_model,
-            evidence_model_name=settings.evidence_model_id or "pi-active",
-        ),
+        agent=ResearchAgent(model),
         store=store,
         reranker=reranker,
         prefetch_pages=settings.prefetch_pages,
@@ -383,16 +362,6 @@ async def web_search(
                 effort=effort,
                 freshness=freshness,
                 progress=report,
-            )
-            LOGGER.info(
-                "Evidence model usage: model=%s attempts=%d successes=%d failures=%d "
-                "fallbacks=%d disabled=%s",
-                result.stats.evidence_model,
-                result.stats.evidence_model_attempts,
-                result.stats.evidence_model_successes,
-                result.stats.evidence_model_failures,
-                result.stats.evidence_model_fallbacks,
-                result.stats.evidence_model_disabled,
             )
             if result.stats.reranker_model:
                 LOGGER.info(
@@ -416,8 +385,6 @@ async def web_search(
         await runtime.close()
         if reranker is not None:
             await reranker.close()
-        if evidence_model is not model:
-            await evidence_model.close()
         await model.close()
 
 
@@ -601,20 +568,6 @@ def _create_model(ctx: Context, settings: Settings) -> ResearchModel:
             temperature=settings.model_temperature,
         )
     return UnavailableModelClient()
-
-
-def _create_evidence_model(settings: Settings, fallback: ResearchModel) -> ResearchModel:
-    if not settings.evidence_model_id:
-        return fallback
-    preferred = OpenAICompatibleModelClient(
-        settings.evidence_model_base_url,
-        settings.evidence_model_id,
-        api_key=settings.evidence_model_api_key,
-        timeout_seconds=settings.evidence_model_timeout_seconds,
-        max_tokens=settings.evidence_model_max_tokens,
-        temperature=settings.evidence_model_temperature,
-    )
-    return FallbackModelClient(preferred, fallback)
 
 
 def _create_reranker(settings: Settings) -> OpenAICompatibleReranker | None:

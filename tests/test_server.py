@@ -12,14 +12,12 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.types import ClientCapabilities, SamplingCapability
 
 from web_research.config import Settings
-from web_research.model.fallback import FallbackModelClient
 from web_research.model.mcp_sampling import MCPSamplingModelClient
 from web_research.model.openai_compatible import OpenAICompatibleModelClient
 from web_research.model.unavailable import UnavailableModelClient
 from web_research.models import Document
 from web_research.server import (
     ConcurrentResearchError,
-    _create_evidence_model,
     _create_model,
     _create_reader_runtime,
     _read_url_output,
@@ -85,9 +83,6 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         )
         stats_schema = search_tool.output_schema["$defs"]["ToolStats"]["properties"]
         self.assertIn("pipeline_profile", stats_schema)
-        self.assertIn("evidence_model", stats_schema)
-        self.assertIn("evidence_model_successes", stats_schema)
-        self.assertIn("evidence_model_fallbacks", stats_schema)
         self.assertIn("reranker_requests", stats_schema)
         self.assertIn("candidates_rejected_irrelevant", stats_schema)
         self.assertIn("relevance_batches_rejected", stats_schema)
@@ -266,29 +261,6 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(model, UnavailableModelClient)
         await model.close()
 
-    async def test_dedicated_evidence_model_wraps_dynamic_model_with_fallback(self) -> None:
-        dynamic = UnavailableModelClient()
-        settings = Settings(
-            evidence_model_base_url="http://reader.test/v1",
-            evidence_model_id="reader-model",
-            evidence_model_max_tokens=1234,
-        )
-
-        model = _create_evidence_model(settings, dynamic)
-
-        self.assertIsInstance(model, FallbackModelClient)
-        self.assertIs(model.fallback, dynamic)
-        self.assertIsInstance(model.preferred, OpenAICompatibleModelClient)
-        self.assertEqual(model.preferred.model, "reader-model")
-        self.assertEqual(model.preferred.max_tokens, 1234)
-        await model.close()
-
-    async def test_no_dedicated_evidence_model_reuses_dynamic_model(self) -> None:
-        dynamic = UnavailableModelClient()
-
-        model = _create_evidence_model(Settings(), dynamic)
-
-        self.assertIs(model, dynamic)
 
 
 if __name__ == "__main__":
