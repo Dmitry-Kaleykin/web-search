@@ -143,8 +143,8 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[0].url.params["language"], "en")
         self.assertEqual(requests[0].url.params["time_range"], "month")
         self.assertEqual(requests[0].url.params["categories"], "science")
-        self.assertEqual(len(first), 1)
-        self.assertEqual(first[0].url, "https://example.com/item")
+        self.assertEqual(len(first), 2)
+        self.assertEqual(first[0].url, "https://example.com/item?utm_source=test")
         self.assertEqual(first[0].engines, ["brave", "duckduckgo"])
         self.assertEqual(second, first)
 
@@ -155,7 +155,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             return httpx.Response(
                 200,
-                text='<!doctype html><title>Verifying your browser</title>'
+                text="<!doctype html><title>Verifying your browser</title>"
                 '<noscript><meta http-equiv="refresh" content="0; url=/antibot/captcha">',
                 headers={"content-type": "text/html; charset=utf-8"},
             )

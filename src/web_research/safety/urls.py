@@ -4,22 +4,12 @@ import asyncio
 import ipaddress
 import socket
 from dataclasses import dataclass
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 
 class UnsafeUrlError(ValueError):
     """Raised when a URL is not safe for the public web reader."""
 
-
-TRACKING_PARAMETERS = {
-    "fbclid",
-    "gclid",
-    "mc_cid",
-    "mc_eid",
-    "ref",
-    "ref_src",
-    "source",
-}
 
 # RFC 2544 benchmarking space is widely used by local TUN proxies for synthetic
 # DNS answers. It is not treated as public by ipaddress, so accepting it must be
@@ -92,25 +82,18 @@ def _default_port(scheme: str) -> int:
 
 
 def canonicalize_url(url: str) -> str:
+    """Conservative identity key: preserve path, query order/encoding and meaningful parameters."""
     parsed = urlsplit(url)
+    if parsed.username or parsed.password:
+        raise UnsafeUrlError("Credentials in URLs are not allowed")
     scheme = parsed.scheme.lower()
     hostname = (parsed.hostname or "").lower()
+    host = f"[{hostname}]" if ":" in hostname else hostname
     port = parsed.port
+    netloc = host
     if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
-        netloc = f"{hostname}:{port}"
-    else:
-        netloc = hostname
-    path = parsed.path or "/"
-    if path != "/":
-        path = path.rstrip("/")
-    query = urlencode(
-        sorted(
-            (key, value)
-            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            if key.lower() not in TRACKING_PARAMETERS and not key.lower().startswith("utm_")
-        )
-    )
-    return urlunsplit((scheme, netloc, path, query, ""))
+        netloc = f"{host}:{port}"
+    return urlunsplit((scheme, netloc, parsed.path or "/", parsed.query, ""))
 
 
 def resolve_redirect(base_url: str, location: str) -> str:

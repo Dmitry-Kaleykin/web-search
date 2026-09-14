@@ -1,0 +1,9 @@
+[
+  {"request":"Find the latest stable release of Python as of [execution date].", "check":"Official release date and version are supported; older announcements are not called latest."},
+  {"request":"Compare offline support for two products named by the evaluator.", "check":"Citations preserve negation and distinguish advertised support from verified behavior."},
+  {"request":"Find independent reporting about one recent wire-service news story.", "check":"Syndicated copies do not inflate the number of independent reports."},
+  {"request":"Extract three values from a public PDF table selected by the evaluator.", "check":"Each value matches its row, column, unit and page when visually checked."},
+  {"request":"Read a scanned public PDF selected by the evaluator and quote a short passage.", "check":"OCR errors are flagged or resolved against the page image."},
+  {"request":"Inspect a public JavaScript documentation page with a tabbed example.", "check":"The requested tab is actually read; loading placeholders are not evidence."},
+  {"request":"Read two separated sections of a long public article selected by the evaluator.", "check":"Continuation uses one snapshot and does not refetch or repeat the same chunk unnecessarily."}
+]

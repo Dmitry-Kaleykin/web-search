@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .citations import CitationError, validate_citations
 from .evidence import EvidenceBatch, EvidenceLedger
 from .models import Document, Requirement, ResearchSpec, SearchResult, SourceClass, TaskType
 from .ranking import gate_candidates
@@ -24,6 +28,7 @@ class FixtureResult:
     candidate_accepted: int
     candidate_rejected: int
     failures: list[str]
+    answer_valid: bool | None = None
 
 
 def evaluate_fixture(path: Path) -> FixtureResult:
@@ -43,6 +48,7 @@ def evaluate_fixture(path: Path) -> FixtureResult:
         ],
         subjects=[str(item) for item in spec_data.get("subjects", [])],
         freshness=_optional_string(spec_data.get("freshness")),
+        as_of_date=_optional_string(spec_data.get("as_of_date")),
     )
     ledger = EvidenceLedger(spec)
     proposed = 0
@@ -71,8 +77,26 @@ def evaluate_fixture(path: Path) -> FixtureResult:
         failures.append(
             f"expected sufficient={bool(expected['sufficient'])}, got {coverage.sufficient}"
         )
+    if "accepted_claims" in expected and len(ledger.claims) != expected["accepted_claims"]:
+        failures.append(f"expected {expected['accepted_claims']} claims, got {len(ledger.claims)}")
+    if "source_count" in expected and coverage.items[0].source_count != expected["source_count"]:
+        failures.append(f"unexpected independent source count: {coverage.items[0].source_count}")
+    answer_valid = None
+    if "answer_markdown" in payload:
+        valid = True
+        try:
+            validate_citations(
+                str(payload["answer_markdown"]), ledger.evidence_sources(), ledger.claims
+            )
+        except CitationError:
+            valid = False
+        answer_valid = valid
+        if valid != expected.get("answer_valid", True):
+            failures.append(
+                f"expected answer_valid={expected.get('answer_valid', True)}, got {valid}"
+            )
     expected_gaps = sorted(str(item) for item in expected.get("unresolved_gaps", []))
-    if expected_gaps and sorted(coverage.unresolved_gaps) != expected_gaps:
+    if "unresolved_gaps" in expected and sorted(coverage.unresolved_gaps) != expected_gaps:
         failures.append(
             f"expected unresolved_gaps={expected_gaps}, got {sorted(coverage.unresolved_gaps)}"
         )
@@ -137,6 +161,7 @@ def evaluate_fixture(path: Path) -> FixtureResult:
         candidate_accepted=candidate_accepted,
         candidate_rejected=candidate_rejected,
         failures=failures,
+        answer_valid=answer_valid,
     )
 
 
@@ -153,6 +178,12 @@ def evaluation_main() -> None:
     )
     parser.add_argument("path", nargs="?", default="eval/fixtures", type=Path)
     parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument(
+        "--integration",
+        action="store_true",
+        help="Also run local reader, OCR and Chromium evaluations "
+        "(requires dev/browser dependencies)",
+    )
     args = parser.parse_args()
     results = evaluate_directory(args.path)
     if args.as_json:
@@ -168,6 +199,24 @@ def evaluation_main() -> None:
             )
             for failure in result.failures:
                 print(f"  - {failure}")
+    if args.integration:
+        project = Path(__file__).resolve().parents[2]
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_reliability.py",
+                "tests/test_documents.py",
+                "tests/test_browser_integration.py",
+            ],
+            cwd=project,
+            env={**os.environ, "WEB_SEARCH_RUN_BROWSER_TESTS": "1"},
+            check=False,
+        )
+        if completed.returncode:
+            raise SystemExit(completed.returncode)
     if not all(result.passed for result in results):
         raise SystemExit(1)
 

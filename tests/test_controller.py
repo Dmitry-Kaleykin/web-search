@@ -105,7 +105,7 @@ class FakeReader:
             url=url,
             final_url=url,
             title="Verification",
-            content="The verified value is 42.",
+            content=f"The verified value is 42.\n\nIndependent report from {url}.",
             method="fake",
         )
 

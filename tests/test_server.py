@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from mcp.client import Client
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -214,13 +214,17 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             method="crawl4ai+chromium",
         )
         reader = SimpleNamespace(read=AsyncMock(return_value=document))
-        runtime = SimpleNamespace(reader=reader, close=AsyncMock())
+        runtime = SimpleNamespace(
+            reader=reader,
+            close=AsyncMock(),
+            store=SimpleNamespace(put_snapshot=Mock(return_value="a" * 32)),
+        )
         context = SimpleNamespace(report_progress=AsyncMock())
         settings = Settings(read_url_max_chars=100, read_url_max_links=10)
 
         with (
             patch("web_research.server.Settings.from_env", return_value=settings),
-            patch("web_research.server._create_reader_runtime", return_value=runtime),
+            patch("web_research.server._shared_reader_runtime", return_value=runtime),
         ):
             output = await read_url(
                 "https://example.com/page",
@@ -232,8 +236,12 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             "https://example.com/page",
             render="always",
             query=None,
+            max_age_seconds=None,
+            visual=False,
+            page=1,
+            actions=None,
         )
-        runtime.close.assert_awaited_once()
+        runtime.close.assert_not_awaited()
         self.assertEqual(output.extraction_method, "crawl4ai+chromium")
         self.assertEqual(output.content, "Extracted content")
 
@@ -260,7 +268,6 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(model, UnavailableModelClient)
         await model.close()
-
 
 
 if __name__ == "__main__":

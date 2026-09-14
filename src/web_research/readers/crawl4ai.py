@@ -4,10 +4,11 @@ import asyncio
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..dates import normalize_published_at
+from ..dates import attribution_from_html, normalize_published_at
 from ..models import Document
-from ..safety.urls import canonicalize_url, validate_public_url
+from ..safety.urls import validate_public_url
 from ..storage import SQLiteStore
+from .actions import action_script, discover_actions
 from .base import cap_content
 from .http import ReaderError
 from .quality import page_diagnostics, rendering_signals
@@ -26,6 +27,7 @@ class Crawl4AIReader:
         page_timeout_ms: int = 35_000,
         max_content_chars: int = 1_000_000,
         max_concurrent_renders: int = 2,
+        render_semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         self.store = store
         self.user_agent = user_agent
@@ -41,7 +43,7 @@ class Crawl4AIReader:
         # event loop of the whole server, so renders are bounded here rather than in callers that
         # cannot see each other.
         self.max_concurrent_renders = max(1, max_concurrent_renders)
-        self._render_semaphore = asyncio.Semaphore(self.max_concurrent_renders)
+        self._render_semaphore = render_semaphore or asyncio.Semaphore(self.max_concurrent_renders)
         self._crawler: Any = None
         self._run_config: Any = None
         self._start_lock = asyncio.Lock()
@@ -51,7 +53,14 @@ class Crawl4AIReader:
             await self._crawler.close()
             self._crawler = None
 
-    async def read(self, url: str, *, query: str | None = None) -> Document:
+    async def read(
+        self,
+        url: str,
+        *,
+        query: str | None = None,
+        visual: bool = False,
+        actions: list[dict] | None = None,
+    ) -> Document:
         await validate_public_url(
             url,
             allow_private=self.allow_private_urls,
@@ -59,11 +68,21 @@ class Crawl4AIReader:
         )
         crawler, run_config = await self._ensure_crawler()
         effective_config = _query_run_config(run_config, query) if query else run_config
+        if visual or actions:
+            effective_config = effective_config.clone(
+                screenshot=visual,
+                force_viewport_screenshot=True,
+                js_code=action_script(actions) if actions else None,
+            )
         try:
             async with self._render_semaphore:
                 result = await crawler.arun(url=url, config=effective_config)
         except Exception as exc:
             raise ReaderError(f"Crawl4AI failed for {url}: {exc}") from exc
+        if actions and not _actions_completed(
+            getattr(result, "js_execution_result", None), len(actions)
+        ):
+            raise ReaderError("Read-only browser action failed or targeted an unsupported control")
         markdown, content_filtered = _markdown_text(result.markdown)
         recovered_structural_warning = _recoverable_structural_warning(result, markdown)
         if not result.success and not recovered_structural_warning:
@@ -75,7 +94,7 @@ class Crawl4AIReader:
             allow_private=self.allow_private_urls,
             allow_proxy_fake_ips=self.allow_proxy_fake_ips,
         )
-        if not markdown.strip():
+        if not markdown.strip() and not (visual and getattr(result, "screenshot", None)):
             raise ReaderError(f"Crawl4AI produced no Markdown for {url}")
         title = str((result.metadata or {}).get("title") or _title_from_url(final_url))
         warnings = ["browser_escalation"]
@@ -99,8 +118,8 @@ class Crawl4AIReader:
         if markdown_truncated:
             warnings.append(markdown_truncated)
         document = Document(
-            url=canonicalize_url(url),
-            final_url=canonicalize_url(final_url),
+            url=url,
+            final_url=final_url,
             title=title,
             content=markdown,
             method="crawl4ai+chromium",
@@ -112,11 +131,23 @@ class Crawl4AIReader:
             status_code=status_code,
             warnings=warnings,
             links=_result_links(result.links),
+            available_actions=discover_actions(str(getattr(result, "html", "") or "")),
+            attribution=attribution_from_html(str(getattr(result, "html", "") or ""), final_url),
         )
-        # Query-filtered output is not a complete representation of the URL and must not replace
-        # the shared URL cache used by later research questions.
-        if self.store and not query:
-            await asyncio.to_thread(self.store.put_document, canonicalize_url(url), document)
+        if visual and getattr(result, "screenshot", None):
+            import base64
+            import io
+
+            from PIL import Image
+
+            from .documents import image_block
+
+            raw = base64.b64decode(result.screenshot)
+            if len(raw) > 8_000_000:
+                raise ReaderError("Screenshot exceeds image budget")
+            with Image.open(io.BytesIO(raw)) as image:
+                document.images = [image_block(image, 1)]
+            document.warnings.append("visual_viewport_only:use scroll actions to inspect more")
         return document
 
     async def _ensure_crawler(self):
@@ -172,6 +203,9 @@ class Crawl4AIReader:
 
             async def route_filter(route):
                 request = route.request
+                if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                    await route.abort()
+                    return
                 parsed = urlsplit(request.url)
                 if parsed.scheme in {"about", "blob", "data"}:
                     await route.continue_()
@@ -189,7 +223,7 @@ class Crawl4AIReader:
                     except ValueError:
                         allowed = False
                     host_cache[host] = allowed
-                if not allowed or request.resource_type in {"font", "image", "media"}:
+                if not allowed or request.resource_type in {"font", "media"}:
                     await route.abort()
                 else:
                     await route.continue_()
@@ -268,3 +302,15 @@ def _status_code(result: Any) -> int | None:
 def _title_from_url(url: str) -> str:
     parsed = urlsplit(url)
     return parsed.path.rstrip("/").rsplit("/", 1)[-1] or parsed.hostname or url
+
+
+def _actions_completed(value: Any, count: int) -> bool:
+    if isinstance(value, dict):
+        if value.get("success") is False:
+            return False
+        if value.get("read_actions_completed") == count:
+            return True
+        return any(_actions_completed(child, count) for child in value.values())
+    if isinstance(value, list):
+        return bool(value) and all(_actions_completed(child, count) for child in value)
+    return False

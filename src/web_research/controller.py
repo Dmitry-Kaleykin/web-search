@@ -7,6 +7,7 @@ import uuid
 from collections import Counter, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
+from datetime import date
 from functools import partial
 from typing import TypeVar
 from urllib.parse import unquote, urlsplit
@@ -20,6 +21,7 @@ from .agent import (
 from .config import Budget
 from .dates import normalize_published_at
 from .evidence import EvidenceLedger
+from .freshness import publication_window
 from .models import Document, PlannedQuery, ResearchResult, ResearchStats, SearchLane, SearchResult
 from .pipeline import (
     EvidenceStrategy,
@@ -141,8 +143,19 @@ class ResearchController:
             except Exception as exc:
                 spec = heuristic_spec(query, freshness)
                 warnings.append(f"research_spec_fallback: {type(exc).__name__}: {exc}")
+        spec.as_of_date = self.agent.current_date
+        window = publication_window(freshness or query, as_of=date.fromisoformat(spec.as_of_date))
+        if window and not any(r.freshness_required for r in spec.requirements):
+            for requirement in spec.requirements:
+                requirement.freshness_required = True
         self.store.event(research_id, "research_spec", _spec_payload(spec))
         ledger = EvidenceLedger(spec)
+        fresh_read = any(r.freshness_required for r in spec.requirements)
+        if ledger.window and fresh_read:
+            warnings.append(
+                f"publication_window:{ledger.window.start.isoformat()}..{ledger.window.end.isoformat()}"
+                + (":inferred_30_day_window" if ledger.window.inferred else "")
+            )
 
         if pipeline.queries == QueryStrategy.DIRECT:
             initial_queries = [PlannedQuery(query=query)]
@@ -214,7 +227,8 @@ class ResearchController:
                                     search_query,
                                     planned_query.lane,
                                     spec.locale,
-                                    _searxng_time_range(freshness),
+                                    _searxng_time_range(freshness or query),
+                                    fresh=fresh_read,
                                 ),
                                 reserve=synthesis_reserve,
                             )
@@ -477,6 +491,7 @@ class ResearchController:
                                         self.reader,
                                         candidate.url,
                                         query,
+                                        fresh=fresh_read,
                                     )
                                 )
                             ),
@@ -509,6 +524,7 @@ class ResearchController:
                                     self.reader,
                                     selected.url,
                                     query,
+                                    fresh=fresh_read,
                                 )
                             ),
                             reserve=synthesis_reserve,
@@ -799,7 +815,7 @@ def _rerank_query(spec, unresolved_requirement_ids: list[str], search_query: str
 def _research_depth_satisfied(
     pipeline: PipelineProfile, stats: ResearchStats, ledger: EvidenceLedger
 ) -> bool:
-    usable_domains = {source.domain for source in ledger.evidence_sources()}
+    usable_domains = {source.source_family or source.domain for source in ledger.evidence_sources()}
     return (
         stats.search_queries >= pipeline.min_searches
         and len(usable_domains) >= pipeline.min_usable_domains
@@ -872,6 +888,8 @@ async def _search_with_lane(
     lane: SearchLane,
     language: str | None,
     time_range: str | None,
+    *,
+    fresh: bool = False,
 ) -> tuple[list[SearchResult], bool, list[str]]:
     warnings: list[str] = []
     results = await browsing_budget.run(
@@ -881,6 +899,7 @@ async def _search_with_lane(
             time_range=time_range,
             categories=_lane_categories(lane),
             limit=12,
+            refresh=fresh,
         )
     )
     warnings.extend(getattr(search, "last_warnings", []))
@@ -893,16 +912,19 @@ async def _search_with_lane(
             time_range=time_range,
             categories=None,
             limit=12,
+            refresh=fresh,
         )
     )
     warnings.extend(getattr(search, "last_warnings", []))
     return fallback, True, list(dict.fromkeys(warnings))
 
 
-async def _read_for_research(reader: Reader, url: str, query: str) -> Document:
+async def _read_for_research(
+    reader: Reader, url: str, query: str, *, fresh: bool = False
+) -> Document:
     focused_reader = getattr(reader, "read_for_research", None)
     if callable(focused_reader):
-        return await focused_reader(url, query=query)
+        return await focused_reader(url, query=query, max_age_seconds=0 if fresh else None)
     return await reader.read(url)
 
 
@@ -968,7 +990,7 @@ def _linked_candidates(
             (
                 relevance,
                 SearchResult(
-                    url=url,
+                    url=raw_url,
                     title=title,
                     snippet=f"Linked from {document.title}",
                     rank=rank,
@@ -1077,12 +1099,15 @@ async def _cancel_prefetch(tasks: dict[str, asyncio.Task[Document]]) -> None:
 def _searxng_time_range(freshness: str | None) -> str | None:
     if not freshness:
         return None
-    lower = freshness.lower()
-    if any(token in lower for token in ("today", "24 hour", "day")):
+    window = publication_window(freshness)
+    if window is None or window.end < date.today():
+        return None
+    days = (window.end - window.start).days + 1
+    if days <= 1:
         return "day"
-    if any(token in lower for token in ("month", "30 day", "recent")):
+    if days <= 31:
         return "month"
-    if any(token in lower for token in ("year", "12 month")):
+    if days <= 366:
         return "year"
     return None
 
@@ -1094,5 +1119,6 @@ def _spec_payload(spec) -> dict:
         "subjects": spec.subjects,
         "requirements": [asdict(item) for item in spec.requirements],
         "freshness": spec.freshness,
+        "as_of_date": spec.as_of_date,
         "locale": spec.locale,
     }

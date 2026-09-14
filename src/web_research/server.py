@@ -1,27 +1,34 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
+import weakref
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
 import anyio
+from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import BaseModel, Field
 
 from .agent import ResearchAgent
 from .config import Settings
 from .controller import ResearchController
+from .freshness import publication_window
 from .model.base import ResearchModel
 from .model.mcp_sampling import MCPSamplingModelClient
 from .model.openai_compatible import OpenAICompatibleModelClient
 from .model.unavailable import UnavailableModelClient
 from .models import Document
+from .readers.actions import ReadAction
 from .readers.crawl4ai import Crawl4AIReader
 from .readers.http import HTTPReader
 from .readers.quality import page_diagnostics
 from .readers.router import LayeredReader, RenderMode
 from .reranking import OpenAICompatibleReranker
+from .safety.urls import canonicalize_url
 from .search.searxng import SearXNGSearchProvider
 from .storage import SQLiteStore
 from .text import lexical_similarity
@@ -56,7 +63,10 @@ READ_URL_TOOL_DESCRIPTION = (
     "analyze that page. It uses safe bounded HTTP retrieval, Trafilatura with a basic HTML "
     "fallback, and automatic headless-Chromium escalation when rendering appears necessary. "
     "It reports HTTP and suspected error-page status and returns pageable inline content. Use "
-    "the optional query parameter to focus a navigation-heavy or long page. Use web_search instead "
+    "refresh=true bypasses cached pages. Copy next_cursor unchanged to continue the same snapshot. "
+    "Use visual=true for PDF pages, images or charts and read-only actions for tabs or load-more. "
+    "Use the optional query parameter to focus a navigation-heavy or long page. "
+    "Use web_search instead "
     "when sources need to be discovered or corroborated."
 )
 
@@ -91,6 +101,7 @@ class ToolSource(BaseModel):
     url: str
     title: str
     domain: str
+    source_family: str = ""
     source_class: Literal["primary", "expert", "independent", "news", "community", "unknown"]
     retrieved_at: str
     published_at: str | None
@@ -169,14 +180,44 @@ class ReadUrlOutput(BaseModel):
     content_start: int
     content_end: int
     has_more_content: bool
-    next_cursor: int | None
+    next_cursor: str | int | None
     link_count: int
     links_included: bool
     links_truncated: bool
+    snapshot_id: str | None = None
+    visual_pages: list[int] = Field(default_factory=list)
+    available_actions: list[dict[str, str]] = Field(default_factory=list)
+
+
+_RUNTIMES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_RUNTIME_LIMITS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _shared_reader_runtime(settings: Settings):
+    loop = asyncio.get_running_loop()
+    runtimes = _RUNTIMES.setdefault(loop, {})
+    if settings not in runtimes:
+        runtimes[settings] = _create_reader_runtime(settings)
+    return runtimes[settings]
+
+
+async def close_reader_runtimes() -> None:
+    runtimes = _RUNTIMES.pop(asyncio.get_running_loop(), {})
+    await asyncio.gather(*(runtime.close() for runtime in runtimes.values()))
+    _RUNTIME_LIMITS.pop(asyncio.get_running_loop(), None)
+
+
+@asynccontextmanager
+async def _lifespan(_server):
+    try:
+        yield {}
+    finally:
+        await close_reader_runtimes()
 
 
 mcp = MCPServer(
     "Local Agentic Web Search",
+    lifespan=_lifespan,
     instructions=(
         "When the user supplies a URL and asks to read, inspect, summarize, or analyze that page, "
         "use read_url instead of curl, wget, or shell-based downloading. Use web_search when "
@@ -230,12 +271,12 @@ async def read_url(
         ),
     ] = "auto",
     cursor: Annotated[
-        int,
+        str | int,
         Field(
-            ge=0,
             description=(
-                "Zero-based character offset into the cached extracted content. Use next_cursor "
-                "from a previous result to continue reading the page."
+                "Use 0 for the first read, or copy the opaque next_cursor "
+                "unchanged. Continuation reads an immutable snapshot for up to "
+                "one hour; query/render options apply only to the first read "
             ),
         ),
     ] = 0,
@@ -259,31 +300,102 @@ async def read_url(
             )
         ),
     ] = False,
-) -> ReadUrlOutput:
-    """Read one known URL through the shared layered retrieval stack."""
-
+    refresh: Annotated[
+        bool,
+        Field(
+            description=(
+                "Bypass URL caches for a fresh first read. Cannot be combined with continuation "
+            ),
+        ),
+    ] = False,
+    visual: Annotated[
+        bool,
+        Field(
+            description=(
+                "Return an image for the main model to inspect charts, scanned "
+                "PDFs or visual pages "
+            ),
+        ),
+    ] = False,
+    page: Annotated[
+        int, Field(ge=1, le=100, description="PDF page to render when visual=true.")
+    ] = 1,
+    actions: Annotated[
+        list[ReadAction] | None,
+        Field(
+            max_length=5,
+            description=(
+                "Optional read-only browser actions: expand details, select a "
+                "tab, load more text, or scroll. Requires render=auto or always. "
+            ),
+        ),
+    ] = None,
+) -> Annotated[CallToolResult, ReadUrlOutput]:
+    """Read a known URL, or continue the exact extraction from a previous call."""
     if not url.strip():
         raise ValueError("url must not be empty")
     settings = Settings.from_env()
-    runtime = _create_reader_runtime(settings)
-    try:
-        await ctx.report_progress(progress=0.1, total=1.0, message="Fetching the supplied URL")
-        document = await runtime.reader.read(url.strip(), render=render, query=query)
-        await ctx.report_progress(
-            progress=1.0,
-            total=1.0,
-            message=f"URL read with {document.method}",
-        )
-        return _read_url_output(
-            document,
-            settings,
-            cursor=cursor,
-            max_chars=max_chars,
-            include_links=include_links,
+    runtime = _shared_reader_runtime(settings)
+    await ctx.report_progress(progress=0.1, total=1.0, message="Reading the supplied URL")
+    if isinstance(cursor, str):
+        if refresh or actions:
+            raise ValueError("Refresh and actions require a new read with cursor=0")
+        try:
+            snapshot_id, offset = cursor.split(":")
+            if not re.fullmatch(r"[0-9a-f]{32}", snapshot_id):
+                raise ValueError
+            offset = int(offset)
+            if offset < 0:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("Invalid read cursor; copy next_cursor unchanged") from exc
+        document = await asyncio.to_thread(runtime.store.get_snapshot, snapshot_id)
+        if canonicalize_url(document.url) != canonicalize_url(url.strip()):
+            raise ValueError("Cursor belongs to a different URL")
+    else:
+        if cursor != 0:
+            raise ValueError(
+                "Numeric continuation is unsafe; use next_cursor from the first result"
+            )
+        if actions and render == "never":
+            raise ValueError("Browser actions cannot be used with render=never")
+        document = await runtime.reader.read(
+            url.strip(),
+            render=render,
             query=query,
+            max_age_seconds=0 if refresh else None,
+            visual=visual,
+            page=page,
+            actions=[action.model_dump() for action in actions] if actions else None,
         )
-    finally:
-        await runtime.close()
+        snapshot_id = await asyncio.to_thread(runtime.store.put_snapshot, document)
+        offset = 0
+    output = _read_url_output(
+        document,
+        settings,
+        cursor=offset,
+        max_chars=max_chars,
+        include_links=include_links,
+        query=query if cursor == 0 else None,
+    )
+    output.snapshot_id = snapshot_id
+    output.available_actions = document.available_actions
+    output.next_cursor = f"{snapshot_id}:{output.content_end}" if output.has_more_content else None
+    output.visual_pages = [item["page"] for item in document.images]
+    await ctx.report_progress(progress=1.0, total=1.0, message=f"URL read with {document.method}")
+    if document.images:
+        # Image blocks reach the calling model as actual multimodal evidence, not encoded prose.
+        return CallToolResult(
+            content=[
+                TextContent(text=output.model_dump_json()),
+                *[
+                    ImageContent(data=item["data"], mime_type=item["mime_type"])
+                    for item in document.images
+                ],
+            ],
+            structured_content=output.model_dump(),
+        )
+    return output
 
 
 @mcp.tool(
@@ -323,12 +435,14 @@ async def web_search(
     if not query.strip():
         raise ValueError("query must not be empty")
     settings = Settings.from_env()
-    runtime = _create_reader_runtime(settings)
+    runtime = _shared_reader_runtime(settings)
     store = runtime.store
     search = SearXNGSearchProvider(
         settings.searxng_url,
         store=store,
-        cache_ttl_seconds=settings.search_cache_ttl_seconds,
+        cache_ttl_seconds=0
+        if publication_window(freshness or query)
+        else settings.search_cache_ttl_seconds,
         user_agent=settings.user_agent,
         max_retries=settings.search_max_retries,
         retry_base_seconds=settings.search_retry_base_seconds,
@@ -382,7 +496,6 @@ async def web_search(
             RUN_GATE.finish()
     finally:
         await search.close()
-        await runtime.close()
         if reranker is not None:
             await reranker.close()
         await model.close()
@@ -401,6 +514,15 @@ class _ReaderRuntime:
 
 
 def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
+    # Even a settings change must not create a fresh concurrency allowance.
+    limits = _RUNTIME_LIMITS.setdefault(
+        asyncio.get_running_loop(),
+        (
+            asyncio.Semaphore(8),
+            asyncio.Semaphore(2),
+            asyncio.Semaphore(max(1, settings.browser_max_concurrent_renders)),
+        ),
+    )
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("CRAWL4_AI_BASE_DIRECTORY", str(settings.data_dir.resolve()))
     os.environ.setdefault(
@@ -419,6 +541,7 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
         cache_ttl_seconds=settings.document_cache_ttl_seconds,
         user_agent=settings.user_agent,
         max_response_bytes=settings.max_response_bytes,
+        document_semaphore=limits[1],
         max_content_chars=settings.document_max_chars,
         allow_private_urls=settings.allow_private_urls,
         allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
@@ -429,13 +552,16 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
             user_agent=settings.user_agent,
             max_content_chars=settings.document_max_chars,
             max_concurrent_renders=settings.browser_max_concurrent_renders,
+            render_semaphore=limits[2],
             allow_private_urls=settings.allow_private_urls,
             allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
         )
         if settings.enable_crawl4ai
         else None
     )
-    return _ReaderRuntime(store=store, reader=LayeredReader(http_reader, browser_reader))
+    return _ReaderRuntime(
+        store=store, reader=LayeredReader(http_reader, browser_reader, read_semaphore=limits[0])
+    )
 
 
 def _read_url_output(
@@ -542,6 +668,10 @@ def _page_status(
                 "browser_recommended:",
                 "browser_output_incomplete:",
                 "browser_render_skipped:",
+                "document_page_unreadable:",
+                "document_pages_truncated:",
+                "ocr_unavailable:",
+                "ocr_failed:",
             )
         )
         for warning in effective_warnings

@@ -183,11 +183,12 @@ class SearXNGSearchProvider:
         categories: str | None = None,
         limit: int = 10,
         engines: str | None = None,
+        refresh: bool = False,
     ) -> list[SearchResult]:
         self.last_warnings = []
         self.last_engine_health = {}
         cache_key = _cache_key(query, page, language, time_range, categories, limit, engines)
-        if self.store:
+        if self.store and not refresh:
             cached = self.store.get_search(cache_key, self.cache_ttl_seconds)
             if cached is not None:
                 return cached
@@ -265,9 +266,7 @@ class SearXNGSearchProvider:
                 if pinned or last:
                     break
                 collapse = _collapsed_engine(results, self.diversity_min_results)
-                available = (
-                    self._available_engines(exclude={collapse}) if collapse else []
-                )
+                available = self._available_engines(exclude={collapse}) if collapse else []
                 if not available:
                     if collapse:
                         self.last_warnings.append(
@@ -398,7 +397,7 @@ def _parse_results(
             engines = []
         results.append(
             SearchResult(
-                url=canonical,
+                url=str(item["url"]),
                 title=str(item.get("title") or canonical).strip(),
                 snippet=str(item.get("content") or "").strip(),
                 engines=engines,

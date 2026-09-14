@@ -1,5 +1,5 @@
 {
-  "name": "dated corroboration satisfies freshness",
+  "name": "syndicated copies count as one report",
   "spec": {
     "original_query": "What was released recently?",
     "task_type": "current_event",
@@ -44,17 +44,17 @@
         "url": "https://two.example/release",
         "final_url": "https://two.example/release",
         "title": "Release two",
-        "content": "The team released version 4 on August 25, 2026.",
+        "content": "Version 4 was released on August 25, 2026.",
         "method": "fixture",
         "published_at": "2026-08-25"
       },
       "evidence": {
-        "source_class": "independent",
+        "source_class": "news",
         "claims": [
           {
             "requirement_id": "R1",
-            "statement": "The team released version 4 on August 25, 2026.",
-            "excerpt": "The team released version 4 on August 25, 2026.",
+            "statement": "Version 4 was released on August 25, 2026.",
+            "excerpt": "Version 4 was released on August 25, 2026.",
             "confidence": 0.9,
             "stance": "supports",
             "value_kind": "version",
@@ -65,7 +65,8 @@
     }
   ],
   "expected": {
-    "sufficient": true,
-    "minimum_accepted_claims": 2
+    "sufficient": false,
+    "accepted_claims": 2,
+    "source_count": 1
   }
 }

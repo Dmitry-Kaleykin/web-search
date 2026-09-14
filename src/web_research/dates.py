@@ -111,3 +111,27 @@ def _find_json_values(value: Any, key: str) -> list[Any]:
         for child in value:
             found.extend(_find_json_values(child, key))
     return found
+
+
+def attribution_from_html(html_text: str, base_url: str) -> str | None:
+    """A declared original article can join syndication families; it never proves independence."""
+    from urllib.parse import urljoin
+
+    class Parser(HTMLParser):
+        original: str | None = None
+
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            if tag == "link" and "canonical" in values.get("rel", "").lower().split():
+                self.original = urljoin(base_url, values.get("href", ""))
+            if tag == "meta" and values.get("name", "").lower() in {
+                "original-source",
+                "syndication-source",
+            }:
+                self.original = urljoin(base_url, values.get("content", ""))
+
+    parser = Parser()
+    parser.feed(html_text)
+    if parser.original and parser.original.startswith(("https://", "http://")):
+        return parser.original
+    return None

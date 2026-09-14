@@ -4,6 +4,8 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +65,11 @@ class SQLiteStore:
                     stored_at REAL NOT NULL,
                     payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS read_snapshots (
+                    id TEXT PRIMARY KEY,
+                    stored_at REAL NOT NULL,
+                    payload TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS engine_health (
                     engine TEXT PRIMARY KEY,
                     reason TEXT NOT NULL,
@@ -87,6 +94,44 @@ class SQLiteStore:
                 """
             )
 
+    def put_snapshot(self, document: Document) -> str:
+        """Immutable, expiring continuation state, bounded independently of mutable URL caches."""
+        payload = json.dumps(_object_dict(document), ensure_ascii=False)
+        if len(payload.encode("utf-8")) > 8_000_000:
+            raise ValueError(
+                "Extracted document exceeds the 8 MB snapshot limit; "
+                "request a smaller source resource"
+            )
+        token = uuid.uuid4().hex
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO read_snapshots VALUES (?, ?, ?)", (token, time.time(), payload)
+            )
+            self._prune_snapshots()
+        return token
+
+    def get_snapshot(self, token: str) -> Document:
+        row = self._get_fresh("read_snapshots", "id", token, 3600)
+        if row is None:
+            raise ValueError("Read cursor expired or was evicted; restart with cursor=0")
+        return Document(**json.loads(row["payload"]))
+
+    def _prune_snapshots(self) -> int:
+        removed = self._prune_table("read_snapshots", ttl_seconds=3600, max_rows=100)
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                "SELECT id, LENGTH(CAST(payload AS BLOB)) AS size FROM read_snapshots "
+                "ORDER BY stored_at DESC"
+            ).fetchall()
+            total = 0
+            for row in rows:
+                total += row["size"]
+                if total > 32_000_000:
+                    removed += self._connection.execute(
+                        "DELETE FROM read_snapshots WHERE id = ?", (row["id"],)
+                    ).rowcount
+        return removed
+
     def get_search(self, key: str, ttl_seconds: int) -> list[SearchResult] | None:
         row = self._get_fresh("search_cache", "cache_key", key, ttl_seconds)
         if row is None:
@@ -106,7 +151,18 @@ class SQLiteStore:
 
     def get_document(self, url: str, ttl_seconds: int) -> Document | None:
         row = self._get_fresh("document_cache", "url", url, ttl_seconds)
-        return Document(**json.loads(row["payload"])) if row else None
+        if row is None:
+            return None
+        document = Document(**json.loads(row["payload"]))
+        try:
+            retrieved = datetime.fromisoformat(document.retrieved_at.replace("Z", "+00:00"))
+            if retrieved.tzinfo is None:
+                retrieved = retrieved.replace(tzinfo=UTC)
+            age = time.time() - retrieved.timestamp()
+        except ValueError:
+            return None
+        # Writing a focused variant must not reset the age of the underlying evidence.
+        return document if 0 <= age <= ttl_seconds else None
 
     def put_document(self, url: str, document: Document) -> None:
         payload = json.dumps(_object_dict(document), ensure_ascii=False)
@@ -276,6 +332,7 @@ class SQLiteStore:
                 max_payload_bytes=self.document_max_payload_bytes,
             ),
             "engine_health": self._prune_engine_health(),
+            "read_snapshots": self._prune_snapshots(),
         }
 
     def maintenance(self) -> dict[str, Any]:
@@ -303,6 +360,7 @@ class SQLiteStore:
             "research_runs": "result",
             "events": "payload",
             "engine_health": "reason",
+            "read_snapshots": "payload",
         }
         out: dict[str, Any] = {}
         with self._lock:

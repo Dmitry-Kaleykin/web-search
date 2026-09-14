@@ -11,7 +11,8 @@
         "min_sources": 2,
         "freshness_required": true
       }
-    ]
+    ],
+    "as_of_date": "2026-08-26"
   },
   "pages": [
     {
@@ -65,7 +66,9 @@
   ],
   "expected": {
     "sufficient": false,
-    "unresolved_gaps": ["R1"],
+    "unresolved_gaps": [
+      "R1"
+    ],
     "minimum_conflicts": 1,
     "minimum_accepted_claims": 2
   }

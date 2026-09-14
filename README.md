@@ -6,7 +6,7 @@ returning a cited synthesis. Through MCP sampling, research automatically uses t
 the calling Pi session; an OpenAI-compatible endpoint can be configured as a fallback for clients
 without sampling support.
 
-This repository implements milestones 0–2 and the rendered-page fallback of milestone 3 from
+This repository implements the research pipeline and reliability features described in
 [ARCHITECTURE.md](ARCHITECTURE.md):
 
 - SearXNG JSON discovery with caching and deduplication.
@@ -22,15 +22,19 @@ This repository implements milestones 0–2 and the rendered-page fallback of mi
 - Evidence ledger with claim-support, source-count, and domain-diversity gates.
 - Expected-information-gain candidate ranking.
 - Adaptive stopping with hard safety ceilings.
-- Citation-ID validation and deterministic source lists.
+- Citation-ID and conservative sentence-to-excerpt checks, with deterministic source lists.
+- Explicit publication windows and cache bypass for time-sensitive research.
+- Source-family counting for identical/near-identical reports and declared original articles.
+- Immutable, expiring read snapshots and shared retrieval/browser limits.
 - SQLite traces/cache, MCP progress with compact evidence summaries, and cooperative cancellation.
 - Bounded cache: TTL deletion, row and per-row payload ceilings, and `web-search-maint` compaction.
 - Persisted engine cooldowns, so a restart does not hide an upstream that was already blocked.
 - Prompt fences for quoted web content, with fence markers rewritten so a page cannot escape its own
   quarantine and header fields that cannot forge provenance lines.
 
-Interactive Playwright actions, adaptive same-site crawling, PDF/Docling, OCR, and MCP Tasks remain
-later milestones. Unsupported or blocked pages are reported rather than silently treated as evidence.
+The reader supports PDF layout text, local Tesseract OCR, page images for the calling model,
+and a bounded set of read-only browser actions. Specialized Docling parsing, autonomous browser
+investigation, and MCP Tasks remain future work. Blocked or incomplete pages are reported explicitly.
 
 ## Terminal console
 
@@ -261,7 +265,8 @@ and falls back to this compatible handshake path.
 The tool signatures are:
 
 ```text
-read_url(url, query=null, render="auto", cursor=0, max_chars=4000, include_links=false)
+read_url(url, query=null, render="auto", cursor=0, max_chars=4000,
+         include_links=false, refresh=false, visual=false, page=1, actions=null)
 web_search(query, effort="auto", freshness=null)
 ```
 
@@ -274,6 +279,51 @@ inline chunks; continue with `next_cursor`. Set `query` for a long or navigation
 return the most relevant content window first. Rendered pages use filtered Markdown when Crawl4AI
 can identify the main content. Use a smaller `max_chars` with `include_links=false` for batched or
 fan-out calls.
+
+`next_cursor` is now an opaque string. Copy it unchanged into the next call with the same URL;
+it reads an immutable snapshot, including query-focused browser output, rather than fetching the
+page again. Snapshots survive server restarts, expire after one hour, and may be evicted under the
+32 MB / 100-row storage ceiling (8 MB per snapshot). Expiration is an explicit error. Old numeric continuation offsets
+are rejected; `cursor=0` starts a new extraction. Use `refresh=true` on a new read to bypass caches.
+
+For a PDF chart or scanned page, use `visual=true, page=2` (one-based). The tool returns an actual
+MCP image block for the main model alongside extracted text and provenance. PDFs retain page
+markers and layout spacing. Extraction is limited to 100 pages, 1 million text characters, and
+three automatic OCR pages per read; the selected visual page can also be OCR'd. The binary worker
+accepts up to 5 MB and has a 60-second deadline. Large or unreadable portions are marked in warnings.
+Install the local OCR executable with `brew install tesseract` on macOS or your Linux package manager.
+The default OCR language is English. Without OCR, native PDF text and explicit page images still work.
+
+Rendered output includes `available_actions` with selectors for supported controls. For example:
+
+```json
+{"url":"https://example.com/docs", "actions":[{"kind":"tab","selector":"#examples"}]}
+```
+
+Supported actions are `expand` (HTML details), `tab` (a non-link ARIA tab), `load_more` (a reading
+button), and `scroll`, with at most five actions per call. Actions start from a fresh browser page;
+repeat the needed action sequence to reach a later state. Form controls, arbitrary JavaScript and
+non-read HTTP methods are blocked. Screenshots show the viewport; use a scroll action to inspect more.
+A model without image support can still use extracted text, but cannot interpret the attached visual.
+
+Reader runtimes are shared for the server lifetime. Identical simultaneous reads share one operation;
+one cancelled caller does not cancel other waiters. The last cancellation stops the operation.
+HTTP/document work has an eight-read ceiling, binary extraction a two-worker ceiling, and Chromium
+uses `WEB_SEARCH_BROWSER_MAX_CONCURRENT_RENDERS` across all reader runtimes in the server.
+The concurrency ceilings are fixed on first use; restart the MCP server to change them.
+
+Freshness constraints support ISO dates/ranges, `since YYYY`, calendar years, `today`, `yesterday`,
+and rolling periods such as `last 7 days`. Unspecific `latest`, `recent`, and `current` requests use
+an explicit, reported 30-day publication window. Undated, future, or out-of-window evidence cannot
+satisfy a fresh requirement. Search and document caches are bypassed for time-sensitive research;
+cache writes do not renew the original retrieval date. For a different meaning of "current", supply
+an explicit date range rather than relying on the default window.
+
+Source-family detection is conservative: copied text or the same declared original article counts
+once, even across different domains. Domain diversity alone does not establish independence.
+Claim and citation checks preserve wording, numbers, actor order, negation, qualifications and
+attribution. They are conservative text checks, not a universal semantic entailment guarantee.
+If final synthesis fails validation, the controller returns accepted evidence excerpts with a warning.
 
 Send a complete research request to `web_search` in one call. The calling model may invoke it
 autonomously when web research is useful. The server permits one active research run at a time and
@@ -324,20 +374,19 @@ Canceled calls are finalized in the run ledger with a `cancelled` event at any c
 .venv/bin/ruff format --check .
 ```
 
-The test suite is offline. It exercises the controller, evidence rules, citations, reader byte bounds,
-URL safety, SearXNG, MCP sampling and direct model-server adapters, Crawl4AI failure handling, and
-the MCP tool schema without requiring live SearXNG or model services.
-
-Replay the bundled deterministic evidence fixtures after changing prompts, coverage rules, or
-retrieval behavior:
+The default suite covers deterministic evidence fixtures, retrieval behavior, PDF/OCR, cache
+freshness, cancellation, source families, and stable pagination. Optional Chromium tests serve a
+local JavaScript site and exercise real browser extraction, controls, screenshots, and soft errors.
 
 ```bash
+.venv/bin/pytest -q
 .venv/bin/web-search-eval
+.venv/bin/web-search-eval --integration
 ```
 
-The replay reports accepted claims, requirement coverage, unresolved gaps, conflicts, and candidate
-gate decisions without depending on live search results. One bundled noisy-result fixture verifies
-that a plausible high-ranked news article is rejected before page reading.
+See [eval/README.md](eval/README.md) for prerequisites, acceptance criteria, fixture format, and a
+small human-reviewed live research rubric. Local evaluations require no model API or search service;
+they do not establish live search-engine recall or guarantee answer accuracy.
 
 ## Security defaults
 

@@ -10,7 +10,8 @@
         "importance": "required",
         "min_sources": 1
       }
-    ]
+    ],
+    "as_of_date": "2026-08-26"
   },
   "pages": [],
   "candidate_gate": {

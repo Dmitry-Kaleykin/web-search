@@ -93,6 +93,7 @@ class ResearchAgent:
             answer_format=str(data.get("answer_format") or "A cited, decision-useful answer."),
             locale=_optional_string(data.get("locale")),
             freshness=freshness,
+            as_of_date=self.current_date,
         )
 
     async def plan_queries(
@@ -169,7 +170,7 @@ class ResearchAgent:
         answer = str(data.get("answer_markdown") or "").strip()
         if not answer:
             raise ValueError("The model returned an empty answer")
-        validate_citations(answer, sources)
+        validate_citations(answer, sources, ledger.claims)
         return append_sources(answer, sources)
 
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
 
+from .freshness import publication_window
 from .models import (
     Claim,
     CoverageItem,
@@ -15,10 +18,8 @@ from .models import (
     SourceClass,
 )
 from .safety.urls import registrable_domain
-from .text import best_excerpt, compact_text, lexical_similarity
-
-MIN_CLAIM_EXCERPT_SIMILARITY = 0.18
-NUMERIC_FACT_RE = re.compile(r"(?:[$€£¥])?\d+(?:[.,:/+-]\d+)*%?[A-Za-z]?")
+from .support import claim_supported
+from .text import best_excerpt, compact_text
 
 
 @dataclass(slots=True)
@@ -34,17 +35,42 @@ class EvidenceLedger:
         self.claims: list[Claim] = []
         self.conflicts: list[str] = []
         self._source_urls: set[str] = set()
+        self._fingerprints: list[tuple[set[str], str]] = []
+        self._attributions: dict[str, str] = {}
+        self.window = publication_window(
+            spec.freshness or spec.original_query,
+            as_of=date.fromisoformat(spec.as_of_date) if spec.as_of_date else None,
+        )
+        if self.window is None and any(r.freshness_required for r in spec.requirements):
+            self.window = publication_window(
+                "recent", as_of=date.fromisoformat(spec.as_of_date) if spec.as_of_date else None
+            )
 
     def add_document(self, document: Document, batch: EvidenceBatch) -> tuple[Source, int]:
         existing = next((item for item in self.sources if item.url == document.final_url), None)
         if existing:
             return existing, 0
+        words = re.findall(r"\w+", document.content.casefold())
+        fingerprint = {" ".join(words[i : i + 5]) for i in range(max(1, len(words) - 4))}
+        if len(words) < 40:
+            fingerprint = {"short:" + hashlib.sha256(" ".join(words).encode()).hexdigest()}
+        family = registrable_domain(document.final_url)
+        for other, other_family in self._fingerprints:
+            overlap = len(fingerprint & other) / max(1, min(len(fingerprint), len(other)))
+            if overlap >= 0.85:
+                family = other_family
+                break
+        attribution = (document.attribution or "").strip().casefold()
+        if attribution:
+            family = self._attributions.setdefault(attribution, family)
+        self._fingerprints.append((fingerprint, family))
         source = Source(
             id=f"S{len(self.sources) + 1}",
             url=document.final_url,
             title=document.title,
             domain=registrable_domain(document.final_url),
             source_class=batch.source_class,
+            source_family=family,
             retrieved_at=document.retrieved_at,
             published_at=document.published_at,
             published_at_source=document.published_at_source,
@@ -54,13 +80,19 @@ class EvidenceLedger:
         self.sources.append(source)
         self._source_urls.add(source.url)
 
-        valid_requirement_ids = {item.id for item in self.spec.requirements}
+        requirements = {item.id: item for item in self.spec.requirements}
+        valid_requirement_ids = set(requirements)
         added = 0
         for raw in batch.claims:
             requirement_id = str(raw.get("requirement_id", ""))
             statement = compact_text(str(raw.get("statement", "")))
             excerpt = compact_text(str(raw.get("excerpt", "")))
             if requirement_id not in valid_requirement_ids or not statement:
+                continue
+            if requirements[requirement_id].freshness_required and (
+                self.window is None or not self.window.contains(document.published_at)
+            ):
+                source.warnings.append(f"outside_requested_publication_window:{requirement_id}")
                 continue
             excerpt_replaced = False
             if not excerpt or excerpt.lower() not in compact_text(document.content).lower():
@@ -110,17 +142,19 @@ class EvidenceLedger:
                 requirement_claims = [
                     claim
                     for claim in requirement_claims
-                    if sources_by_id[claim.source_id].published_at is not None
+                    if self.window
+                    and self.window.contains(sources_by_id[claim.source_id].published_at)
                 ]
             source_ids = {claim.source_id for claim in requirement_claims}
-            source_domains = {sources_by_id[source_id].domain for source_id in source_ids}
+            source_domains = {sources_by_id[source_id].source_family for source_id in source_ids}
             enough_sources = len(source_domains) >= requirement.min_sources
             if requirement.id in conflicts_by_requirement:
                 reason = "materially conflicting evidence requires resolution"
                 covered = False
             elif not enough_sources and requirement.freshness_required:
                 reason = (
-                    f"needs {requirement.min_sources} dated source(s); has {len(source_domains)}"
+                    f"needs {requirement.min_sources} independent source(s) "
+                    f"within the requested date window; has {len(source_domains)}"
                 )
                 covered = False
             elif not enough_sources:
@@ -245,11 +279,7 @@ class EvidenceLedger:
 
 
 def _claim_supported(statement: str, excerpt: str) -> bool:
-    if not excerpt or lexical_similarity(statement, excerpt) < MIN_CLAIM_EXCERPT_SIMILARITY:
-        return False
-    excerpt_facts = {item.casefold() for item in NUMERIC_FACT_RE.findall(excerpt)}
-    statement_facts = {item.casefold() for item in NUMERIC_FACT_RE.findall(statement)}
-    return statement_facts <= excerpt_facts
+    return claim_supported(statement, excerpt)
 
 
 def _comparable_value_key(value: str) -> str:

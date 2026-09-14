@@ -16,6 +16,7 @@ class SearchProvider(Protocol):
         categories: str | None = None,
         limit: int = 10,
         engines: str | None = None,
+        refresh: bool = False,
     ) -> list[SearchResult]: ...
 
     async def close(self) -> None: ...

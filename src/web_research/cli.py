@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -28,6 +29,13 @@ async def _doctor() -> int:
         )
     ).expanduser()
     print(f"OK   data directory: {settings.data_dir.resolve()}")
+    if shutil.which("tesseract"):
+        print("OK   Tesseract OCR is available")
+    else:
+        print(
+            "WARN Tesseract OCR is unavailable; install tesseract for scanned text. "
+            "PDF layout extraction and visual page output remain available."
+        )
     if settings.allow_proxy_fake_ips:
         print("INFO proxy fake-IP DNS compatibility: enabled for 198.18.0.0/15")
     if settings.enable_crawl4ai:
@@ -243,8 +251,7 @@ def _maintenance() -> int:
     removed = report["rows_removed"]
     after = report["file_bytes"] / 1e6
     print(
-        f"evicted search_cache={removed['search_cache']} "
-        f"document_cache={removed['document_cache']}"
+        f"evicted search_cache={removed['search_cache']} document_cache={removed['document_cache']}"
     )
     for table in ("search_cache", "document_cache", "research_runs", "events"):
         entry = report[table]

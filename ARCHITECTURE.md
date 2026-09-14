@@ -25,6 +25,16 @@ This is a strong local-first stack. SearXNG + Crawl4AI alone is not sufficient b
 
 ### Current implementation notes
 
+The reliability implementation now includes explicit publication windows; per-request cache bypass;
+conservative claim and sentence-to-citation support checks; source families based on copied text and
+original-article attribution; preservation of fetch URLs; a shared reader runtime with coalescing;
+and immutable SQLite continuation snapshots. It also includes native PDF layout extraction, local
+Tesseract OCR, visual evidence returned to the main model, and typed read-only browser controls.
+See `README.md` for the current API and resource limits and `eval/README.md` for runnable evaluations.
+The numbered tiers and milestones below retain the broader design direction; Docling, general
+browser investigation and durable research jobs are not implemented by these changes.
+
+
 The running vertical slice now adds several measured refinements to this baseline:
 
 - An optional OpenAI-compatible native `POST /v1/rerank` client reranks each new SearXNG
@@ -39,7 +49,7 @@ The running vertical slice now adds several measured refinements to this baselin
   SearXNG category or query specialization, then retries general web search if that category has no
   results.
 - Requirements can depend on other requirements and explicitly require fresh evidence. Publication
-  dates retain their extraction provenance, while undated pages cannot satisfy a freshness gate.
+  dates retain their extraction provenance, while undated or out-of-window pages cannot satisfy a freshness gate.
 - Structured values and opposing claim stances are checked across independent domains. Unresolved
   contradictions block sufficiency and are reported to synthesis.
 - The controller follows a small number of relevant same-site links and speculatively starts the next
@@ -48,9 +58,8 @@ The running vertical slice now adds several measured refinements to this baselin
 - Bundled offline fixtures exercise conflicting and corroborated evidence through
   `web-search-eval`. They are the seed of the larger calibration set described below.
 
-Page-analysis batching is deliberately excluded for now: it would raise attribution and local GPU
-contention risks without a measured latency win. PDF/visual-document handling also remains a later
-reader milestone.
+Page-analysis batching remains excluded to keep attribution deterministic. PDF layout text, bounded
+OCR, and explicit page images are available; specialized document understanding remains future work.
 
 ## 2. System boundary
 
@@ -450,8 +459,8 @@ Cache search responses briefly and page content according to freshness policy. N
 
 ### Storage as implemented
 
-The tables that exist today are `search_cache`, `document_cache`, `research_runs`, `events`, and
-`engine_health`. The remaining tables above remain planned and are not created implicitly.
+The tables that exist today are `search_cache`, `document_cache`, `research_runs`, `events`,
+`engine_health`, and `read_snapshots`. The remaining tables above remain planned and are not created implicitly.
 
 Every cache is bounded three ways, because a cache with no ceiling grows until it is investigated:
 
@@ -605,10 +614,11 @@ web-search/
 Status as implemented: milestones 0, 1, and 2 are complete (SearXNG adapter, HTTP/Trafilatura
 reader, research spec and evidence ledger, coverage and independence rules, information-gain
 ranking, adaptive stopping, citation validation, evaluation harness, SQLite persistence).
-Milestone 3 is partial: rendered-page fallback and SSRF/redirect revalidation ship, while
-adaptive same-site crawling, typed Playwright interaction, and browser network inspection do not.
-Milestones 4 and 5 have not started. The sections below are kept as the reasoning behind the
-ordering, not as a task list.
+Milestone 3 includes rendered-page fallback, SSRF/redirect checks, screenshots and typed read-only
+controls. Adaptive same-site crawling and general browser network inspection remain planned.
+Milestone 4 now includes native layout text, bounded OCR and main-model visual inspection; Docling
+and specialized table validation remain planned. Milestone 5 has partial runtime and cache
+improvements. The sections below retain the reasoning behind the order, not a task list.
 
 The ordering holds for one reason: Pi/MCP/tool-call compatibility is the highest integration risk,
 so proving the interface before writing research logic keeps later changes cheap.

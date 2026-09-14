@@ -12,11 +12,11 @@ from web_research.safety.urls import (
 
 
 class UrlSafetyTests(unittest.IsolatedAsyncioTestCase):
-    def test_canonicalize_removes_tracking_and_fragment(self) -> None:
+    def test_canonicalize_preserves_path_and_query_but_removes_fragment(self) -> None:
         value = canonicalize_url(
             "HTTPS://Example.COM:443/products/?utm_source=test&b=2&a=1#details"
         )
-        self.assertEqual(value, "https://example.com/products?a=1&b=2")
+        self.assertEqual(value, "https://example.com/products/?utm_source=test&b=2&a=1")
 
     async def test_private_ip_is_blocked(self) -> None:
         with self.assertRaises(UnsafeUrlError):

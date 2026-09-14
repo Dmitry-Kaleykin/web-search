@@ -85,6 +85,7 @@ class ResearchSpec:
     answer_format: str = "A concise, well-supported answer with inline source references."
     locale: str | None = None
     freshness: str | None = None
+    as_of_date: str | None = None
 
     def required_requirements(self) -> list[Requirement]:
         return [item for item in self.requirements if item.importance == Importance.REQUIRED]
@@ -121,6 +122,9 @@ class Document:
     status_code: int | None = None
     warnings: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
+    images: list[dict[str, Any]] = field(default_factory=list)
+    attribution: str | None = None
+    available_actions: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -134,6 +138,7 @@ class Source:
     published_at: str | None = None
     published_at_source: str | None = None
     extraction_method: str = "http"
+    source_family: str = ""
     warnings: list[str] = field(default_factory=list)
 
 

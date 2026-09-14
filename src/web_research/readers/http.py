@@ -5,7 +5,7 @@ import ipaddress
 import json
 from urllib.parse import urlsplit
 
-from ..dates import published_at_from_html
+from ..dates import attribution_from_html, published_at_from_html
 from ..models import Document
 from ..safety.urls import (
     UnsafeUrlError,
@@ -41,6 +41,7 @@ class HTTPReader:
         allow_private_urls: bool = False,
         allow_proxy_fake_ips: bool = False,
         max_redirects: int = 5,
+        document_semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         try:
             import httpx
@@ -53,6 +54,7 @@ class HTTPReader:
         self.allow_private_urls = allow_private_urls
         self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.max_redirects = max_redirects
+        self._document_limit = document_semaphore or asyncio.Semaphore(2)
         self._client = httpx.AsyncClient(
             timeout=timeout_seconds,
             follow_redirects=False,
@@ -65,17 +67,21 @@ class HTTPReader:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def read(self, url: str) -> Document:
+    async def read(
+        self, url: str, *, max_age_seconds: int | None = None, visual: bool = False, page: int = 1
+    ) -> Document:
         canonical = canonicalize_url(url)
-        if self.store:
+        if self.store and max_age_seconds != 0 and not visual:
             cached = await asyncio.to_thread(
-                self.store.get_document, canonical, self.cache_ttl_seconds
+                self.store.get_document,
+                canonical,
+                (self.cache_ttl_seconds if max_age_seconds is None else max_age_seconds),
             )
             if cached is not None:
                 cached.warnings = [*cached.warnings, "cache_hit"]
                 return cached
 
-        current = canonical
+        current = url
         response = None
         for _ in range(self.max_redirects + 1):
             try:
@@ -118,10 +124,36 @@ class HTTPReader:
             raise ReaderError(f"HTTP {response.status_code} for {current}") from exc
 
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-        if content_type == "application/pdf" or current.lower().endswith(".pdf"):
-            raise UnsupportedContentError(
-                "PDF support is planned but not enabled in this milestone"
+        is_pdf = content_type == "application/pdf" or response.content.startswith(b"%PDF-")
+        if is_pdf or content_type in {"image/png", "image/jpeg", "image/webp"}:
+            from .documents import extract_binary
+
+            async with self._document_limit:
+                extracted = await extract_binary(
+                    response.content,
+                    content_type="application/pdf" if is_pdf else content_type,
+                    page=page,
+                    visual=visual,
+                )
+            extracted["content"], truncated = cap_content(
+                extracted["content"], self.max_content_chars, method=extracted["method"]
             )
+            if truncated:
+                extracted["warnings"].append(truncated)
+            document = Document(
+                url=url,
+                final_url=current,
+                title=extracted["title"],
+                content=extracted["content"],
+                method=extracted["method"],
+                content_type="application/pdf" if is_pdf else content_type,
+                status_code=response.status_code,
+                warnings=extracted["warnings"],
+                images=extracted["images"],
+            )
+            if self.store and not visual:
+                await asyncio.to_thread(self.store.put_document, canonical, document)
+            return document
         is_json = (
             content_type == "application/json"
             or content_type.endswith("+json")
@@ -147,8 +179,8 @@ class HTTPReader:
             # looks structured but no longer parses. The pre-fetch max_response_bytes ceiling
             # already bounds this path, and the cache's payload ceiling evicts the rest.
             document = Document(
-                url=canonical,
-                final_url=canonicalize_url(current),
+                url=url,
+                final_url=current,
                 title=_title_from_url(current),
                 content=content,
                 method="http+json",
@@ -179,8 +211,8 @@ class HTTPReader:
         )
 
         document = Document(
-            url=canonical,
-            final_url=canonicalize_url(current),
+            url=url,
+            final_url=current,
             title=title,
             content=content,
             method=method,
@@ -190,6 +222,7 @@ class HTTPReader:
             status_code=response.status_code,
             warnings=warnings,
             links=links[:500],
+            attribution=attribution_from_html(html_text, current),
         )
         if self.store:
             await asyncio.to_thread(self.store.put_document, canonical, document)

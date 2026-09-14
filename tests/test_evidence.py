@@ -143,7 +143,7 @@ class EvidenceLedgerTests(unittest.TestCase):
                 [
                     {
                         "requirement_id": "R1",
-                        "statement": "Revenue was 10 million in 2025.",
+                        "statement": "The company reported revenue of 10 million in 2025.",
                         "excerpt": "not a verbatim excerpt",
                         "confidence": 0.95,
                         "stance": "supports",
@@ -311,7 +311,25 @@ class EvidenceLedgerTests(unittest.TestCase):
             ),
         )
         self.assertFalse(ledger.coverage().sufficient)
-        ledger.sources[0].published_at = "2026-08-25"
+        self.assertEqual(ledger.claims, [])
+        document.published_at = "2026-08-25"
+        spec.as_of_date = "2026-08-26"
+        ledger = EvidenceLedger(spec)
+        ledger.add_document(
+            document,
+            EvidenceBatch(
+                SourceClass.NEWS,
+                [
+                    {
+                        "requirement_id": "R1",
+                        "statement": document.content,
+                        "excerpt": document.content,
+                        "confidence": 0.9,
+                        "stance": "supports",
+                    }
+                ],
+            ),
+        )
         self.assertTrue(ledger.coverage().sufficient)
 
     def test_requirement_dependency_blocks_downstream_coverage(self) -> None:
