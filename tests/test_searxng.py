@@ -11,11 +11,23 @@ from web_research.search.searxng import (
     SearXNGChallengeError,
     SearXNGError,
     SearXNGSearchProvider,
+    _published_at,
 )
 from web_research.storage import SQLiteStore
 
 
 class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
+    def test_publication_date_uses_first_parseable_field(self):
+        self.assertEqual(
+            _published_at({"publishedDate": "unknown", "date": "2026-09-17T12:00:00Z"}),
+            "2026-09-17T12:00:00+00:00",
+        )
+        self.assertEqual(
+            _published_at({"publishedDate": "2026-09-16", "date": "2026-09-17"}),
+            "2026-09-16T00:00:00",
+        )
+        self.assertIsNone(_published_at({"title": "A page", "content": "18 hours ago"}))
+
     async def test_unresponsive_engines_are_retried_and_reported(self):
         requests: list[httpx.Request] = []
 

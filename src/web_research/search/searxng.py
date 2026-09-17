@@ -532,5 +532,7 @@ def _published_at(item: dict[str, Any]) -> str | None:
     for key in ("publishedDate", "published_at", "date"):
         value = item.get(key)
         if value:
-            return normalize_published_at(value)
+            normalized = normalize_published_at(value)
+            if normalized:
+                return normalized
     return None
