@@ -66,6 +66,7 @@ class Settings:
     prefetch_pages: int = 2
     read_url_max_chars: int = 60_000
     read_url_max_links: int = 100
+    search_timeout_seconds: float = 30.0
     search_retry_base_seconds: float = 1.0
     search_max_retries: int = 2
     search_healthy_engines: str = "google cse,duckduckgo web,mwmbl,searchmysite,mojeek,crowdview"
@@ -135,6 +136,9 @@ class Settings:
                 1, _int_env(environment, "WEB_SEARCH_READ_URL_MAX_CHARS", 60_000)
             ),
             read_url_max_links=max(0, _int_env(environment, "WEB_SEARCH_READ_URL_MAX_LINKS", 100)),
+            search_timeout_seconds=max(
+                1.0, _float_env(environment, "WEB_SEARCH_SEARCH_TIMEOUT_SECONDS", 30.0)
+            ),
             search_retry_base_seconds=_float_env(
                 environment, "WEB_SEARCH_SEARCH_RETRY_BASE_SECONDS", 1.0
             ),

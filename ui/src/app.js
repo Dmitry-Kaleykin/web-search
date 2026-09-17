@@ -61,7 +61,7 @@ const actions = [
   {
     value: "doctor",
     label: "Run readiness checks",
-    description: "Check browser, search API, model strategy, and configuration",
+    description: "Check browser, search API, and configuration",
   },
   {
     value: "evaluation",
@@ -227,11 +227,6 @@ async function readEnvironment() {
   return { ...values, ...process.env };
 }
 
-function rerankerHeaders(environment) {
-  const apiKey = environment.WEB_SEARCH_RERANKER_API_KEY || environment.WEB_SEARCH_MODEL_API_KEY || "";
-  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
-}
-
 async function fetchOk(url, timeoutMs = 3500, headers = {}) {
   try {
     const response = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
@@ -260,32 +255,7 @@ async function refreshStatus() {
       )
     : { code: 1, stdout: "" };
   const searchUrl = environment.WEB_SEARCH_SEARXNG_URL || "http://127.0.0.1:8080";
-  const search = await fetchOk(`${searchUrl.replace(/\/$/, "")}/search?q=health&format=json`);
-  const fallbackModelId = environment.WEB_SEARCH_MODEL_ID || "";
-  let model = { ok: true };
-  if (fallbackModelId) {
-    const modelBase = environment.WEB_SEARCH_MODEL_BASE_URL || "http://127.0.0.1:8000/v1";
-    const modelHeaders = environment.WEB_SEARCH_MODEL_API_KEY
-      ? { Authorization: `Bearer ${environment.WEB_SEARCH_MODEL_API_KEY}` }
-      : {};
-    model = await fetchOk(`${modelBase.replace(/\/$/, "")}/models`, 3500, modelHeaders);
-  }
-  const rerankerId = environment.WEB_SEARCH_RERANKER_MODEL_ID || "";
-  const rerankerBase = (
-    environment.WEB_SEARCH_RERANKER_BASE_URL ||
-    environment.WEB_SEARCH_MODEL_BASE_URL ||
-    "http://127.0.0.1:8000/v1"
-  ).replace(/\/$/, "");
-  let reranker = { ok: true, available: false };
-  if (rerankerId) {
-    const response = await fetchOk(`${rerankerBase}/models`, 3500, rerankerHeaders(environment));
-    const ids = Array.isArray(response.json?.data)
-      ? response.json.data
-          .filter((item) => item && typeof item === "object" && typeof item.id === "string")
-          .map((item) => item.id)
-      : [];
-    reranker = { ...response, available: ids.includes(rerankerId) };
-  }
+  const search = await fetchOk(`${searchUrl.replace(/\/$/, "")}/config`);
   const pythonReady = await exists(PYTHON, true);
   const mcpReady = await exists(MCP_SERVER, true);
   const browserReady = await exists(BROWSER_DIR);
@@ -302,28 +272,10 @@ async function refreshStatus() {
         searxngRunning,
         "SearXNG",
         search.ok
-          ? "running; JSON API ready"
+          ? "running; endpoint reachable"
           : searxngRunning
             ? "container running; API unavailable"
             : "stopped",
-      ),
-      statusLine(
-        model.ok,
-        "Model",
-        fallbackModelId
-          ? model.ok
-            ? `MCP sampling preferred; fallback ${fallbackModelId} reachable`
-            : `MCP sampling preferred; fallback ${fallbackModelId} unavailable`
-          : "dynamic through MCP client sampling",
-      ),
-      statusLine(
-        !rerankerId || (reranker.ok && reranker.available),
-        "Reranker",
-        rerankerId
-          ? reranker.ok && reranker.available
-            ? `${rerankerId} reachable`
-            : `${rerankerId} unavailable; lexical ranking remains active`
-          : "disabled; deterministic lexical ranking",
       ),
       statusLine(browserReady, "Chromium", browserReady ? "runtime installed" : "runtime missing"),
       statusLine(

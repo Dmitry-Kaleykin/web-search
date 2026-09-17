@@ -2,19 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import json
 import os
 import shutil
 import sys
 from pathlib import Path
 
 from .config import Settings
+from .search.searxng import SearXNGSearchProvider
+from .storage import SQLiteStore
 
 
 async def _doctor() -> int:
-    try:
-        import httpx
-    except ImportError:
+    if importlib.util.find_spec("httpx") is None:
         print("FAIL dependencies: run `python -m pip install -e .`", file=sys.stderr)
         return 1
 
@@ -58,118 +57,49 @@ async def _doctor() -> int:
                     file=sys.stderr,
                 )
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.get(
-                f"{settings.searxng_url.rstrip('/')}/search",
-                params={"q": "searxng", "format": "json"},
+    store = SQLiteStore(settings.data_dir / "research.sqlite3")
+    search = SearXNGSearchProvider(
+        settings.searxng_url,
+        store=store,
+        max_retries=0,
+        timeout_seconds=min(20.0, settings.search_timeout_seconds),
+        healthy_engines=settings.search_healthy_engines,
+        user_agent=settings.user_agent,
+    )
+    try:
+        async with asyncio.timeout(settings.search_timeout_seconds):
+            if not search.healthy_engines:
+                raise RuntimeError("No search engines configured")
+            results = await search.search(
+                "searxng",
+                engines=",".join(search.healthy_engines),
+                refresh=True,
             )
-            response.raise_for_status()
-            if "json" not in response.headers.get("content-type", "").casefold():
-                raise RuntimeError(
-                    "answered text/html instead of JSON; this is an anti-bot challenge page or "
-                    "'json' is missing from search.formats"
-                )
-            payload = response.json()
-            results = payload.get("results", [])
-            count = len(results)
-            print(f"OK   SearXNG JSON API: {count} result(s)")
+        print(f"OK   SearXNG JSON API: {len(results)} result(s)")
+        engines: dict[str, int] = {}
+        for item in results:
+            for name in item.engines:
+                engines[name] = engines.get(name, 0) + 1
+        if len(engines) == 1:
+            print(f"WARN all results came from one engine: {next(iter(engines))}")
+        elif engines:
+            print("OK   engines: " + ", ".join(f"{name}={hits}" for name, hits in engines.items()))
+    except Exception as exc:
+        failed = True
+        print(f"FAIL SearXNG JSON API: {type(exc).__name__}: {exc}", file=sys.stderr)
+    finally:
+        for warning in search.last_warnings:
+            print(f"WARN {warning}")
+        await search.close()
+        store.close()
 
-            # A non-empty result set can still mean the search is broken: SearXNG returns 200 with
-            # whatever survived, so one reachable index answering alone is a degraded instance.
-            engines: dict[str, int] = {}
-            for item in results:
-                for name in item.get("engines") or ([item["engine"]] if item.get("engine") else []):
-                    engines[str(name)] = engines.get(str(name), 0) + 1
-            unresponsive = payload.get("unresponsive_engines") or []
-            if unresponsive:
-                print(
-                    "WARN unresponsive upstream engines: "
-                    + ", ".join(
-                        f"{entry[0]} ({entry[1]})" if isinstance(entry, list) else str(entry)
-                        for entry in unresponsive[:8]
-                    )
-                )
-            if count and len(engines) == 1:
-                only = next(iter(engines))
-                print(
-                    f"WARN all {count} results came from the single engine '{only}'; widen the "
-                    "engine set in docker/searxng/settings.yml",
-                    file=sys.stderr,
-                )
-            elif engines:
-                print(
-                    "OK   engine diversity: "
-                    + ", ".join(f"{name}={hits}" for name, hits in sorted(engines.items()))
-                )
-            elif count:
-                print("WARN results carry no engine attribution; diversity cannot be verified")
-        except Exception as exc:
-            failed = True
-            print(f"FAIL SearXNG JSON API: {exc}", file=sys.stderr)
-
-        if not settings.model_id:
-            print("OK   model strategy: dynamic MCP client sampling")
-            print("INFO no direct model fallback is configured")
-        else:
-            headers = {}
-            if settings.model_api_key:
-                headers["Authorization"] = f"Bearer {settings.model_api_key}"
-            try:
-                response = await client.get(
-                    f"{settings.model_base_url.rstrip('/')}/models", headers=headers
-                )
-                response.raise_for_status()
-                models = response.json().get("data", [])
-                ids = {str(item.get("id")) for item in models if isinstance(item, dict)}
-                if ids and settings.model_id not in ids:
-                    failed = True
-                    print(
-                        f"FAIL configured fallback model {settings.model_id!r} is not in "
-                        f"/models: {json.dumps(sorted(ids))}",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(f"OK   direct fallback model endpoint: {settings.model_id}")
-            except Exception as exc:
-                failed = True
-                print(f"FAIL direct fallback model endpoint: {exc}", file=sys.stderr)
-
-        if not settings.reranker_model_id:
-            print("INFO no semantic candidate reranker is configured")
-        else:
-            headers = {}
-            if settings.reranker_api_key:
-                headers["Authorization"] = f"Bearer {settings.reranker_api_key}"
-            try:
-                response = await client.post(
-                    f"{settings.reranker_base_url.rstrip('/')}/rerank",
-                    headers=headers,
-                    json={
-                        "model": settings.reranker_model_id,
-                        "query": "web research",
-                        "documents": ["web research evidence", "unrelated decorative text"],
-                        "top_n": 2,
-                        "return_documents": False,
-                    },
-                )
-                response.raise_for_status()
-                results = response.json().get("results", [])
-                if not isinstance(results, list) or len(results) != 2:
-                    raise ValueError("endpoint did not return two candidate scores")
-                print(f"OK   semantic reranker: {settings.reranker_model_id}")
-            except Exception as exc:
-                failed = True
-                print(f"FAIL semantic reranker endpoint: {exc}", file=sys.stderr)
-
-        failed = _storage_report(settings, failed)
+    print("OK   reasoning: handled by the calling model; no model endpoint or sampling needed")
+    failed = _storage_report(settings, failed)
     return 1 if failed else 0
 
 
 def _storage_report(settings: Settings, failed: bool) -> bool:
     """Report cache growth so unbounded growth is visible instead of inferred from disk."""
-    from .storage import SQLiteStore
-
     path = settings.data_dir / "research.sqlite3"
     if not path.exists():
         print("INFO no research database yet")
@@ -228,8 +158,6 @@ def _db_bytes(path: Path) -> int:
 
 
 def _maintenance() -> int:
-    from .storage import SQLiteStore
-
     settings = Settings.from_env()
     path = settings.data_dir / "research.sqlite3"
     if not path.exists():

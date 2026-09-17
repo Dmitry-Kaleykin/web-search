@@ -1,72 +1,42 @@
-# Local Agentic Web Search
+# Local Web Search
 
-A local-first MCP research service for Pi. It exposes `read_url` for extracting an already-known URL
-and `web_search` for discovering sources, tracking evidence requirements, stopping adaptively, and
-returning a cited synthesis. Through MCP sampling, research automatically uses the model active in
-the calling Pi session; an OpenAI-compatible endpoint can be configured as a fallback for clients
-without sampling support.
+A local MCP server that gives the calling model two operations:
 
-This repository implements the research pipeline and reliability features described in
-[ARCHITECTURE.md](ARCHITECTURE.md):
+- **`web_search`** discovers sources and returns ranked URLs, titles, snippets, reported publication
+  dates, and provider diagnostics.
+- **`read_url`** extracts a selected page or document and returns pageable text, metadata, links,
+  and optional images.
 
-- SearXNG JSON discovery with caching and deduplication.
-- SearXNG upstream-engine health diagnostics, bounded retry, and empty-backend detection.
-- Engine cooldowns, anti-bot challenge detection, and automatic widening of single-engine result
-  sets, so a blocked upstream degrades into a visible warning instead of silent low-quality search.
-- Safe, bounded HTTP fetching with redirect revalidation.
-- Structured JSON evidence retrieval, including `.json` resources served as plain text.
-- Trafilatura extraction with a basic HTML fallback.
-- Automatic Crawl4AI/Chromium escalation for failed retrievals, JavaScript shells, loading
-  placeholders, browser-check interstitials, and responses with no extracted content.
-- Model-generated research requirements and gap-specific queries.
-- Evidence ledger with claim-support, source-count, and domain-diversity gates.
-- Expected-information-gain candidate ranking.
-- Adaptive stopping with hard safety ceilings.
-- Citation-ID and conservative sentence-to-excerpt checks, with deterministic source lists.
-- Explicit publication windows and cache bypass for time-sensitive research.
-- Source-family counting for identical/near-identical reports and declared original articles.
-- Immutable, expiring read snapshots and shared retrieval/browser limits.
-- SQLite traces/cache, MCP progress with compact evidence summaries, and cooperative cancellation.
-- Bounded cache: TTL deletion, row and per-row payload ceilings, and `web-search-maint` compaction.
-- Persisted engine cooldowns, so a restart does not hide an upstream that was already blocked.
-- Prompt fences for quoted web content, with fence markers rewritten so a page cannot escape its own
-  quarantine and header fields that cannot forge provenance lines.
+The calling model plans queries, chooses sources, judges relevance and credibility, compares
+accounts, decides when to stop, and writes the final answer with source links. The server makes
+**no model or reranker calls** and requires **no MCP sampling capability or approval**.
+Search results are not evidence-checked answers; snippets are discovery aids. Read promising sources
+before relying on their detailed claims, and treat retrieved text as untrusted data.
 
-The reader supports PDF layout text, local Tesseract OCR, page images for the calling model,
-and a bounded set of read-only browser actions. Specialized Docling parsing, autonomous browser
-investigation, and MCP Tasks remain future work. Blocked or incomplete pages are reported explicitly.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the current design.
 
-## Terminal console
+## Migrating from autonomous research
 
-Run the standalone Pi-styled operator console from any directory:
+Restart the MCP server and reconnect or reload its tools in your client so it receives the new
+schemas and instructions. The names `web_search` and `read_url` stay the same, but `web_search` is
+an intentional API change:
 
-```bash
-web-search
-```
+- Replace `effort` and natural-language `freshness` with focused queries and optional `language`,
+  `time_range`, `page`, `limit`, and `refresh` parameters.
+- Consume `results`, then call `read_url` on selected URLs. There is no `answer_markdown`, coverage
+  score, source-count threshold, requirement graph, automatic page analysis, or synthesis fallback.
+- Remove sampling and sampling-auto-approval configuration for this server. Existing model,
+  reranker, and research-budget settings are unused by the public tools.
 
-On this machine, `~/.local/bin/web-search` points to the project launcher. The launcher resolves its
-real location through the symlink, so installation and service commands still run in the project
-directory. The project-local `./web-search` command remains available as a fallback.
-
-The first launch installs the console's small Node.js dependency set. Inside the console you can:
-
-- Install or update the Python application and Chromium runtime.
-- Launch Docker Desktop when necessary and start, stop, or restart SearXNG.
-- See Docker, SearXNG, the model strategy, Chromium, and MCP readiness at a glance.
-- Run the full readiness doctor and follow SearXNG logs.
-- See whether the optional semantic reranker is reachable; failures retain deterministic ranking.
-
-The console does not replace or modify Pi. Pi continues to launch the single MCP server over stdio
-when it needs `web_search`; the console is only an operator interface for installation and local
-service management.
+The previous controller and its evaluations remain in the repository for reference and independent
+library use. They are not exposed as an MCP tool or invoked by either public operation.
 
 ## Requirements
 
 - Python 3.11 or newer.
+- Docker (recommended for SearXNG), or a SearXNG instance with JSON enabled.
+- An MCP client; sampling support is unnecessary.
 - Node.js 22.19 or newer for the optional terminal console.
-- Docker (recommended for SearXNG), or another SearXNG instance with JSON enabled.
-- A Pi MCP adapter/extension with MCP sampling support.
-- Optionally, an OpenAI-compatible chat-completions endpoint as a direct fallback.
 
 ## 1. Install
 
@@ -92,183 +62,91 @@ This binds SearXNG only to `127.0.0.1:8080` and enables JSON output. The configu
 still receive search queries; self-hosting the intermediary is not the same as making upstream
 searches anonymous.
 
-### Engine health
+## 3. Configure
 
-SearXNG answers `HTTP 200` with whatever survived even when most upstream engines failed, so a
-single reachable index can quietly answer every query. `docker/searxng/settings.yml` records the
-engine set measured on this instance, and the client layer tracks health at runtime:
+Copy [config.example.env](config.example.env) to `.env` and adjust the search endpoint and paths.
+Existing process environment variables override `.env`. Neither a model ID nor API key is needed.
 
-| Outcome | Behaviour |
-| --- | --- |
-| Anti-bot HTML page instead of JSON | `SearXNGChallengeError`, never retried — a challenge needs a browser, not another request |
-| `HTTP 403` on a JSON query | Reported as a missing `search.formats` or limiter misconfiguration, not retried |
-| `HTTP 429` / `503` | `Retry-After` is honoured; if it exceeds the retry budget the search is abandoned and earlier results are kept |
-| Engine CAPTCHA / suspension / rate limit | Engine goes on a cooldown (30 min CAPTCHA, 15 min rate limit, 2 min transient) and is skipped, not hammered |
-| Every result from one engine | Query is re-issued pinned to engines that are actually answering, and the half of the result set that is duplicated is replaced |
-
-The engine set is the whole game on a free instance. Measured per engine with `engines=` pinning:
-
-| Lane | Answering | Disabled |
-| --- | --- | --- |
-| general | `google cse`, `duckduckgo web`, `mwmbl`, `searchmysite`, `mojeek`, `crowdview`, `bing`, `wiby`, `brave` | `google`, `duckduckgo`, `startpage`, `qwant`, `infospace`, `fastbot`, `yahoo` |
-| news | `duckduckgo news`, `reuters`, `bing news`, `brave.news`, `mojeek news`, `wikinews` | `google news`, `startpage news`, `fireball news`, `tusksearch news`, `tagesschau` |
-| it | `hackernews`, `lobste.rs`, `microsoft learn`, `npm`, `crates.io`, `pkg.go.dev`, `huggingface`, `discuss.python`, `national vulnerability database`, `alpine linux packages`, `codeberg` | `metacpan`, `nixos wiki` |
-| science | `crossref`, `openalex`, `arxiv`, `pubmed`, `semantic scholar` | `encyclosearch` |
-
-Two lessons worth keeping:
-
-- **Judge endpoints, not brands.** DuckDuckGo's legacy HTML endpoint is a permanent CAPTCHA wall,
-  while its `/web` and news endpoints answer normally. Disabling "DuckDuckGo" wholesale throws away
-  a working index because of a sibling that does not work.
-- **Do not buy two tickets to the same film.** `google` answers on a different endpoint than
-  `google cse`, but the index underneath is the same one. It got CAPTCHA'd on 1 of 2 probes, so it
-  is a fresh blocking risk purchased for almost no new coverage — the cse entry already has it.
-- **A timeout failure is not a dead engine.** `codeberg` failed at exactly the configured
-  `request_timeout`, and its origin answers in ~4.6s — it needed a per-engine `timeout`, not
-  removal. `nixos wiki` and `encyclosearch` by contrast fail at the origin and are genuinely gone.
-
-Verify the live engine set with:
-
-```bash
-curl -s "http://127.0.0.1:8080/search?q=context+engineering&format=json" \
-  | python3 -c 'import sys,json,collections;d=json.load(sys.stdin);print(collections.Counter(e for r in d["results"] for e in r.get("engines",[])));print(d["unresponsive_engines"])'
-```
-
-If one engine still dominates and others are listed as unresponsive, the engine set in
-`settings.yml` no longer matches reality — re-measure it per engine with the `engines=` parameter
-before changing it. Pass `engines=` **on its own**: adding `categories=` as well makes SearXNG
-query the whole category, so the result count you read is an aggregate and tells you nothing about
-the engine you meant to test.
-
-### Storage and cache ceilings
-
-The database is the one part of a local research stack that grows without anyone deciding it
-should. Two rules keep it bounded:
-
-- **Cap at reader output, not at the cache boundary.** The evidence ledger verifies model excerpts
-  verbatim against `document.content`, so the cached copy and the live copy must be identical.
-  Truncating only one of them makes citation validity depend on whether the page happened to be
-  cached. `WEB_SEARCH_DOCUMENT_MAX_CHARS` therefore applies inside the readers.
-- **TTL is eviction, not invisibility.** Rows are pruned on write (amortised every
-  `prune_every_n_writes`) against TTL, a row ceiling, and a per-row payload ceiling. Checking
-  `stored_at` on read alone leaves the file growing forever while appearing healthy.
-
-Structured JSON is intentionally exempt from the character cap: cutting JSON mid-string produces a
-payload that looks structured but no longer parses. It is bounded by `max_response_bytes` and by
-`WEB_SEARCH_CACHE_DOCUMENT_MAX_PAYLOAD_BYTES` instead.
-
-`web-search-doctor` reports cache size, and `web-search-maint` evicts and compacts:
-
-```bash
-.venv/bin/web-search-maint
-# evicted search_cache=164 document_cache=456
-# database 50.0 MB -> 2.1 MB
-```
-
-Run maintenance while the server is idle. WAL mode means freed pages can sit in the `-wal`
-sidecar, so maintenance checkpoints explicitly — without that the file keeps reporting its old
-size after the rows are gone.
-
-## 3. Configure the research model
-
-No model ID is required when Pi connects through `pi-mcp-adapter`. The server requests model work
-through MCP sampling, and the adapter selects the model active in the current Pi session. Changing
-models in Pi therefore changes the research model without restarting or editing this server.
-
-All model-driven research stages use the main model, including page-evidence analysis.
-
-Sampling normally shows approval dialogs. Because one research run can make several model calls,
-the practical configuration for this trusted local server is:
-
-```json
-{
-  "settings": {
-    "sampling": true,
-    "samplingAutoApprove": true
-  }
-}
-```
-
-`samplingAutoApprove` applies to every MCP server in the same adapter configuration, so keep this
-server in a trusted project scope. Leave it `false` if you prefer to approve every request and
-response manually.
-
-The `.env` file is optional. The terminal console and MCP server load it automatically from the
-project directory; environment variables explicitly supplied by Pi or the operating system take
-precedence. Use it for SearXNG settings, local model authentication, or a direct model fallback for
-MCP clients that do not support sampling:
-
-```bash
-cp config.example.env .env
-```
-
-Important settings:
-
-| Variable | Default | Purpose |
+| Setting | Default | Purpose |
 |---|---|---|
-| `WEB_SEARCH_SEARXNG_URL` | `http://127.0.0.1:8080` | SearXNG base URL |
-| `WEB_SEARCH_MODEL_BASE_URL` | `http://127.0.0.1:8000/v1` | Optional direct-fallback API base |
-| `WEB_SEARCH_MODEL_ID` | none | Optional direct-fallback model ID |
-| `WEB_SEARCH_RERANKER_MODEL_ID` | none | Optional model served through native `POST /v1/rerank` |
-| `WEB_SEARCH_RERANKER_BASE_URL` | model base URL | Reranker endpoint; compatible with oMLX and Cohere/Jina-style APIs |
-| `WEB_SEARCH_RERANKER_MIN_RELEVANCE_SCORE` | `0.08` | Raw semantic eligibility floor before a page may be fetched |
-| `WEB_SEARCH_RERANKER_RELATIVE_RELEVANCE_RATIO` | `0.15` | Reject results far below the best semantic result in a batch |
-| `WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE` | `0.01` | Conservative eligibility floor when the reranker is unavailable |
-| `WEB_SEARCH_PREFETCH_PAGES` | `2` | Concurrent page retrieval window; model inference remains sequential |
-| `WEB_SEARCH_READ_URL_MAX_CHARS` | `60000` | Server ceiling for extracted characters returned by one `read_url` call |
-| `WEB_SEARCH_READ_URL_MAX_LINKS` | `100` | Maximum extracted links returned by one `read_url` call |
-| `WEB_SEARCH_DATA_DIR` | `.web-search-data` | SQLite cache and traces |
-| `WEB_SEARCH_ALLOW_PRIVATE_URLS` | `false` | Development-only reader override |
-| `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Permit hostname-only `198.18.0.0/15` answers from a local TUN proxy |
-| `WEB_SEARCH_ENABLE_CRAWL4AI` | `true` | Escalate incomplete pages to Chromium |
+| `WEB_SEARCH_SEARXNG_URL` | `http://127.0.0.1:8080` | SearXNG JSON endpoint |
+| `WEB_SEARCH_SEARCH_TIMEOUT_SECONDS` | `30` | Search wall-clock budget, including queue time |
+| `WEB_SEARCH_SEARCH_HEALTHY_ENGINES` | See example | Explicit general-web engine pool; cooled engines are excluded |
+| `WEB_SEARCH_SEARCH_CACHE_TTL_SECONDS` | `900` | Search cache lifetime |
+| `WEB_SEARCH_DOCUMENT_CACHE_TTL_SECONDS` | `21600` | Document cache lifetime |
+| `WEB_SEARCH_ENABLE_CRAWL4AI` | `true` | Automatic browser fallback for page reading |
+| `WEB_SEARCH_READ_URL_MAX_CHARS` | `60000` | Maximum inline text per read |
+| `WEB_SEARCH_READ_URL_MAX_LINKS` | `100` | Maximum links when requested |
+| `WEB_SEARCH_BROWSER_MAX_CONCURRENT_RENDERS` | `2` | Shared browser-render ceiling |
+| `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Compatibility with synthetic TUN proxy DNS |
 
-Do not enable private URL fetching for normal use. SearXNG and any direct fallback model server have
-their own explicitly configured local endpoints; public result pages remain protected against SSRF.
-If a local proxy returns synthetic `198.18.0.x` DNS answers for every public hostname, enable
-`WEB_SEARCH_ALLOW_PROXY_FAKE_IPS`. This exception does not permit literal fake-IP URLs or any other
-private, loopback, link-local, or metadata range.
+Search dispatch is serialized and reloads persisted cooldowns before each request. A call makes at
+most one SearXNG search request: it does not retry, expand queries, or re-query for engine diversity.
+SearXNG itself may contact multiple engines. The configured general-web engine pool is pinned on
+every request, minus cooled engines. Update that pool to match your instance. The calling model can
+choose another query or try later after inspecting the result diagnostics.
 
-Candidate eligibility is separate from candidate ordering. When the semantic reranker is available,
-the controller rejects results below its raw relevance floor before HTTP or browser prefetch begins;
-SearXNG rank and source-diversity bonuses cannot override that decision. If a whole result batch is
-rejected, the controller searches again for the unresolved requirement and relaxes the floor across
-later attempts. After several weak batches it may probe one best candidate to preserve recall for
-obscure topics. Debug traces record rejected URLs, scores, gate mode, and the effective threshold.
+Rate limits, challenges, and transport failures are reported explicitly. Results that survive other
+engines failing are retained with warnings. When all configured engines or the endpoint are cooling
+down, uncached calls return `backend_unavailable` without dispatching a request. A valid cached result
+can still be returned during a cooldown. `engine_health` reports reasons and remaining cooldown time.
 
-## 4. Check the services
+The time filter is an upstream hint: the server does not infer a 30-day window, discard undated
+sources, or validate publication dates against a query. Search dates are reported metadata, not
+verified dates. The calling model judges freshness using the question and the page itself. Use
+`refresh=true` to bypass caches when needed.
+
+## 4. Check services and connect your client
 
 ```bash
 .venv/bin/web-search-doctor
 ```
 
-The command verifies the SearXNG JSON API, Crawl4AI package and Chromium runtime, the selected model
-strategy, and the data directory. It checks `/models` only when a direct fallback model is configured;
-the active Pi model can only be verified during an MCP call.
-
-## 5. Connect Pi
-
-Point your Pi MCP extension/adapter at the absolute executable:
+The doctor checks search, browser availability, OCR, and storage. It does not contact model or
+reranker endpoints. Point your MCP adapter at the absolute executable:
 
 ```text
 /Users/donais/Documents/Projects/web-search/.venv/bin/web-search-mcp
 ```
 
-Start from [integrations/pi/mcp-server.example.json](integrations/pi/mcp-server.example.json). It
-enables automatic sampling approval for this trusted local scope and contains no model ID. Pi MCP
-adapters differ in their outer configuration format, but the command and environment are the same.
+Start from [integrations/pi/mcp-server.example.json](integrations/pi/mcp-server.example.json).
+Adapt the outer configuration shape for your client. The existing stdio handshake remains compatible
+with installed adapters; no sampling back-channel is used.
 
-The stdio executable intentionally uses MCP's 2025-11-25 handshake protocol. Iterative research
-needs several server-to-client sampling requests during one tool call, while the 2026-07-28 protocol
-requires sampling to be represented as multi-round input. `pi-mcp-adapter` negotiates automatically
-and falls back to this compatible handshake path.
-
-The tool signatures are:
+## Tool workflow
 
 ```text
+web_search(query, limit=10, page=1, language=null, time_range=null, refresh=false)
 read_url(url, query=null, render="auto", cursor=0, max_chars=4000,
          include_links=false, refresh=false, visual=false, page=1, actions=null)
-web_search(query, effort="auto", freshness=null)
 ```
+
+Example sequence, chosen by the calling model:
+
+```json
+{"query":"складной iPhone дата начала продаж в России", "language":"ru", "limit":5}
+```
+
+Read relevant returned URLs with `read_url`. Search again with a more specific query or another
+language if the pages leave gaps, then write an answer linking to the pages actually used. The
+server does not decide that a question has been answered just because results were found.
+
+`web_search` returns:
+
+- `query` and `results`: each result includes `url`, `title`, `snippet`, `engines`, `published_at`,
+  and upstream `rank`. URL duplicates are removed; no model relevance gate is applied.
+- `outcome`: `success` means results exist, `empty` means the provider returned no results without
+  reporting a failure, and `backend_unavailable` means the call failed or was prevented by cooldown
+  or timeout. These describe retrieval, not answer quality.
+- `warnings`, `engine_health`, and `cache_hit`: inspect these before deciding the next step.
+- `elapsed_ms` and `responded_at`: request timing. `responded_at` is the response time, not a source
+  publication date or the original retrieval time of cached results.
+
+The output is capped at 20 results (default 10), with titles capped at 1,000 characters and snippets
+at 4,000. Search pages range from 1 to 10. `time_range` accepts `day`, `month`, or `year`.
+Cancellation propagates to the active request and releases the dispatch slot.
+
+## Reading pages and documents
 
 Use `read_url` when the URL is already known. Its `auto` rendering mode uses the shared HTTP,
 Trafilatura, basic-HTML, and conditional Chromium stack; `never` prevents Chromium from launching,
@@ -312,59 +190,23 @@ HTTP/document work has an eight-read ceiling, binary extraction a two-worker cei
 uses `WEB_SEARCH_BROWSER_MAX_CONCURRENT_RENDERS` across all reader runtimes in the server.
 The concurrency ceilings are fixed on first use; restart the MCP server to change them.
 
-Freshness constraints support ISO dates/ranges, `since YYYY`, calendar years, `today`, `yesterday`,
-and rolling periods such as `last 7 days`. Unspecific `latest`, `recent`, and `current` requests use
-an explicit, reported 30-day publication window. Undated, future, or out-of-window evidence cannot
-satisfy a fresh requirement. Search and document caches are bypassed for time-sensitive research;
-cache writes do not renew the original retrieval date. For a different meaning of "current", supply
-an explicit date range rather than relying on the default window.
+## Terminal console
 
-Source-family detection is conservative: copied text or the same declared original article counts
-once, even across different domains. Domain diversity alone does not establish independence.
-Claim and citation checks preserve wording, numbers, actor order, negation, qualifications and
-attribution. They are conservative text checks, not a universal semantic entailment guarantee.
-If final synthesis fails validation, the controller returns accepted evidence excerpts with a warning.
+Run `./web-search` from this project (or the installed `web-search` launcher). The optional console
+installs the application and browser runtime, manages Docker/SearXNG, shows retrieval readiness,
+and runs the doctor. It does not modify your model configuration.
 
-Send a complete research request to `web_search` in one call. The calling model may invoke it
-autonomously when web research is useful. The server permits one active research run at a time and
-rejects overlapping calls rather than letting two searches contend for the same local model.
+## Storage and safety
 
-`web_search` reports `outcome` as `success`, `partial`, `no_evidence`, or
-`backend_unavailable`, plus a `retryable` flag. These describe the research run rather than imposing
-a policy on what the calling model does next. Repeated empty searches and upstream-engine failures
-stop early and are recorded in warnings and SQLite events.
+Search and document caches use SQLite with TTL pruning, row limits, and per-document size limits.
+Immutable read snapshots allow stable pagination. Use `.venv/bin/web-search-maint` to prune and
+compact the cache; `--help` lists the maintenance options.
 
-Pi should pass the user's temporal wording faithfully. For requests such as "latest", "recent",
-"current", or "today", it must not insert a calendar year unless the user supplied one. The server
-anchors those relative terms to its local date and includes that authoritative date in every model
-stage. Explicit requests such as "news from 2025" remain unchanged.
-
-- `quick`: a low-latency lookup with one search, at most two fetched pages, 15 active browsing
-  seconds, and a one-minute wall-clock ceiling. It uses heuristic requirements, the original query,
-  deterministic ranking/evidence extraction, and one final synthesis call; semantic reranking,
-  follow-up planning, and link discovery are skipped.
-- `auto`: routes simple factual lookups to the quick pipeline and uses the standard research
-  pipeline for comparisons, recommendations, current events, explanations, and explorations. The
-  standard pipeline has a twelve-minute wall-clock ceiling.
-- `thorough`: a wider evidence search with a twenty-five-minute wall-clock ceiling; it does not stop for saturation
-  before attempting at least three searches and collecting usable evidence from six domains.
-
-Modes select immutable pipeline profiles assembled from shared spec, query, reranking, retrieval,
-evidence, follow-up, and synthesis stages. Profiles also set maximum wall-clock, active-browsing,
-search-call, and page budgets. Model inference and approval latency count toward the wall-clock
-ceiling but not the narrower browsing allowance; each individual model call also uses
-`WEB_SEARCH_MODEL_TIMEOUT_SECONDS`. The controller reserves time for final synthesis so it can
-return the best available evidence before Pi's outer timeout. The standard and thorough profiles
-read only a small candidate batch from each query before moving to another search angle, and defer
-model-based gap assessment until a new query is actually needed.
-
-Evidence claims are accepted only when their statement is lexically supported by a verbatim page
-excerpt and every numeric/date token appears in that excerpt. Invalid excerpts may be replaced from
-the page, but replacement lowers confidence; unsupported claims are discarded. Source classes are
-model-generated descriptive metadata only. They are not validated as official ownership and never
-affect ranking, coverage, or stopping decisions; those depend on supported claims and distinct
-source domains.
-Canceled calls are finalized in the run ledger with a `cancelled` event at any controller stage.
+Only public HTTP(S) pages can be read by default. URL credentials, private-network destinations,
+unsafe redirects, and oversized responses are rejected. Browser subrequests receive the same URL
+checks. The configured local SearXNG endpoint is separate from page-fetch safety checks.
+Read-only browser actions are bounded; form submission and arbitrary JavaScript are unavailable.
+Blocked pages and extraction limitations are reported rather than treated as usable evidence.
 
 ## Development
 
@@ -374,27 +216,7 @@ Canceled calls are finalized in the run ledger with a `cancelled` event at any c
 .venv/bin/ruff format --check .
 ```
 
-The default suite covers deterministic evidence fixtures, retrieval behavior, PDF/OCR, cache
-freshness, cancellation, source families, and stable pagination. Optional Chromium tests serve a
-local JavaScript site and exercise real browser extraction, controls, screenshots, and soft errors.
-
-```bash
-.venv/bin/pytest -q
-.venv/bin/web-search-eval
-.venv/bin/web-search-eval --integration
-```
-
-See [eval/README.md](eval/README.md) for prerequisites, acceptance criteria, fixture format, and a
-small human-reviewed live research rubric. Local evaluations require no model API or search service;
-they do not establish live search-engine recall or guarantee answer accuracy.
-
-## Security defaults
-
-- Only HTTP(S) result URLs are accepted.
-- Loopback, private, link-local, multicast, and metadata destinations are blocked.
-- DNS and redirect destinations are checked on every hop.
-- Crawl4AI installs a browser route guard that also blocks private subresources and redirects.
-- Credentials in URLs and oversized responses are rejected.
-- Browser sessions, authentication, form submission, shell access, and arbitrary JavaScript are not
-  available to the research model.
-- Retrieved pages are delimited as untrusted evidence and cannot change the research policy.
+Tests cover MCP discovery without sampling, no page reads during search, backend errors, cooldowns,
+cache refresh, timeout/cancellation, input limits, document extraction, and stable read pagination.
+Optional browser integrations and historical research evaluations are described in
+[eval/README.md](eval/README.md). Local tests do not establish live engine recall or answer accuracy.

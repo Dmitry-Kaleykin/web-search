@@ -108,6 +108,7 @@ class SearXNGSearchProvider:
         self.diversity_min_results = max(2, diversity_min_results)
         self.max_retry_wait_seconds = max(0.0, max_retry_wait_seconds)
         self.healthy_engines = _parse_engine_list(healthy_engines)
+        self.last_cache_hit = False
         self.last_warnings: list[str] = []
         self.last_engine_health: dict[str, str] = {}
         self._cooldowns: dict[str, _EngineCooldown] = {}
@@ -185,12 +186,14 @@ class SearXNGSearchProvider:
         engines: str | None = None,
         refresh: bool = False,
     ) -> list[SearchResult]:
+        self.last_cache_hit = False
         self.last_warnings = []
         self.last_engine_health = {}
         cache_key = _cache_key(query, page, language, time_range, categories, limit, engines)
         if self.store and not refresh:
             cached = self.store.get_search(cache_key, self.cache_ttl_seconds)
             if cached is not None:
+                self.last_cache_hit = True
                 return cached
 
         params: dict[str, str | int] = {"q": query, "format": "json", "pageno": page}
@@ -212,7 +215,21 @@ class SearXNGSearchProvider:
         for attempt in range(self.max_retries + 1):
             last = attempt == self.max_retries
             try:
-                payload = await self._request(params)
+                dispatch_params = dict(params)
+                if params.get("engines"):
+                    cooling = {
+                        name.casefold(): reason for name, reason in self.engine_health().items()
+                    }
+                    if "searxng" in cooling:
+                        raise SearXNGRateLimitedError(
+                            f"SearXNG endpoint is cooling down: {cooling['searxng']}"
+                        )
+                    requested = _parse_engine_list(str(params["engines"]))
+                    available = [name for name in requested if name.casefold() not in cooling]
+                    if not available:
+                        raise SearXNGChallengeError("All requested search engines are cooling down")
+                    dispatch_params["engines"] = ",".join(available)
+                payload = await self._request(dispatch_params)
             except SearXNGChallengeError:
                 raise
             except SearXNGRateLimitedError as exc:

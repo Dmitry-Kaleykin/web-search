@@ -1,4 +1,9 @@
-# Reliability evaluations
+# Retrieval and historical research evaluations
+
+The public MCP workflow now returns search results and page content to the calling model.
+Evidence-ledger fixtures below exercise the retained historical research library, not a validation
+step performed by `web_search` or `read_url`. The current tool contract is tested in
+`tests/test_server.py`; reader integrations still apply to the public workflow.
 
 Run deterministic evidence cases:
 
@@ -31,8 +36,7 @@ package manager on Linux. The default OCR language is English.
 
 A passing adversarial JSON fixture means the expected rejection happened. It does not mean an
 incorrect answer was accepted. The `answer_valid` field in JSON output distinguishes these cases.
-The controller continues to use the main model, but these regression cases supply fixed evidence
-so their outcomes are repeatable and do not depend on a model's randomness.
+The historical controller cases supply fixed evidence so their outcomes are repeatable.
 
 To add a case, copy a JSON fixture, use a fixed `as_of_date`, and set exact expectations such as
 `accepted_claims`, `source_count`, `sufficient`, `unresolved_gaps`, and `answer_valid`. Tests for
@@ -43,8 +47,8 @@ actual fetching and browser behavior belong in `tests/test_reliability.py`,
 
 Local tests establish retrieval and validation behavior; they do not measure recall across the
 live web. For an end-to-end check in the connected main-model session, use the cases in
-`live_cases.json`. Run each request through `web_search`, record its complete output and trace ID,
-and manually check the cited passages. Record supported/unsupported factual statements, required
+`live_cases.json`. Let the calling model run each request using `web_search` and `read_url`, record the tool calls
+and final answer, and manually check the cited passages. Record supported/unsupported factual statements, required
 items covered, independent source families, elapsed time, fetched pages, and unnecessary retries.
 Do not turn unstable live answers into fixed unit-test expectations. Date-sensitive questions use
 an explicit date supplied at execution time; record that date with the run.

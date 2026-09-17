@@ -1,45 +1,31 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from mcp.client import Client
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.types import ClientCapabilities, SamplingCapability
 
 from web_research.config import Settings
-from web_research.model.mcp_sampling import MCPSamplingModelClient
-from web_research.model.openai_compatible import OpenAICompatibleModelClient
-from web_research.model.unavailable import UnavailableModelClient
 from web_research.models import Document
 from web_research.server import (
-    ConcurrentResearchError,
-    _create_model,
     _create_reader_runtime,
     _read_url_output,
-    _SingleFlight,
     mcp,
     read_url,
+    web_search,
 )
+from web_research.storage import SQLiteStore
 
 
 class MCPServerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_single_flight_rejects_overlapping_research(self) -> None:
-        gate = _SingleFlight()
-        gate.start()
-
-        with self.assertRaisesRegex(ConcurrentResearchError, "already running"):
-            gate.start()
-
-        gate.finish()
-        gate.start()
-        gate.finish()
-
-    async def test_stdio_entry_negotiates_sampling_compatible_handshake(self) -> None:
+    async def test_stdio_entry_negotiates_existing_handshake(self) -> None:
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "web_research.server"],
@@ -74,32 +60,15 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("instead of curl or wget", read_tool.description)
 
         self.assertEqual(search_tool.input_schema["required"], ["query"])
-        self.assertIn("answer_markdown", search_tool.output_schema["properties"])
-        self.assertIn("outcome", search_tool.output_schema["properties"])
-        self.assertIn("retryable", search_tool.output_schema["properties"])
-        self.assertNotIn(
-            "has_primary",
-            search_tool.output_schema["$defs"]["ToolCoverageItem"]["properties"],
-        )
-        stats_schema = search_tool.output_schema["$defs"]["ToolStats"]["properties"]
-        self.assertIn("pipeline_profile", stats_schema)
-        self.assertIn("reranker_requests", stats_schema)
-        self.assertIn("candidates_rejected_irrelevant", stats_schema)
-        self.assertIn("relevance_batches_rejected", stats_schema)
-        self.assertIn("prefetch_started", stats_schema)
-        self.assertIn("empty_searches", stats_schema)
-        self.assertIn("search_backend_failures", stats_schema)
-        self.assertIn("Inspect outcome", search_tool.description)
-        self.assertNotIn("ask permission", search_tool.description)
-        self.assertNotIn("model memory", search_tool.description)
-        self.assertIn("Never add a calendar year", search_tool.description)
-        self.assertIn("do not invoke web_search in parallel", search_tool.description)
-        self.assertIn(
-            "do not add a year",
-            search_tool.input_schema["properties"]["query"]["description"],
-        )
-        freshness_schema = search_tool.input_schema["properties"]["freshness"]
-        self.assertIn("Do not resolve relative wording", freshness_schema["description"])
+        self.assertIn("results", search_tool.output_schema["properties"])
+        self.assertIn("engine_health", search_tool.output_schema["properties"])
+        self.assertIn("cache_hit", search_tool.output_schema["properties"])
+        self.assertNotIn("answer_markdown", search_tool.output_schema["properties"])
+        self.assertNotIn("coverage", search_tool.output_schema["properties"])
+        self.assertNotIn("effort", search_tool.input_schema["properties"])
+        self.assertNotIn("freshness", search_tool.input_schema["properties"])
+        self.assertIn("does not read pages", search_tool.description)
+        self.assertIn("read_url", search_tool.description)
 
     async def test_shared_reader_runtime_can_disable_browser(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -245,29 +214,217 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.extraction_method, "crawl4ai+chromium")
         self.assertEqual(output.content, "Extracted content")
 
-    async def test_dynamic_client_model_takes_precedence_over_direct_fallback(self) -> None:
-        context = SimpleNamespace(
-            client_capabilities=ClientCapabilities(sampling=SamplingCapability())
-        )
-        model = _create_model(context, Settings(model_id="fallback-model"))
+    @contextmanager
+    def search_fixture(self, *, payload=None, timeout=30.0):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(
+                data_dir=Path(directory),
+                search_healthy_engines="brave,google cse",
+                search_timeout_seconds=timeout,
+                model_id="unused-model",
+                reranker_model_id="unused-reranker",
+            )
+            store = SQLiteStore(Path(directory) / "test.sqlite3")
+            runtime = SimpleNamespace(store=store, reader=SimpleNamespace(read=AsyncMock()))
+            try:
+                with (
+                    patch("web_research.server.Settings.from_env", return_value=settings),
+                    patch("web_research.server._shared_reader_runtime", return_value=runtime),
+                    patch(
+                        "web_research.search.searxng.SearXNGSearchProvider._request",
+                        new_callable=AsyncMock,
+                    ) as request,
+                ):
+                    request.return_value = payload or {"results": [], "failures": []}
+                    yield store, runtime, request
+            finally:
+                store.close()
 
-        self.assertIsInstance(model, MCPSamplingModelClient)
-        self.assertEqual(model.timeout_seconds, 90.0)
-        await model.close()
+    async def test_search_returns_raw_discovery_without_reading_or_sampling(self):
+        payload = {
+            "results": [
+                {
+                    "url": "https://example.com/phone",
+                    "title": "Phone",
+                    "content": "A snippet",
+                    "engines": ["brave"],
+                    "publishedDate": "2026-09-17",
+                }
+            ],
+            "failures": [],
+        }
+        # This client has no sampling capability or model interface.
+        async with Client(mcp) as client:
+            with self.search_fixture(payload=payload) as (store, runtime, request):
+                result = await client.call_tool(
+                    "web_search",
+                    {
+                        "query": "складной телефон",
+                        "language": "ru",
+                        "page": 2,
+                        "limit": 5,
+                        "time_range": "month",
+                        "refresh": True,
+                    },
+                )
+                self.assertFalse(result.is_error)
+                output = result.structured_content
+                self.assertEqual(output["outcome"], "success")
+                self.assertEqual(output["results"][0]["snippet"], "A snippet")
+                self.assertEqual(output["results"][0]["url"], "https://example.com/phone")
+                self.assertTrue(output["results"][0]["published_at"].startswith("2026-09-17"))
+                request.assert_awaited_once_with(
+                    {
+                        "q": "складной телефон",
+                        "format": "json",
+                        "pageno": 2,
+                        "language": "ru",
+                        "time_range": "month",
+                        "engines": "brave,google cse",
+                    }
+                )
+                runtime.reader.read.assert_not_awaited()
+                self.assertEqual(
+                    store._connection.execute("SELECT COUNT(*) FROM research_runs").fetchone()[0], 0
+                )
 
-    async def test_direct_model_is_used_when_sampling_is_unavailable(self) -> None:
-        context = SimpleNamespace(client_capabilities=ClientCapabilities())
-        model = _create_model(context, Settings(model_id="fallback-model"))
+    async def test_search_preserves_results_and_reports_degraded_engines(self):
+        payload = {
+            "results": [{"url": "https://example.com/a"}],
+            "failures": [["brave", "too many requests"]],
+        }
+        with self.search_fixture(payload=payload) as (_, _, request):
+            result = await web_search("test", SimpleNamespace(report_progress=AsyncMock()))
+        self.assertEqual(result.outcome, "success")
+        self.assertEqual(len(result.results), 1)
+        self.assertIn("brave", result.engine_health)
+        self.assertTrue(any("unresponsive" in w for w in result.warnings))
+        request.assert_awaited_once()
 
-        self.assertIsInstance(model, OpenAICompatibleModelClient)
-        await model.close()
+    async def test_search_distinguishes_empty_from_unavailable_without_retrying(self):
+        ctx = SimpleNamespace(report_progress=AsyncMock())
+        with self.search_fixture() as (_, _, request):
+            empty = await web_search("nothing", ctx)
+            request.return_value = {"results": [], "failures": [["brave", "timeout"]]}
+            unavailable = await web_search("failed", ctx)
+            self.assertEqual(request.await_count, 2)
+        self.assertEqual(empty.outcome, "empty")
+        self.assertEqual(unavailable.outcome, "backend_unavailable")
+        self.assertTrue(any("search_failed" in w for w in unavailable.warnings))
 
-    async def test_missing_sampling_and_fallback_uses_deterministic_mode(self) -> None:
-        context = SimpleNamespace(client_capabilities=ClientCapabilities())
-        model = _create_model(context, Settings())
+    async def test_search_reloads_cooldowns_before_next_dispatch(self):
+        import time
 
-        self.assertIsInstance(model, UnavailableModelClient)
-        await model.close()
+        with self.search_fixture() as (store, _, request):
+            store.record_engine_cooldown("brave", "too many requests", time.time() + 900)
+            result = await web_search("test", SimpleNamespace(report_progress=AsyncMock()))
+            self.assertEqual(request.call_args.args[0]["engines"], "google cse")
+            store.record_engine_cooldown("google cse", "access denied", time.time() + 900)
+            blocked = await web_search("test again", SimpleNamespace(report_progress=AsyncMock()))
+            request.assert_awaited_once()
+        self.assertIn("brave", result.engine_health)
+        self.assertEqual(blocked.outcome, "backend_unavailable")
+
+    async def test_search_cache_and_refresh(self):
+        payload = {"results": [{"url": "https://example.com/a"}], "failures": []}
+        ctx = SimpleNamespace(report_progress=AsyncMock())
+        with self.search_fixture(payload=payload) as (_, _, request):
+            first = await web_search("same", ctx)
+            cached = await web_search("same", ctx)
+            fresh = await web_search("same", ctx, refresh=True)
+            self.assertEqual(request.await_count, 2)
+        self.assertFalse(first.cache_hit)
+        self.assertTrue(cached.cache_hit)
+        self.assertFalse(fresh.cache_hit)
+
+    async def test_parallel_searches_queue_and_observe_previous_failure(self):
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        calls = []
+
+        async def respond(params):
+            calls.append(params)
+            if len(calls) == 1:
+                first_started.set()
+                await release_first.wait()
+                return {"results": [], "failures": [["brave", "too many requests"]]}
+            return {"results": [], "failures": []}
+
+        ctx = SimpleNamespace(report_progress=AsyncMock())
+        with self.search_fixture() as (_, _, request):
+            request.side_effect = respond
+            first = asyncio.create_task(web_search("one", ctx))
+            await asyncio.wait_for(first_started.wait(), 1)
+            second = asyncio.create_task(web_search("two", ctx))
+            await asyncio.sleep(0)
+            self.assertEqual(len(calls), 1)
+            release_first.set()
+            outputs = await asyncio.wait_for(asyncio.gather(first, second), 1)
+        self.assertEqual(calls[1]["engines"], "google cse")
+        self.assertEqual(outputs[0].outcome, "backend_unavailable")
+        self.assertEqual(outputs[1].outcome, "empty")
+
+    async def test_endpoint_cooldown_prevents_network_but_allows_cached_results(self):
+        import time
+
+        ctx = SimpleNamespace(report_progress=AsyncMock())
+        payload = {"results": [{"url": "https://example.com/a"}], "failures": []}
+        with self.search_fixture(payload=payload) as (store, _, request):
+            await web_search("cached", ctx)
+            store.record_engine_cooldown("searxng", "HTTP 429", time.time() + 900)
+            cached = await web_search("cached", ctx)
+            blocked = await web_search("cached", ctx, refresh=True)
+            request.assert_awaited_once()
+        self.assertTrue(cached.cache_hit)
+        self.assertEqual(cached.outcome, "success")
+        self.assertEqual(blocked.outcome, "backend_unavailable")
+        self.assertIn("searxng", blocked.engine_health)
+
+    async def test_search_times_out_and_cancels_provider(self):
+        cancelled = asyncio.Event()
+
+        async def slow(_params):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with self.search_fixture(timeout=0.05) as (_, _, request):
+            request.side_effect = slow
+            result = await web_search("slow", SimpleNamespace(report_progress=AsyncMock()))
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(result.outcome, "backend_unavailable")
+        self.assertTrue(any("search_timeout" in w for w in result.warnings))
+
+    async def test_search_cancellation_releases_dispatch_gate(self):
+        started = asyncio.Event()
+
+        async def slow(_params):
+            started.set()
+            await asyncio.Event().wait()
+
+        ctx = SimpleNamespace(report_progress=AsyncMock())
+        with self.search_fixture() as (_, _, request):
+            request.side_effect = slow
+            task = asyncio.create_task(web_search("cancel", ctx))
+            await asyncio.wait_for(started.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            request.side_effect = None
+            result = await asyncio.wait_for(web_search("next", ctx), 1)
+        self.assertEqual(result.outcome, "empty")
+
+    async def test_search_validates_mcp_limits(self):
+        async with Client(mcp) as client:
+            for arguments in (
+                {"query": "x", "limit": 21},
+                {"query": "x", "page": 0},
+                {"query": "x", "time_range": "week"},
+                {"query": "   "},
+            ):
+                result = await client.call_tool("web_search", arguments)
+                self.assertTrue(result.is_error)
 
 
 if __name__ == "__main__":
