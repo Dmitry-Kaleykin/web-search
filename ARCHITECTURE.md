@@ -32,11 +32,17 @@ its predecessor. The provider is configured with zero retries and an explicit ge
 pool. It returns cached results or performs one request, without diversity widening or page reads.
 Cancellation propagates and closes the HTTP client. Successful empty searches are distinguished
 from backend failures; partial upstream failures preserve returned results and diagnostics.
+Search caches retain the original retrieval timestamp and warnings, including skipped engines.
+Current engine cooldowns are reported separately so recovery does not erase a cached result's
+limited retrieval conditions. Legacy cache rows explicitly report missing provenance.
 
 `read_url` keeps the existing shared, bounded reader runtime, document safety, browser actions,
 visual output, and snapshot pagination. Optional query-focused extraction chooses a content window;
 it does not score evidence or claim that the page answers the question. Publication dates and page
 status remain metadata for the calling model to inspect.
+The doctor performs a cache-bypassing public documentation read through this same reader stack,
+in addition to checking search and installed components. HTTP extraction resolves links against
+the final page URL and HTML base before converting to Markdown.
 
 ## Compatibility
 

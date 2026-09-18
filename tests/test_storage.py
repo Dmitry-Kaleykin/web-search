@@ -37,9 +37,9 @@ class SQLiteStoreCacheTests(unittest.TestCase):
             removed = store.prune()
             self.assertEqual(removed["document_cache"], 1)
             self.assertIsNone(store.get_document("https://example.com/a", 60))
-            remaining = store._connection.execute(
-                "SELECT COUNT(*) FROM document_cache"
-            ).fetchone()[0]
+            remaining = store._connection.execute("SELECT COUNT(*) FROM document_cache").fetchone()[
+                0
+            ]
             self.assertEqual(remaining, 0)
             store.close()
 
@@ -149,9 +149,9 @@ class SQLiteStoreCacheTests(unittest.TestCase):
             store = self._store(directory)
             store.record_engine_cooldown("brave", "CAPTCHA challenge", time.time() - 1)
             self.assertEqual(store.active_engine_cooldowns(), {})
-            remaining = store._connection.execute(
-                "SELECT COUNT(*) FROM engine_health"
-            ).fetchone()[0]
+            remaining = store._connection.execute("SELECT COUNT(*) FROM engine_health").fetchone()[
+                0
+            ]
             self.assertEqual(remaining, 0)
             store.close()
 

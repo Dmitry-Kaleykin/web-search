@@ -5,11 +5,19 @@ import sqlite3
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .models import Document, ResearchResult, SearchResult
+
+
+@dataclass(slots=True)
+class CachedSearch:
+    results: list[SearchResult]
+    retrieved_at: str | None
+    warnings: list[str]
 
 
 class SQLiteStore:
@@ -133,13 +141,46 @@ class SQLiteStore:
         return removed
 
     def get_search(self, key: str, ttl_seconds: int) -> list[SearchResult] | None:
+        cached = self.get_search_entry(key, ttl_seconds)
+        return cached.results if cached is not None else None
+
+    def get_search_entry(self, key: str, ttl_seconds: int) -> CachedSearch | None:
         row = self._get_fresh("search_cache", "cache_key", key, ttl_seconds)
         if row is None:
             return None
-        return [SearchResult(**item) for item in json.loads(row["payload"])]
+        payload = json.loads(row["payload"])
+        if isinstance(payload, list):
+            # Pre-provenance caches remain usable, but cannot claim a clean retrieval.
+            return CachedSearch(
+                [SearchResult(**item) for item in payload],
+                None,
+                [
+                    "search_cache_legacy:original retrieval time and diagnostics unavailable; "
+                    "use refresh=true to retrieve again"
+                ],
+            )
+        return CachedSearch(
+            [SearchResult(**item) for item in payload["results"]],
+            payload["retrieved_at"],
+            payload["warnings"],
+        )
 
-    def put_search(self, key: str, results: list[SearchResult]) -> None:
-        payload = json.dumps([_object_dict(item) for item in results], ensure_ascii=False)
+    def put_search(
+        self,
+        key: str,
+        results: list[SearchResult],
+        *,
+        retrieved_at: str | None = None,
+        warnings: list[str] | None = None,
+    ) -> None:
+        payload = json.dumps(
+            {
+                "results": [_object_dict(item) for item in results],
+                "retrieved_at": retrieved_at or datetime.now(UTC).isoformat(),
+                "warnings": warnings or [],
+            },
+            ensure_ascii=False,
+        )
         self._upsert_cache(
             "search_cache",
             "cache_key",

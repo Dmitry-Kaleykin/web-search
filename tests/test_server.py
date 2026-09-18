@@ -63,6 +63,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("results", search_tool.output_schema["properties"])
         self.assertIn("engine_health", search_tool.output_schema["properties"])
         self.assertIn("cache_hit", search_tool.output_schema["properties"])
+        self.assertIn("retrieved_at", search_tool.output_schema["properties"])
         self.assertNotIn("answer_markdown", search_tool.output_schema["properties"])
         self.assertNotIn("coverage", search_tool.output_schema["properties"])
         self.assertNotIn("effort", search_tool.input_schema["properties"])
@@ -379,6 +380,51 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cached.outcome, "success")
         self.assertEqual(blocked.outcome, "backend_unavailable")
         self.assertIn("searxng", blocked.engine_health)
+
+    async def test_cached_search_keeps_failure_provenance_after_engines_recover(self):
+        import time
+
+        ctx = SimpleNamespace(report_progress=AsyncMock())
+        payload = {
+            "results": [{"url": "https://example.com/a"}],
+            "failures": [["brave", "timeout"]],
+        }
+        with self.search_fixture(payload=payload) as (store, _, request):
+            first = await web_search("partial", ctx)
+            with store._connection:
+                store._connection.execute(
+                    "UPDATE engine_health SET expires_at = ?", (time.time() - 1,)
+                )
+            cached = await web_search("partial", ctx)
+            request.assert_awaited_once()
+            request.return_value = {"results": [{"url": "https://example.com/new"}], "failures": []}
+            fresh = await web_search("partial", ctx, refresh=True)
+        self.assertTrue(cached.cache_hit)
+        self.assertEqual(cached.engine_health, {})
+        self.assertEqual(cached.warnings, first.warnings)
+        self.assertTrue(any("brave: timeout" in warning for warning in cached.warnings))
+        self.assertIsNotNone(first.retrieved_at)
+        self.assertEqual(cached.retrieved_at, first.retrieved_at)
+        self.assertGreater(cached.responded_at, cached.retrieved_at)
+        self.assertGreater(fresh.retrieved_at, cached.retrieved_at)
+        self.assertEqual(fresh.warnings, [])
+
+    async def test_cached_search_remembers_engines_skipped_during_retrieval(self):
+        import time
+
+        ctx = SimpleNamespace(report_progress=AsyncMock())
+        with self.search_fixture(
+            payload={"results": [{"url": "https://example.com/a"}], "failures": []}
+        ) as (store, _, request):
+            store.record_engine_cooldown("brave", "timeout", time.time() + 60)
+            first = await web_search("reduced pool", ctx)
+            with store._connection:
+                store._connection.execute("DELETE FROM engine_health")
+            cached = await web_search("reduced pool", ctx)
+            request.assert_awaited_once()
+        self.assertIn("search_engines_skipped_at_retrieval:brave", first.warnings)
+        self.assertEqual(cached.warnings, first.warnings)
+        self.assertEqual(cached.engine_health, {})
 
     async def test_search_times_out_and_cancels_provider(self):
         cancelled = asyncio.Event()

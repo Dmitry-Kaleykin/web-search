@@ -93,9 +93,40 @@ async def _doctor() -> int:
         await search.close()
         store.close()
 
+    if not await _public_read_report(settings):
+        failed = True
     print("OK   reasoning: handled by the calling model; no model endpoint or sampling needed")
     failed = _storage_report(settings, failed)
     return 1 if failed else 0
+
+
+async def _public_read_report(settings: Settings) -> bool:
+    """Exercise the actual reader stack, including DNS policy, without using a cached page."""
+    from .server import _create_reader_runtime, _read_url_output
+
+    url = "https://docs.python.org/3/library/asyncio-task.html"
+    runtime = None
+    try:
+        async with asyncio.timeout(90):
+            runtime = _create_reader_runtime(settings)
+            document = await runtime.reader.read(url, max_age_seconds=0)
+            output = _read_url_output(document, settings)
+            status = output.page_status
+            for warning in document.warnings:
+                print(f"WARN public URL read: {warning}")
+            if status != "ok" or "TaskGroup" not in document.content:
+                raise RuntimeError(
+                    f"Reader returned {status} content without a verified documentation read; "
+                    "expected TaskGroup text from the public Python documentation"
+                )
+        print(f"OK   public URL read: {url} ({document.method}, fresh extraction)")
+        return True
+    except Exception as exc:
+        print(f"FAIL public URL read: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return False
+    finally:
+        if runtime is not None:
+            await runtime.close()
 
 
 def _storage_report(settings: Settings, failed: bool) -> bool:

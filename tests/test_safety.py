@@ -37,6 +37,15 @@ class UrlSafetyTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(result.addresses, ("198.18.0.49",))
 
+    async def test_disabled_proxy_compatibility_reports_specific_configuration(self) -> None:
+        with (
+            patch(
+                "web_research.safety.urls._resolve", new=AsyncMock(return_value=("198.18.0.49",))
+            ),
+            self.assertRaisesRegex(UnsafeUrlError, "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS=true"),
+        ):
+            await validate_public_url("https://example.com/article")
+
     async def test_literal_proxy_fake_ip_remains_blocked(self) -> None:
         with self.assertRaises(UnsafeUrlError):
             await validate_public_url(

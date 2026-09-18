@@ -51,7 +51,7 @@ class LayeredReader:
         actions: list[dict] | None = None,
     ) -> Document:
         variant = json.dumps([url, render, query, visual, page, actions], sort_keys=True)
-        cache_key = "read:v2:" + hashlib.sha256(variant.encode()).hexdigest()
+        cache_key = "read:v3:" + hashlib.sha256(variant.encode()).hexdigest()
         ttl = (
             getattr(self.primary, "cache_ttl_seconds", 21600)
             if max_age_seconds is None

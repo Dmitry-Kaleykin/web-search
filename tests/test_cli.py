@@ -44,6 +44,7 @@ class DoctorSearchTests(unittest.IsolatedAsyncioTestCase):
                 patch("web_research.cli.Settings.from_env", return_value=settings),
                 patch("httpx.AsyncClient.get", new_callable=AsyncMock) as get,
                 patch("httpx.AsyncClient.post", new_callable=AsyncMock) as post,
+                patch("web_research.cli._public_read_report", return_value=True) as read_report,
                 patch(
                     "web_research.search.searxng.SearXNGSearchProvider._request",
                     new_callable=AsyncMock,
@@ -56,6 +57,22 @@ class DoctorSearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request.call_args.args[0]["engines"], "google cse")
             get.assert_not_awaited()
             post.assert_not_awaited()
+            read_report.assert_awaited_once_with(settings)
+
+    async def test_doctor_fails_when_search_works_but_public_read_does_not(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(data_dir=Path(directory), enable_crawl4ai=False)
+            with (
+                patch("web_research.cli.Settings.from_env", return_value=settings),
+                patch("web_research.cli._public_read_report", return_value=False),
+                patch(
+                    "web_research.search.searxng.SearXNGSearchProvider._request",
+                    new_callable=AsyncMock,
+                ) as request,
+                redirect_stdout(io.StringIO()),
+            ):
+                request.return_value = {"results": [{"url": "https://example.com"}], "failures": []}
+                self.assertEqual(await _doctor(), 1)
 
 
 if __name__ == "__main__":

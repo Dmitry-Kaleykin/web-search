@@ -57,6 +57,13 @@ async def validate_public_url(
             address = ipaddress.ip_address(value)
             proxy_fake_ip = allow_proxy_fake_ips and hostname_resolved and is_proxy_fake_ip(address)
             if not address.is_global and not proxy_fake_ip:
+                if hostname_resolved and is_proxy_fake_ip(address):
+                    raise UnsafeUrlError(
+                        f"Synthetic proxy DNS address is blocked: {address}. "
+                        "If this machine uses a trusted TUN/fake-IP proxy, set "
+                        "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS=true; keep "
+                        "WEB_SEARCH_ALLOW_PRIVATE_URLS=false."
+                    )
                 raise UnsafeUrlError(f"Non-public destination is blocked: {address}")
 
     return ValidatedUrl(url=urlunsplit(parsed), host=host, addresses=addresses)

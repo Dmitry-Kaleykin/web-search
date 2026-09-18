@@ -78,11 +78,16 @@ class WebSearchOutput(BaseModel):
     query: str
     results: list[SearchHit]
     outcome: Literal["success", "empty", "backend_unavailable"]
-    warnings: list[str]
-    engine_health: dict[str, str]
+    warnings: list[str] = Field(description="Retrieval diagnostics, preserved on cache hits.")
+    engine_health: dict[str, str] = Field(
+        description="Current engine cooldowns, not historical health."
+    )
     cache_hit: bool
     elapsed_ms: int
     responded_at: str
+    retrieved_at: str | None = Field(
+        description="Original retrieval time, unchanged on cache hits; null when unavailable."
+    )
 
 
 class ReadUrlOutput(BaseModel):
@@ -353,6 +358,7 @@ async def web_search(
     warnings: list[str] = []
     engine_health: dict[str, str] = {}
     cache_hit = False
+    retrieved_at = None
     outcome = "empty"
     # Serialize dispatch so a waiting caller reloads cooldowns learned by the preceding request.
     # The deadline includes queue time; parallel callers never multiply upstream retries.
@@ -388,6 +394,7 @@ async def web_search(
                     warnings.extend(search.last_warnings)
                     engine_health = search.engine_health()
                     cache_hit = search.last_cache_hit
+                    retrieved_at = search.last_retrieved_at
                     await search.close()
     except TimeoutError:
         outcome = "backend_unavailable"
@@ -414,6 +421,7 @@ async def web_search(
         cache_hit=cache_hit,
         elapsed_ms=int((time.monotonic() - started) * 1_000),
         responded_at=datetime.now(UTC).isoformat(),
+        retrieved_at=retrieved_at,
     )
 
 

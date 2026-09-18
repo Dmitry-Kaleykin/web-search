@@ -346,7 +346,7 @@ async function runDoctor() {
     throw new Error("The application is not installed yet. Run Install / update first.");
   }
   const environment = await readEnvironment();
-  await run(DOCTOR, [], {
+  const result = await run(DOCTOR, [], {
     allowFailure: true,
     env: {
       ...process.env,
@@ -355,6 +355,9 @@ async function runDoctor() {
       PLAYWRIGHT_BROWSERS_PATH: BROWSER_DIR,
     },
   });
+  if (result.code !== 0) {
+    throw new Error("Readiness checks failed; see diagnostics above.");
+  }
 }
 
 async function runEvaluation() {

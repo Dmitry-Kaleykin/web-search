@@ -19,6 +19,7 @@ import json
 import random
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from ..dates import normalize_published_at
@@ -109,6 +110,7 @@ class SearXNGSearchProvider:
         self.max_retry_wait_seconds = max(0.0, max_retry_wait_seconds)
         self.healthy_engines = _parse_engine_list(healthy_engines)
         self.last_cache_hit = False
+        self.last_retrieved_at: str | None = None
         self.last_warnings: list[str] = []
         self.last_engine_health: dict[str, str] = {}
         self._cooldowns: dict[str, _EngineCooldown] = {}
@@ -187,14 +189,18 @@ class SearXNGSearchProvider:
         refresh: bool = False,
     ) -> list[SearchResult]:
         self.last_cache_hit = False
+        self.last_retrieved_at = None
         self.last_warnings = []
         self.last_engine_health = {}
         cache_key = _cache_key(query, page, language, time_range, categories, limit, engines)
         if self.store and not refresh:
-            cached = self.store.get_search(cache_key, self.cache_ttl_seconds)
+            cached = self.store.get_search_entry(cache_key, self.cache_ttl_seconds)
             if cached is not None:
                 self.last_cache_hit = True
-                return cached
+                self.last_retrieved_at = cached.retrieved_at
+                self.last_warnings.extend(cached.warnings)
+                self.last_engine_health = self.engine_health()
+                return cached.results
 
         params: dict[str, str | int] = {"q": query, "format": "json", "pageno": page}
         if language:
@@ -228,8 +234,14 @@ class SearXNGSearchProvider:
                     available = [name for name in requested if name.casefold() not in cooling]
                     if not available:
                         raise SearXNGChallengeError("All requested search engines are cooling down")
+                    skipped = [name for name in requested if name.casefold() in cooling]
+                    if skipped:
+                        warning = "search_engines_skipped_at_retrieval:" + ", ".join(skipped)
+                        if warning not in self.last_warnings:
+                            self.last_warnings.append(warning)
                     dispatch_params["engines"] = ",".join(available)
                 payload = await self._request(dispatch_params)
+                self.last_retrieved_at = datetime.now(UTC).isoformat()
             except SearXNGChallengeError:
                 raise
             except SearXNGRateLimitedError as exc:
@@ -323,7 +335,12 @@ class SearXNGSearchProvider:
         # Empty result sets are often transient when upstream engines are rate-limited or
         # challenged. Do not poison the cache with a temporary aggregate failure.
         if self.store and results:
-            self.store.put_search(cache_key, results)
+            self.store.put_search(
+                cache_key,
+                results,
+                retrieved_at=self.last_retrieved_at,
+                warnings=self.last_warnings,
+            )
         return results
 
     async def _request(self, params: dict[str, str | int]) -> dict[str, Any]:

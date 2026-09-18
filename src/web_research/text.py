@@ -36,7 +36,7 @@ def best_excerpt(content: str, target: str, *, limit: int = 700) -> str:
 
 
 class BasicHTMLExtractor(HTMLParser):
-    """Small dependency-free fallback; Trafilatura is the production extractor."""
+    """Small text fallback; Trafilatura is the production extractor."""
 
     BLOCKED: ClassVar[set[str]] = {"script", "style", "noscript", "svg"}
 
@@ -93,5 +93,26 @@ class BasicHTMLExtractor(HTMLParser):
 
 def extract_html_fallback(html_text: str, base_url: str) -> tuple[str, str, list[str]]:
     parser = BasicHTMLExtractor(base_url)
-    parser.feed(html_text)
+    parser.feed(absolute_html_links(html_text, base_url))
     return parser.title, parser.content, list(dict.fromkeys(parser.links))
+
+
+def absolute_html_links(html_text: str, page_url: str) -> str:
+    """Resolve links before extractors can replace the document base with its origin.
+
+    Uses the final response URL and honors HTML base href. This only transforms markup;
+    following any returned link still passes through the reader's URL safety checks.
+    """
+    from lxml import etree
+    from lxml import html as lxml_html
+
+    try:
+        tree = lxml_html.fromstring(html_text)
+        bases = tree.xpath("//base[@href]")
+        effective_base = urljoin(page_url, bases[0].get("href")) if bases else page_url
+        for base in bases:
+            base.drop_tree()
+        tree.make_links_absolute(effective_base, resolve_base_href=False, handle_failures="ignore")
+        return lxml_html.tostring(tree, encoding="unicode")
+    except (ValueError, etree.ParserError):
+        return html_text

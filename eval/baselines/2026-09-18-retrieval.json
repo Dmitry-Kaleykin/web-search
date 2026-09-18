@@ -1,0 +1,649 @@
+{
+  "recorded_at": "2026-09-18T06:16:17.873181+00:00",
+  "scope": "Live retrieval mechanics only; search relevance requires source review.",
+  "environment": {
+    "python": "3.14.6",
+    "trafilatura": "2.2.0",
+    "mcp": "2.0.0",
+    "engines": "google cse,duckduckgo web,mwmbl,searchmysite,mojeek,crowdview",
+    "allow_proxy_fake_ips": true,
+    "browser_enabled": true
+  },
+  "cases_sha256": "041bf0c4de453ffbe0e708b0071da564db9357bed4d55239f2514f63dd3bce1b",
+  "cases": [
+    {
+      "id": "documentation_en",
+      "review": "Are the top results about TaskGroup cancellation, in an appropriate language and version? Record relevance separately from retrieval success.",
+      "call": {
+        "tool": "web_search",
+        "arguments": {
+          "query": "Python asyncio TaskGroup cancellation documentation",
+          "language": "en",
+          "limit": 5,
+          "refresh": true
+        },
+        "elapsed_ms": 5014,
+        "is_error": false,
+        "output": {
+          "query": "Python asyncio TaskGroup cancellation documentation",
+          "results": [
+            {
+              "url": "https://docs.python.org/3/library/asyncio-task.html",
+              "title": "Coroutines and tasks — Python 3.14.7 documentation",
+              "snippet": "This section outlines high-level asyncio APIs to work with coroutines and Tasks. Coroutines, Awaitables, Creating tasks, Task cancellation, Task groups, Sleeping, Running tasks concurrently, Eager ...",
+              "engines": [
+                "google cse",
+                "duckduckgo web"
+              ],
+              "published_at": null,
+              "rank": 1
+            },
+            {
+              "url": "https://stackoverflow.com/questions/76286028/how-to-cancel-all-tasks-in-a-taskgroup",
+              "title": "python - How to cancel all tasks in a TaskGroup - Stack Overflow",
+              "snippet": "While asyncio.TaskGroup does not come with an exposed API to cancel all tasks, the source code shows that you can simply call the _abort method of a task group to cancel all of its undone tasks:",
+              "engines": [
+                "google cse",
+                "duckduckgo web"
+              ],
+              "published_at": null,
+              "rank": 2
+            },
+            {
+              "url": "https://medium.com/@kaushalsinh73/python-async-task-groups-cancellation-safe-pipelines-with-anyio-trio-245b1545128f",
+              "title": "Python Async Task Groups: Cancellation-Safe Pipelines with AnyIO ...",
+              "snippet": "Dec 18, 2025 ... Even Python's own asyncio docs warn that structured concurrency features like asyncio.TaskGroup use cancellation internally and can ...",
+              "engines": [
+                "google cse"
+              ],
+              "published_at": null,
+              "rank": 3
+            },
+            {
+              "url": "https://bruceeckel.substack.com/p/cancellation-in-concurrency",
+              "title": "Cancellation in Concurrency - by Bruce Eckel",
+              "snippet": "Aug 27, 2023 ... Python coroutines · asyncio automatically performs cancellation checks at points in your code where the task can safely shut itself down. In an ...",
+              "engines": [
+                "google cse"
+              ],
+              "published_at": null,
+              "rank": 4
+            },
+            {
+              "url": "https://discuss.python.org/t/asyncio-cancel-a-cancellation-utility-as-a-coroutine-this-time-with-feeling/26304",
+              "title": "Asyncio.cancel() a cancellation utility as a coroutine [This time with ...",
+              "snippet": "Apr 29, 2023 ... Which when its finished cancelling will result in a CancelledError being thrown. We can see in the docs this pattern under Task.cancel # https ...",
+              "engines": [
+                "google cse"
+              ],
+              "published_at": null,
+              "rank": 5
+            }
+          ],
+          "outcome": "success",
+          "warnings": [
+            "search_engines_skipped_at_retrieval:searchmysite"
+          ],
+          "engine_health": {
+            "searchmysite": "access denied (restored) (615s cooldown left)"
+          },
+          "cache_hit": false,
+          "elapsed_ms": 4981,
+          "responded_at": "2026-09-18T06:16:22.857646+00:00",
+          "retrieved_at": "2026-09-18T06:16:22.856704+00:00"
+        },
+        "error": null
+      },
+      "followups": [
+        {
+          "tool": "web_search",
+          "arguments": {
+            "query": "Python asyncio TaskGroup cancellation documentation",
+            "language": "en",
+            "limit": 5,
+            "refresh": false
+          },
+          "elapsed_ms": 10,
+          "is_error": false,
+          "output": {
+            "query": "Python asyncio TaskGroup cancellation documentation",
+            "results": [
+              {
+                "url": "https://docs.python.org/3/library/asyncio-task.html",
+                "title": "Coroutines and tasks — Python 3.14.7 documentation",
+                "snippet": "This section outlines high-level asyncio APIs to work with coroutines and Tasks. Coroutines, Awaitables, Creating tasks, Task cancellation, Task groups, Sleeping, Running tasks concurrently, Eager ...",
+                "engines": [
+                  "google cse",
+                  "duckduckgo web"
+                ],
+                "published_at": null,
+                "rank": 1
+              },
+              {
+                "url": "https://stackoverflow.com/questions/76286028/how-to-cancel-all-tasks-in-a-taskgroup",
+                "title": "python - How to cancel all tasks in a TaskGroup - Stack Overflow",
+                "snippet": "While asyncio.TaskGroup does not come with an exposed API to cancel all tasks, the source code shows that you can simply call the _abort method of a task group to cancel all of its undone tasks:",
+                "engines": [
+                  "google cse",
+                  "duckduckgo web"
+                ],
+                "published_at": null,
+                "rank": 2
+              },
+              {
+                "url": "https://medium.com/@kaushalsinh73/python-async-task-groups-cancellation-safe-pipelines-with-anyio-trio-245b1545128f",
+                "title": "Python Async Task Groups: Cancellation-Safe Pipelines with AnyIO ...",
+                "snippet": "Dec 18, 2025 ... Even Python's own asyncio docs warn that structured concurrency features like asyncio.TaskGroup use cancellation internally and can ...",
+                "engines": [
+                  "google cse"
+                ],
+                "published_at": null,
+                "rank": 3
+              },
+              {
+                "url": "https://bruceeckel.substack.com/p/cancellation-in-concurrency",
+                "title": "Cancellation in Concurrency - by Bruce Eckel",
+                "snippet": "Aug 27, 2023 ... Python coroutines · asyncio automatically performs cancellation checks at points in your code where the task can safely shut itself down. In an ...",
+                "engines": [
+                  "google cse"
+                ],
+                "published_at": null,
+                "rank": 4
+              },
+              {
+                "url": "https://discuss.python.org/t/asyncio-cancel-a-cancellation-utility-as-a-coroutine-this-time-with-feeling/26304",
+                "title": "Asyncio.cancel() a cancellation utility as a coroutine [This time with ...",
+                "snippet": "Apr 29, 2023 ... Which when its finished cancelling will result in a CancelledError being thrown. We can see in the docs this pattern under Task.cancel # https ...",
+                "engines": [
+                  "google cse"
+                ],
+                "published_at": null,
+                "rank": 5
+              }
+            ],
+            "outcome": "success",
+            "warnings": [
+              "search_engines_skipped_at_retrieval:searchmysite"
+            ],
+            "engine_health": {
+              "searchmysite": "access denied (restored) (615s cooldown left)"
+            },
+            "cache_hit": true,
+            "elapsed_ms": 9,
+            "responded_at": "2026-09-18T06:16:22.899819+00:00",
+            "retrieved_at": "2026-09-18T06:16:22.856704+00:00"
+          },
+          "error": null
+        }
+      ],
+      "checks": {
+        "tool_completed": true,
+        "results_available": true,
+        "retrieval_time_present": true,
+        "cache_provenance_preserved": true
+      }
+    },
+    {
+      "id": "documentation_ru",
+      "review": "Are the sources directly relevant? Note original documentation versus translations and secondary explanations.",
+      "call": {
+        "tool": "web_search",
+        "arguments": {
+          "query": "Python asyncio TaskGroup документация отмена задач",
+          "language": "ru",
+          "limit": 5,
+          "refresh": true
+        },
+        "elapsed_ms": 1140,
+        "is_error": false,
+        "output": {
+          "query": "Python asyncio TaskGroup документация отмена задач",
+          "results": [
+            {
+              "url": "https://docs-python.ru/standart-library/modul-asyncio-python/gruppy-zadach-taskgroup/",
+              "title": "Асинхронный менеджер TaskGroup () модуля asyncio в Python",
+              "snippet": "Класс asyncio.TaskGroup, create_task () и cancel () в Python Класс asyncio.TaskGroup из модуля asyncio представляет собой асинхронный менеджер контекста для создания логически связанных задач и ожидания их завершения.",
+              "engines": [
+                "google cse",
+                "duckduckgo web"
+              ],
+              "published_at": null,
+              "rank": 1
+            },
+            {
+              "url": "https://django.fun/docs/python/3.11/library/asyncio-task/",
+              "title": "Сопрограммы и задачи | Документация Python 3.11 | Все о фреймворке ...",
+              "snippet": "Сопрограммы и задачи В этом разделе описываются высокоуровневые API asyncio для работы с сопрограммами и задачами. Сопрограммы Ожидаемые Создание задач Отмена задания Рабочие группы Спящий Одновременное выполнение ...",
+              "engines": [
+                "google cse",
+                "duckduckgo web"
+              ],
+              "published_at": null,
+              "rank": 2
+            },
+            {
+              "url": "https://docs-python.ru/tutorial/kurs-biblioteke-asyncio/otmena-zadach-obrabotka-oshibok-otladka/",
+              "title": "Отмена задач, обработка ошибок и отладка (курс asyncio)",
+              "snippet": "Содержание: Как работает отмена задач в asyncio Базовый пример отмены задачи Очистка ресурсов: try/finally и контекстные менеджеры Отмена и asyncio.gather Комбинация отмены и тайм-аутов Ошибки, которые \"теряются\" в фоновых задачах ...",
+              "engines": [
+                "duckduckgo web"
+              ],
+              "published_at": null,
+              "rank": 3
+            },
+            {
+              "url": "https://habr.com/ru/companies/otus/articles/1062504/",
+              "title": "Как отменять задачи в asyncio без зависаний и незавершённой очистки",
+              "snippet": "Без await asyncio.sleep (0) задача может не успеть начаться, и отмена придёт до входа в try. Это же и есть, кстати, штатный способ отдать управление циклу событий на один проход.",
+              "engines": [
+                "duckduckgo web"
+              ],
+              "published_at": null,
+              "rank": 4
+            },
+            {
+              "url": "https://asyncio.ru/3.15/library/asyncio-task.html",
+              "title": "Корутины и задачи — asyncio, Python 3.15 | Документация на ...",
+              "snippet": "В этом разделе представлены высокоуровневые API asyncio для работы с корутинами и задачами. Корутины · Ожидаемые объекты · Создание задач · Отмена задачи.",
+              "engines": [
+                "google cse"
+              ],
+              "published_at": null,
+              "rank": 5
+            }
+          ],
+          "outcome": "success",
+          "warnings": [
+            "search_engines_skipped_at_retrieval:searchmysite"
+          ],
+          "engine_health": {
+            "searchmysite": "access denied (restored) (614s cooldown left)"
+          },
+          "cache_hit": false,
+          "elapsed_ms": 1138,
+          "responded_at": "2026-09-18T06:16:24.039162+00:00",
+          "retrieved_at": "2026-09-18T06:16:24.038329+00:00"
+        },
+        "error": null
+      },
+      "followups": [
+        {
+          "tool": "web_search",
+          "arguments": {
+            "query": "Python asyncio TaskGroup документация отмена задач",
+            "language": "ru",
+            "limit": 5,
+            "refresh": false
+          },
+          "elapsed_ms": 16,
+          "is_error": false,
+          "output": {
+            "query": "Python asyncio TaskGroup документация отмена задач",
+            "results": [
+              {
+                "url": "https://docs-python.ru/standart-library/modul-asyncio-python/gruppy-zadach-taskgroup/",
+                "title": "Асинхронный менеджер TaskGroup () модуля asyncio в Python",
+                "snippet": "Класс asyncio.TaskGroup, create_task () и cancel () в Python Класс asyncio.TaskGroup из модуля asyncio представляет собой асинхронный менеджер контекста для создания логически связанных задач и ожидания их завершения.",
+                "engines": [
+                  "google cse",
+                  "duckduckgo web"
+                ],
+                "published_at": null,
+                "rank": 1
+              },
+              {
+                "url": "https://django.fun/docs/python/3.11/library/asyncio-task/",
+                "title": "Сопрограммы и задачи | Документация Python 3.11 | Все о фреймворке ...",
+                "snippet": "Сопрограммы и задачи В этом разделе описываются высокоуровневые API asyncio для работы с сопрограммами и задачами. Сопрограммы Ожидаемые Создание задач Отмена задания Рабочие группы Спящий Одновременное выполнение ...",
+                "engines": [
+                  "google cse",
+                  "duckduckgo web"
+                ],
+                "published_at": null,
+                "rank": 2
+              },
+              {
+                "url": "https://docs-python.ru/tutorial/kurs-biblioteke-asyncio/otmena-zadach-obrabotka-oshibok-otladka/",
+                "title": "Отмена задач, обработка ошибок и отладка (курс asyncio)",
+                "snippet": "Содержание: Как работает отмена задач в asyncio Базовый пример отмены задачи Очистка ресурсов: try/finally и контекстные менеджеры Отмена и asyncio.gather Комбинация отмены и тайм-аутов Ошибки, которые \"теряются\" в фоновых задачах ...",
+                "engines": [
+                  "duckduckgo web"
+                ],
+                "published_at": null,
+                "rank": 3
+              },
+              {
+                "url": "https://habr.com/ru/companies/otus/articles/1062504/",
+                "title": "Как отменять задачи в asyncio без зависаний и незавершённой очистки",
+                "snippet": "Без await asyncio.sleep (0) задача может не успеть начаться, и отмена придёт до входа в try. Это же и есть, кстати, штатный способ отдать управление циклу событий на один проход.",
+                "engines": [
+                  "duckduckgo web"
+                ],
+                "published_at": null,
+                "rank": 4
+              },
+              {
+                "url": "https://asyncio.ru/3.15/library/asyncio-task.html",
+                "title": "Корутины и задачи — asyncio, Python 3.15 | Документация на ...",
+                "snippet": "В этом разделе представлены высокоуровневые API asyncio для работы с корутинами и задачами. Корутины · Ожидаемые объекты · Создание задач · Отмена задачи.",
+                "engines": [
+                  "google cse"
+                ],
+                "published_at": null,
+                "rank": 5
+              }
+            ],
+            "outcome": "success",
+            "warnings": [
+              "search_engines_skipped_at_retrieval:searchmysite"
+            ],
+            "engine_health": {
+              "searchmysite": "access denied (restored) (614s cooldown left)"
+            },
+            "cache_hit": true,
+            "elapsed_ms": 14,
+            "responded_at": "2026-09-18T06:16:24.055830+00:00",
+            "retrieved_at": "2026-09-18T06:16:24.038329+00:00"
+          },
+          "error": null
+        }
+      ],
+      "checks": {
+        "tool_completed": true,
+        "results_available": true,
+        "retrieval_time_present": true,
+        "cache_provenance_preserved": true
+      }
+    },
+    {
+      "id": "documentation_html",
+      "review": "Check that cancellation caveats remain understandable and relative links retain the documentation directory.",
+      "call": {
+        "tool": "read_url",
+        "arguments": {
+          "url": "https://docs.python.org/3/library/asyncio-task.html",
+          "query": "TaskGroup cancellation",
+          "max_chars": 4000,
+          "include_links": true,
+          "refresh": true
+        },
+        "elapsed_ms": 2634,
+        "is_error": false,
+        "output": {
+          "url": "https://docs.python.org/3/library/asyncio-task.html",
+          "final_url": "https://docs.python.org/3/library/asyncio-task.html",
+          "title": "Coroutines and tasks — Python 3.14.7 documentation",
+          "content": "## [Task cancellation](https://docs.python.org/3/library/asyncio-task.html#id5)[¶](https://docs.python.org/3/library/asyncio-task.html#task-cancellation)\n\nTasks can easily and safely be cancelled.\nWhen a task is cancelled, [`asyncio.CancelledError`](https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError) will be raised\nin the task at the next opportunity.\n\nIt is recommended that coroutines use `try/finally` blocks to robustly\nperform clean-up logic. In case [`asyncio.CancelledError`](https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError)\nis explicitly caught, it should generally be propagated when\nclean-up is complete. `asyncio.CancelledError` directly subclasses\n[`BaseException`](https://docs.python.org/3/builtins/exceptions.html#BaseException) so most code will not need to be aware of it.\n\nThe asyncio components that enable structured concurrency, like\n[`asyncio.TaskGroup`](https://docs.python.org/3/library/asyncio-task.html#asyncio.TaskGroup) and [`asyncio.timeout()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.timeout),\nare implemented using cancellation internally and might misbehave if\na coroutine swallows [`asyncio.CancelledError`](https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError). Similarly, user code\nshould not generally call [`uncancel`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task.uncancel).\nHowever, in cases when suppressing `asyncio.CancelledError` is\ntruly desired, it is necessary to also call `uncancel()` to completely\nremove the cancellation state.\n\n## [Task groups](https://docs.python.org/3/library/asyncio-task.html#id6)[¶](https://docs.python.org/3/library/asyncio-task.html#task-groups)\n\nTask groups combine a task creation API with a convenient and reliable way to wait for all tasks in the group to finish.\n\n- \n*class* asyncio.TaskGroup[¶](https://docs.python.org/3/library/asyncio-task.html#asyncio.TaskGroup)\n- An [asynchronous context manager](https://docs.python.org/3/reference/datamodel.html#async-context-managers) holding a group of tasks.\nTasks can be added to the group using[`create_task()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task) .\nAll tasks are awaited when the context manager exits.Added in version 3.11. \n  - \ncreate_task(*coro* ,*** ,*name=None* ,*context=None* ,*eager_start=None* ,***kwargs* )[¶](https://docs.python.org/3/library/asyncio-task.html#asyncio.TaskGroup.create_task)\n  - Create a task in this task group. The signature matches that of [`asyncio.create_task()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task) .\nIf the task group is inactive (e.g. not yet entered,\nalready finished, or in the process of shutting down),\nwe will close the given`coro` and raise[`RuntimeError`](https://docs.python.org/3/builtins/exceptions.html#RuntimeError) .Changed in version 3.13: Close the given coroutine if the task group is not active. Changed in version 3.14: Passes on all *kwargs* to[`loop.create_task()`](https://docs.python.org/3/library/asyncio-eventloop.html#asyncio.loop.create_task)\n- \ncreate_task(\n\nExample:\n\n```\nasync def main():\n    async with asyncio.TaskGroup() as tg:\n        task1 = tg.create_task(some_coro(...))\n        task2 = tg.create_task(another_coro(...))\n    print(f\"Both tasks have completed now: {task1.result()}, {task2.result()}\")\n```\nThe `async with` statement will wait for all tasks in the group to finish.\nWhile waiting, new tasks may still be added to the group\n(for example, by passing `tg` into one of the coroutines\nand calling `tg.create_task()` in that coroutine).\nOnce the last task has finished and the `async with` block is exited,\nno new tasks may be added to the group.\n\nThe first time any of the tasks belonging to the group fails\nwith an exception other than [`asyncio.CancelledError`](https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError),\nthe remaining tasks in the group are ",
+          "content_type": "text/html",
+          "status_code": 200,
+          "page_status": "ok",
+          "extraction_method": "http+trafilatura",
+          "retrieved_at": "2026-09-18T06:16:26.678386+00:00",
+          "published_at": null,
+          "published_at_source": null,
+          "links": [
+            "https://www.python.org/",
+            "https://docs.python.org/3/contents.html",
+            "https://docs.python.org/3/library/asyncio-task.html#",
+            "https://docs.python.org/3/library/asyncio-task.html#coroutines",
+            "https://docs.python.org/3/library/asyncio-task.html#awaitables",
+            "https://docs.python.org/3/library/asyncio-task.html#creating-tasks",
+            "https://docs.python.org/3/library/asyncio-task.html#task-cancellation",
+            "https://docs.python.org/3/library/asyncio-task.html#task-groups",
+            "https://docs.python.org/3/library/asyncio-task.html#terminating-a-task-group",
+            "https://docs.python.org/3/library/asyncio-task.html#sleeping",
+            "https://docs.python.org/3/library/asyncio-task.html#running-tasks-concurrently",
+            "https://docs.python.org/3/library/asyncio-task.html#eager-task-factory",
+            "https://docs.python.org/3/library/asyncio-task.html#shielding-from-cancellation",
+            "https://docs.python.org/3/library/asyncio-task.html#timeouts",
+            "https://docs.python.org/3/library/asyncio-task.html#waiting-primitives",
+            "https://docs.python.org/3/library/asyncio-task.html#running-in-threads",
+            "https://docs.python.org/3/library/asyncio-task.html#scheduling-from-other-threads",
+            "https://docs.python.org/3/library/asyncio-task.html#introspection",
+            "https://docs.python.org/3/library/asyncio-task.html#task-object",
+            "https://docs.python.org/3/library/asyncio-runner.html",
+            "https://docs.python.org/3/library/asyncio-stream.html",
+            "https://docs.python.org/3/bugs.html",
+            "https://docs.python.org/3/improve-page-nojs.html",
+            "https://github.com/python/cpython/blob/3.14/Doc/library/asyncio-task.rst?plain=1",
+            "https://docs.python.org/3/genindex.html",
+            "https://docs.python.org/3/py-modindex.html",
+            "https://docs.python.org/3/index.html",
+            "https://docs.python.org/3/library/index.html",
+            "https://docs.python.org/3/library/ipc.html",
+            "https://docs.python.org/3/library/asyncio.html",
+            "https://docs.python.org/3/library/asyncio-task.html",
+            "https://docs.python.org/3/library/asyncio-task.html#coroutines-and-tasks",
+            "https://docs.python.org/3/library/asyncio-task.html#id2",
+            "https://github.com/python/cpython/tree/3.14/Lib/asyncio/coroutines.py",
+            "https://docs.python.org/3/glossary.html#term-coroutine",
+            "https://docs.python.org/3/library/asyncio-runner.html#asyncio.run",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.Task",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.TaskGroup",
+            "https://docs.python.org/3/library/asyncio-task.html#id3",
+            "https://docs.python.org/3/reference/expressions.html#await",
+            "https://docs.python.org/3/reference/compound_stmts.html#async-def",
+            "https://docs.python.org/3/library/asyncio-future.html#asyncio.Future",
+            "https://docs.python.org/3/library/asyncio-eventloop.html#asyncio.loop.run_in_executor",
+            "https://docs.python.org/3/library/asyncio-task.html#id4",
+            "https://github.com/python/cpython/tree/3.14/Lib/asyncio/tasks.py",
+            "https://docs.python.org/3/library/asyncio-task.html#coroutine",
+            "https://docs.python.org/3/library/contextvars.html#contextvars.Context",
+            "https://docs.python.org/3/library/asyncio-eventloop.html#asyncio.loop.set_task_factory",
+            "https://docs.python.org/3/library/asyncio-eventloop.html#asyncio.get_running_loop",
+            "https://docs.python.org/3/builtins/exceptions.html#RuntimeError",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.TaskGroup.create_task",
+            "https://docs.python.org/3/library/asyncio-task.html#id5",
+            "https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError",
+            "https://docs.python.org/3/builtins/exceptions.html#BaseException",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.timeout",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.Task.uncancel",
+            "https://docs.python.org/3/library/asyncio-task.html#id6",
+            "https://docs.python.org/3/reference/datamodel.html#async-context-managers",
+            "https://docs.python.org/3/library/asyncio-eventloop.html#asyncio.loop.create_task",
+            "https://docs.python.org/3/reference/datamodel.html#object.__aexit__",
+            "https://docs.python.org/3/builtins/exceptions.html#ExceptionGroup",
+            "https://docs.python.org/3/builtins/exceptions.html#BaseExceptionGroup",
+            "https://docs.python.org/3/builtins/exceptions.html#KeyboardInterrupt",
+            "https://docs.python.org/3/builtins/exceptions.html#SystemExit",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.Task.cancel",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.Task.cancelling",
+            "https://docs.python.org/3/library/asyncio-task.html#id7",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.sleep",
+            "https://docs.python.org/3/builtins/exceptions.html#ValueError",
+            "https://docs.python.org/3/library/math.html#math.nan",
+            "https://docs.python.org/3/library/asyncio-task.html#id8",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.gather",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio-awaitables",
+            "https://docs.python.org/3/library/asyncio-task.html#id9",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.eager_task_factory",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.create_eager_task_factory",
+            "https://docs.python.org/3/library/asyncio-task.html#id10",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.shield",
+            "https://docs.python.org/3/library/asyncio-task.html#id11",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.Timeout.reschedule",
+            "https://docs.python.org/3/builtins/exceptions.html#TimeoutError",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.Timeout",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.timeout_at",
+            "https://docs.python.org/3/builtins/functions.html#float",
+            "https://docs.python.org/3/builtins/constants.html#None",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.Timeout.when",
+            "https://docs.python.org/3/builtins/functions.html#bool",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.Timeout.expired",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.wait_for",
+            "https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.TimeoutError",
+            "https://docs.python.org/3/library/asyncio-task.html#id12",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.wait",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.FIRST_COMPLETED",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.FIRST_EXCEPTION",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.ALL_COMPLETED",
+            "https://docs.python.org/3/library/asyncio-task.html#asyncio.as_completed",
+            "https://docs.python.org/3/glossary.html#term-asynchronous-iterator",
+            "https://docs.python.org/3/glossary.html#term-iterator",
+            "https://docs.python.org/3/library/asyncio-task.html#id13"
+          ],
+          "warnings": [
+            "tool_output_truncated:content",
+            "tool_output_relevance_window",
+            "tool_output_truncated:links"
+          ],
+          "content_characters": 60071,
+          "content_truncated": true,
+          "content_start": 9555,
+          "content_end": 13555,
+          "has_more_content": true,
+          "next_cursor": "66d7ec2f354a4c7e99460aab8ceb1e89:13555",
+          "link_count": 142,
+          "links_included": true,
+          "links_truncated": true,
+          "snapshot_id": "66d7ec2f354a4c7e99460aab8ceb1e89",
+          "visual_pages": [],
+          "available_actions": []
+        },
+        "error": null
+      },
+      "followups": [
+        {
+          "tool": "read_url",
+          "arguments": {
+            "url": "https://docs.python.org/3/library/asyncio-task.html",
+            "cursor": "66d7ec2f354a4c7e99460aab8ceb1e89:13555",
+            "max_chars": 4000
+          },
+          "elapsed_ms": 0,
+          "is_error": false,
+          "output": {
+            "url": "https://docs.python.org/3/library/asyncio-task.html",
+            "final_url": "https://docs.python.org/3/library/asyncio-task.html",
+            "title": "Coroutines and tasks — Python 3.14.7 documentation",
+            "content": "cancelled.\nNo further tasks can then be added to the group.\nAt this point, if the body of the `async with` statement is still active\n(i.e., [`__aexit__()`](https://docs.python.org/3/reference/datamodel.html#object.__aexit__) hasn’t been called yet),\nthe task directly containing the `async with` statement is also cancelled.\nThe resulting `asyncio.CancelledError` will interrupt an `await`,\nbut it will not bubble out of the containing `async with` statement.\n\nOnce all tasks have finished, if any tasks have failed\nwith an exception other than [`asyncio.CancelledError`](https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError),\nthose exceptions are combined in an\n[`ExceptionGroup`](https://docs.python.org/3/builtins/exceptions.html#ExceptionGroup) or [`BaseExceptionGroup`](https://docs.python.org/3/builtins/exceptions.html#BaseExceptionGroup)\n(as appropriate; see their documentation)\nwhich is then raised.\n\nTwo base exceptions are treated specially:\nIf any task fails with [`KeyboardInterrupt`](https://docs.python.org/3/builtins/exceptions.html#KeyboardInterrupt) or [`SystemExit`](https://docs.python.org/3/builtins/exceptions.html#SystemExit),\nthe task group still cancels the remaining tasks and waits for them,\nbut then the initial `KeyboardInterrupt` or `SystemExit`\nis re-raised instead of [`ExceptionGroup`](https://docs.python.org/3/builtins/exceptions.html#ExceptionGroup) or [`BaseExceptionGroup`](https://docs.python.org/3/builtins/exceptions.html#BaseExceptionGroup).\n\nIf the body of the `async with` statement exits with an exception\n(so [`__aexit__()`](https://docs.python.org/3/reference/datamodel.html#object.__aexit__) is called with an exception set),\nthis is treated the same as if one of the tasks failed:\nthe remaining tasks are cancelled and then waited for,\nand non-cancellation exceptions are grouped into an\nexception group and raised.\nThe exception passed into `__aexit__()`,\nunless it is [`asyncio.CancelledError`](https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError),\nis also included in the exception group.\nThe same special case is made for\n[`KeyboardInterrupt`](https://docs.python.org/3/builtins/exceptions.html#KeyboardInterrupt) and [`SystemExit`](https://docs.python.org/3/builtins/exceptions.html#SystemExit) as in the previous paragraph.\n\nTask groups are careful not to mix up the internal cancellation used to\n“wake up” their [`__aexit__()`](https://docs.python.org/3/reference/datamodel.html#object.__aexit__) with cancellation requests\nfor the task in which they are running made by other parties.\nIn particular, when one task group is syntactically nested in another,\nand both experience an exception in one of their child tasks simultaneously,\nthe inner task group will process its exceptions, and then the outer task group\nwill receive another cancellation and process its own exceptions.\n\nIn the case where a task group is cancelled externally and also must\nraise an [`ExceptionGroup`](https://docs.python.org/3/builtins/exceptions.html#ExceptionGroup), it will call the parent task’s\n[`cancel()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task.cancel) method. This ensures that a\n[`asyncio.CancelledError`](https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError) will be raised at the next\n[`await`](https://docs.python.org/3/reference/expressions.html#await), so the cancellation is not lost.\n\nTask groups preserve the cancellation count\nreported by [`asyncio.Task.cancelling()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task.cancelling).\n\nChanged in version 3.13: Improved handling of simultaneous internal and external cancellations and correct preservation of cancellation counts.\n\n### Terminating a task group[¶](https://docs.python.org/3/library/asyncio-task.html#terminating-a-task-group)\n\nWhile terminating a task group is not natively supported by the standard library, termination can be achieved by adding an exception-",
+            "content_type": "text/html",
+            "status_code": 200,
+            "page_status": "ok",
+            "extraction_method": "http+trafilatura",
+            "retrieved_at": "2026-09-18T06:16:26.678386+00:00",
+            "published_at": null,
+            "published_at_source": null,
+            "links": [],
+            "warnings": [
+              "tool_output_truncated:content"
+            ],
+            "content_characters": 60071,
+            "content_truncated": true,
+            "content_start": 13555,
+            "content_end": 17555,
+            "has_more_content": true,
+            "next_cursor": "66d7ec2f354a4c7e99460aab8ceb1e89:17555",
+            "link_count": 142,
+            "links_included": false,
+            "links_truncated": true,
+            "snapshot_id": "66d7ec2f354a4c7e99460aab8ceb1e89",
+            "visual_pages": [],
+            "available_actions": []
+          },
+          "error": null
+        }
+      ],
+      "checks": {
+        "tool_completed": true,
+        "page_ok": true,
+        "expected_text_present": true,
+        "relative_link_preserved": true,
+        "continuation_preserved": true
+      }
+    },
+    {
+      "id": "package_json",
+      "review": "Check that the package metadata is readable and truncation and continuation are explicit. This is not a latest-version accuracy test.",
+      "call": {
+        "tool": "read_url",
+        "arguments": {
+          "url": "https://pypi.org/pypi/httpx/json",
+          "max_chars": 4000,
+          "refresh": true
+        },
+        "elapsed_ms": 2403,
+        "is_error": false,
+        "output": {
+          "url": "https://pypi.org/pypi/httpx/json",
+          "final_url": "https://pypi.org/pypi/httpx/json",
+          "title": "json",
+          "content": "{\n  \"info\": {\n    \"author\": null,\n    \"author_email\": \"Tom Christie <tom@tomchristie.com>\",\n    \"bugtrack_url\": null,\n    \"classifiers\": [\n      \"Development Status :: 4 - Beta\",\n      \"Environment :: Web Environment\",\n      \"Framework :: AsyncIO\",\n      \"Framework :: Trio\",\n      \"Intended Audience :: Developers\",\n      \"License :: OSI Approved :: BSD License\",\n      \"Operating System :: OS Independent\",\n      \"Programming Language :: Python :: 3\",\n      \"Programming Language :: Python :: 3 :: Only\",\n      \"Programming Language :: Python :: 3.10\",\n      \"Programming Language :: Python :: 3.11\",\n      \"Programming Language :: Python :: 3.12\",\n      \"Programming Language :: Python :: 3.8\",\n      \"Programming Language :: Python :: 3.9\",\n      \"Topic :: Internet :: WWW/HTTP\"\n    ],\n    \"description\": \"<p align=\\\"center\\\">\\n  <a href=\\\"https://www.python-httpx.org/\\\"><img width=\\\"350\\\" height=\\\"208\\\" src=\\\"https://raw.githubusercontent.com/encode/httpx/master/docs/img/butterfly.png\\\" alt='HTTPX'></a>\\n</p>\\n\\n<p align=\\\"center\\\"><strong>HTTPX</strong> <em>- A next-generation HTTP client for Python.</em></p>\\n\\n<p align=\\\"center\\\">\\n<a href=\\\"https://github.com/encode/httpx/actions\\\">\\n    <img src=\\\"https://github.com/encode/httpx/workflows/Test%20Suite/badge.svg\\\" alt=\\\"Test Suite\\\">\\n</a>\\n<a href=\\\"https://pypi.org/project/httpx/\\\">\\n    <img src=\\\"https://badge.fury.io/py/httpx.svg\\\" alt=\\\"Package version\\\">\\n</a>\\n</p>\\n\\nHTTPX is a fully featured HTTP client library for Python 3. It includes **an integrated command line client**, has support for both **HTTP/1.1 and HTTP/2**, and provides both **sync and async APIs**.\\n\\n---\\n\\nInstall HTTPX using pip:\\n\\n```shell\\n$ pip install httpx\\n```\\n\\nNow, let's get started:\\n\\n```pycon\\n>>> import httpx\\n>>> r = httpx.get('https://www.example.org/')\\n>>> r\\n<Response [200 OK]>\\n>>> r.status_code\\n200\\n>>> r.headers['content-type']\\n'text/html; charset=UTF-8'\\n>>> r.text\\n'<!doctype html>\\\\n<html>\\\\n<head>\\\\n<title>Example Domain</title>...'\\n```\\n\\nOr, using the command-line client.\\n\\n```shell\\n$ pip install 'httpx[cli]'  # The command line client is an optional dependency.\\n```\\n\\nWhich now allows us to use HTTPX directly from the command-line...\\n\\n<p align=\\\"center\\\">\\n  <img width=\\\"700\\\" src=\\\"https://raw.githubusercontent.com/encode/httpx/master/docs/img/httpx-help.png\\\" alt='httpx --help'>\\n</p>\\n\\nSending a request...\\n\\n<p align=\\\"center\\\">\\n  <img width=\\\"700\\\" src=\\\"https://raw.githubusercontent.com/encode/httpx/master/docs/img/httpx-request.png\\\" alt='httpx http://httpbin.org/json'>\\n</p>\\n\\n## Features\\n\\nHTTPX builds on the well-established usability of `requests`, and gives you:\\n\\n* A broadly [requests-compatible API](https://www.python-httpx.org/compatibility/).\\n* An integrated command-line client.\\n* HTTP/1.1 [and HTTP/2 support](https://www.python-httpx.org/http2/).\\n* Standard synchronous interface, but with [async support if you need it](https://www.python-httpx.org/async/).\\n* Ability to make requests directly to [WSGI applications](https://www.python-httpx.org/advanced/transports/#wsgi-transport) or [ASGI applications](https://www.python-httpx.org/advanced/transports/#asgi-transport).\\n* Strict timeouts everywhere.\\n* Fully type annotated.\\n* 100% test coverage.\\n\\nPlus all the standard features of `requests`...\\n\\n* International Domains and URLs\\n* Keep-Alive & Connection Pooling\\n* Sessions with Cookie Persistence\\n* Browser-style SSL Verification\\n* Basic/Digest Authentication\\n* Elegant Key/Value Cookies\\n* Automatic Decompression\\n* Automatic Content Decoding\\n* Unicode Response Bodies\\n* Multipart File Uploads\\n* HTTP(S) Proxy Support\\n* Connection Timeouts\\n* Streaming Downloads\\n* .netrc Support\\n* Chunked Requests\\n\\n## Installation\\n\\nInstall with pip:\\n\\n```shell\\n$ pip install httpx\\n```\\n\\nOr, to include the optional HTTP/2 support, use:\\n\\n```shell\\n$ pip install httpx[http2]\\n```\\n\\nHTTPX requires Python 3.8+.\\n\\n## Documentation\\n\\nProject do",
+          "content_type": "application/json",
+          "status_code": 200,
+          "page_status": "ok",
+          "extraction_method": "http+json",
+          "retrieved_at": "2026-09-18T06:16:29.078025+00:00",
+          "published_at": null,
+          "published_at_source": null,
+          "links": [],
+          "warnings": [
+            "tool_output_truncated:content"
+          ],
+          "content_characters": 154927,
+          "content_truncated": true,
+          "content_start": 0,
+          "content_end": 4000,
+          "has_more_content": true,
+          "next_cursor": "2c2fdf0292cb41a0b04ac3dca57877ac:4000",
+          "link_count": 0,
+          "links_included": false,
+          "links_truncated": false,
+          "snapshot_id": "2c2fdf0292cb41a0b04ac3dca57877ac",
+          "visual_pages": [],
+          "available_actions": []
+        },
+        "error": null
+      },
+      "followups": [
+        {
+          "tool": "read_url",
+          "arguments": {
+            "url": "https://pypi.org/pypi/httpx/json",
+            "cursor": "2c2fdf0292cb41a0b04ac3dca57877ac:4000",
+            "max_chars": 4000
+          },
+          "elapsed_ms": 1,
+          "is_error": false,
+          "output": {
+            "url": "https://pypi.org/pypi/httpx/json",
+            "final_url": "https://pypi.org/pypi/httpx/json",
+            "title": "json",
+            "content": "cumentation is available at [https://www.python-httpx.org/](https://www.python-httpx.org/).\\n\\nFor a run-through of all the basics, head over to the [QuickStart](https://www.python-httpx.org/quickstart/).\\n\\nFor more advanced topics, see the [Advanced Usage](https://www.python-httpx.org/advanced/) section, the [async support](https://www.python-httpx.org/async/) section, or the [HTTP/2](https://www.python-httpx.org/http2/) section.\\n\\nThe [Developer Interface](https://www.python-httpx.org/api/) provides a comprehensive API reference.\\n\\nTo find out about tools that integrate with HTTPX, see [Third Party Packages](https://www.python-httpx.org/third_party_packages/).\\n\\n## Contribute\\n\\nIf you want to contribute with HTTPX check out the [Contributing Guide](https://www.python-httpx.org/contributing/) to learn how to start.\\n\\n## Dependencies\\n\\nThe HTTPX project relies on these excellent libraries:\\n\\n* `httpcore` - The underlying transport implementation for `httpx`.\\n  * `h11` - HTTP/1.1 support.\\n* `certifi` - SSL certificates.\\n* `idna` - Internationalized domain name support.\\n* `sniffio` - Async library autodetection.\\n\\nAs well as these optional installs:\\n\\n* `h2` - HTTP/2 support. *(Optional, with `httpx[http2]`)*\\n* `socksio` - SOCKS proxy support. *(Optional, with `httpx[socks]`)*\\n* `rich` - Rich terminal support. *(Optional, with `httpx[cli]`)*\\n* `click` - Command line client support. *(Optional, with `httpx[cli]`)*\\n* `brotli` or `brotlicffi` - Decoding for \\\"brotli\\\" compressed responses. *(Optional, with `httpx[brotli]`)*\\n* `zstandard` - Decoding for \\\"zstd\\\" compressed responses. *(Optional, with `httpx[zstd]`)*\\n\\nA huge amount of credit is due to `requests` for the API layout that\\nmuch of this work follows, as well as to `urllib3` for plenty of design\\ninspiration around the lower-level networking details.\\n\\n---\\n\\n<p align=\\\"center\\\"><i>HTTPX is <a href=\\\"https://github.com/encode/httpx/blob/master/LICENSE.md\\\">BSD licensed</a> code.<br/>Designed & crafted with care.</i><br/>&mdash; 🦋 &mdash;</p>\\n\\n## Release Information\\n\\n### Fixed\\n\\n* Reintroduced supposedly-private `URLTypes` shortcut. (#2673)\\n\\n\\n---\\n\\n[Full changelog](https://github.com/encode/httpx/blob/master/CHANGELOG.md)\\n\",\n    \"description_content_type\": \"text/markdown\",\n    \"docs_url\": null,\n    \"download_url\": null,\n    \"downloads\": {\n      \"last_day\": -1,\n      \"last_month\": -1,\n      \"last_week\": -1\n    },\n    \"dynamic\": null,\n    \"home_page\": null,\n    \"keywords\": null,\n    \"license\": \"BSD-3-Clause\",\n    \"license_expression\": null,\n    \"license_files\": null,\n    \"maintainer\": null,\n    \"maintainer_email\": null,\n    \"name\": \"httpx\",\n    \"package_url\": \"https://pypi.org/project/httpx/\",\n    \"platform\": null,\n    \"project_url\": \"https://pypi.org/project/httpx/\",\n    \"project_urls\": {\n      \"Changelog\": \"https://github.com/encode/httpx/blob/master/CHANGELOG.md\",\n      \"Documentation\": \"https://www.python-httpx.org\",\n      \"Homepage\": \"https://github.com/encode/httpx\",\n      \"Source\": \"https://github.com/encode/httpx\"\n    },\n    \"provides_extra\": [\n      \"brotli\",\n      \"cli\",\n      \"http2\",\n      \"socks\",\n      \"zstd\"\n    ],\n    \"release_url\": \"https://pypi.org/project/httpx/0.28.1/\",\n    \"requires_dist\": [\n      \"anyio\",\n      \"certifi\",\n      \"httpcore==1.*\",\n      \"idna\",\n      \"brotli; platform_python_implementation == \\\"CPython\\\" and extra == \\\"brotli\\\"\",\n      \"brotlicffi; platform_python_implementation != \\\"CPython\\\" and extra == \\\"brotli\\\"\",\n      \"click==8.*; extra == \\\"cli\\\"\",\n      \"pygments==2.*; extra == \\\"cli\\\"\",\n      \"rich<14,>=10; extra == \\\"cli\\\"\",\n      \"h2<5,>=3; extra == \\\"http2\\\"\",\n      \"socksio==1.*; extra == \\\"socks\\\"\",\n      \"zstandard>=0.18.0; extra == \\\"zstd\\\"\"\n    ],\n    \"requires_python\": \">=3.8\",\n    \"summary\": \"The next generation HTTP client.\",\n    \"version\": \"0.28.1\",\n    \"yanked\": false,\n    \"yanked_reason\": null\n  },\n  \"last_serial\": 40585097,\n  \"ownership\": {\n    \"organization\": null,\n    \"roles\": [\n  ",
+            "content_type": "application/json",
+            "status_code": 200,
+            "page_status": "ok",
+            "extraction_method": "http+json",
+            "retrieved_at": "2026-09-18T06:16:29.078025+00:00",
+            "published_at": null,
+            "published_at_source": null,
+            "links": [],
+            "warnings": [
+              "tool_output_truncated:content"
+            ],
+            "content_characters": 154927,
+            "content_truncated": true,
+            "content_start": 4000,
+            "content_end": 8000,
+            "has_more_content": true,
+            "next_cursor": "2c2fdf0292cb41a0b04ac3dca57877ac:8000",
+            "link_count": 0,
+            "links_included": false,
+            "links_truncated": false,
+            "snapshot_id": "2c2fdf0292cb41a0b04ac3dca57877ac",
+            "visual_pages": [],
+            "available_actions": []
+          },
+          "error": null
+        }
+      ],
+      "checks": {
+        "tool_completed": true,
+        "page_ok": true,
+        "expected_text_present": true,
+        "continuation_preserved": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+[
+  {
+    "id": "documentation_en",
+    "tool": "web_search",
+    "arguments": {"query": "Python asyncio TaskGroup cancellation documentation", "language": "en", "limit": 5, "refresh": true},
+    "review": "Are the top results about TaskGroup cancellation, in an appropriate language and version? Record relevance separately from retrieval success."
+  },
+  {
+    "id": "documentation_ru",
+    "tool": "web_search",
+    "arguments": {"query": "Python asyncio TaskGroup документация отмена задач", "language": "ru", "limit": 5, "refresh": true},
+    "review": "Are the sources directly relevant? Note original documentation versus translations and secondary explanations."
+  },
+  {
+    "id": "documentation_html",
+    "tool": "read_url",
+    "arguments": {"url": "https://docs.python.org/3/library/asyncio-task.html", "query": "TaskGroup cancellation", "max_chars": 4000, "include_links": true, "refresh": true},
+    "expected_text": "TaskGroup",
+    "expected_markdown_target": "https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError",
+    "review": "Check that cancellation caveats remain understandable and relative links retain the documentation directory."
+  },
+  {
+    "id": "package_json",
+    "tool": "read_url",
+    "arguments": {"url": "https://pypi.org/pypi/httpx/json", "max_chars": 4000, "refresh": true},
+    "expected_text": "httpx",
+    "review": "Check that the package metadata is readable and truncation and continuation are explicit. This is not a latest-version accuracy test."
+  }
+]

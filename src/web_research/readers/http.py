@@ -15,7 +15,7 @@ from ..safety.urls import (
     validate_public_url,
 )
 from ..storage import SQLiteStore
-from ..text import extract_html_fallback
+from ..text import absolute_html_links, extract_html_fallback
 from .base import cap_content
 from .quality import assess_html_quality, has_meaningful_text
 
@@ -70,7 +70,8 @@ class HTTPReader:
     async def read(
         self, url: str, *, max_age_seconds: int | None = None, visual: bool = False, page: int = 1
     ) -> Document:
-        canonical = canonicalize_url(url)
+        # Old extractions may contain origin-relative Markdown links. Do not reuse them.
+        canonical = "http:v2:" + canonicalize_url(url)
         if self.store and max_age_seconds != 0 and not visual:
             cached = await asyncio.to_thread(
                 self.store.get_document,
@@ -284,7 +285,7 @@ def _extract_main_content(
         import trafilatura
 
         extracted = trafilatura.extract(
-            html_text,
+            absolute_html_links(html_text, url),
             url=url,
             output_format="markdown",
             include_links=True,

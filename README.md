@@ -102,12 +102,21 @@ verified dates. The calling model judges freshness using the question and the pa
 .venv/bin/web-search-doctor
 ```
 
-The doctor checks search, browser availability, OCR, and storage. It does not contact model or
+The doctor checks search, browser availability, OCR, storage, and a fresh public URL read through
+the same reader stack as `read_url`. It checks the Python task documentation for expected content
+and rejects incomplete/error pages; search succeeding alone does not establish reader readiness.
+The public read has a 90-second deadline and bypasses caches. It does not contact model or
 reranker endpoints. Point your MCP adapter at the absolute executable:
 
 ```text
 /Users/donais/Documents/Projects/web-search/.venv/bin/web-search-mcp
 ```
+
+If the doctor reports a synthetic proxy DNS address in `198.18.0.0/15`, and this machine uses a
+trusted TUN/fake-IP proxy, set `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS=true` in the local `.env` and restart
+the MCP server. Keep `WEB_SEARCH_ALLOW_PRIVATE_URLS=false`. This narrow compatibility option
+permits synthetic DNS answers for hostnames; literal synthetic IP URLs and other private ranges
+remain blocked. The default remains disabled on machines that do not need it.
 
 Start from [integrations/pi/mcp-server.example.json](integrations/pi/mcp-server.example.json).
 Adapt the outer configuration shape for your client. The existing stdio handshake remains compatible
@@ -138,9 +147,13 @@ server does not decide that a question has been answered just because results we
 - `outcome`: `success` means results exist, `empty` means the provider returned no results without
   reporting a failure, and `backend_unavailable` means the call failed or was prevented by cooldown
   or timeout. These describe retrieval, not answer quality.
-- `warnings`, `engine_health`, and `cache_hit`: inspect these before deciding the next step.
-- `elapsed_ms` and `responded_at`: request timing. `responded_at` is the response time, not a source
-  publication date or the original retrieval time of cached results.
+- `warnings`: retrieval diagnostics, including engines that failed or were skipped during the
+  original retrieval. Cached results preserve these even after the engines' cooldowns expire.
+- `engine_health`: current cooldowns, separate from the original retrieval conditions.
+- `cache_hit`, `retrieved_at`, `elapsed_ms`, and `responded_at`: cache status, original retrieval
+  time, call duration, and response time. A cache hit preserves `retrieved_at`; neither timestamp
+  is a source publication date. Older cache entries without provenance return `retrieved_at=null`
+  and an explicit warning; `refresh=true` replaces them with a fresh retrieval.
 
 The output is capped at 20 results (default 10), with titles capped at 1,000 characters and snippets
 at 4,000. Search pages range from 1 to 10. `time_range` accepts `day`, `month`, or `year`.
@@ -157,6 +170,11 @@ inline chunks; continue with `next_cursor`. Set `query` for a long or navigation
 return the most relevant content window first. Rendered pages use filtered Markdown when Crawl4AI
 can identify the main content. Use a smaller `max_chars` with `include_links=false` for batched or
 fan-out calls.
+
+HTTP extraction resolves relative links against the final response URL, including any HTML
+`base href`, before producing Markdown. The structured link list uses the same resolution.
+Old document cache variants are bypassed after this extraction change; existing continuation
+snapshots remain immutable until they expire.
 
 `next_cursor` is now an opaque string. Copy it unchanged into the next call with the same URL;
 it reads an immutable snapshot, including query-focused browser output, rather than fetching the
@@ -220,3 +238,5 @@ Tests cover MCP discovery without sampling, no page reads during search, backend
 cache refresh, timeout/cancellation, input limits, document extraction, and stable read pagination.
 Optional browser integrations and historical research evaluations are described in
 [eval/README.md](eval/README.md). Local tests do not establish live engine recall or answer accuracy.
+An opt-in [retrieval baseline](eval/README.md#live-retrieval-baseline) records actual MCP results,
+warnings, timestamps, and cache/continuation checks separately from research-quality evaluation.

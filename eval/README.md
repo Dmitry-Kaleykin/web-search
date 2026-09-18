@@ -1,5 +1,31 @@
 # Retrieval and historical research evaluations
 
+## Live retrieval baseline
+
+Run from the project root with SearXNG running and the reader configured:
+
+```sh
+.venv/bin/python -m web_research.retrieval_baseline \
+  --output eval/baselines/$(date +%Y-%m-%d)-retrieval.json
+```
+
+This is an opt-in network check, separate from the offline research fixtures. It uses the public
+MCP tools in-process with no model, performs two focused searches (English/Russian), reads official
+Python documentation and public package JSON, and checks search-cache provenance and immutable
+read continuation. Cases are in `retrieval_cases.json`; `--cases` selects another manifest.
+It records exact tool arguments, outputs, timings, retrieval warnings, and per-case checks.
+Initial calls request fresh data. Follow-up calls specifically exercise cache and pagination.
+
+The exit code reports mechanical check failures. It does **not** score relevance, factual answers,
+source independence, or stopping decisions. Review the returned sources using each case's review
+prompt. Empty, blocked, or changed live sources remain recorded failures rather than being retried
+until the report turns green. Reports contain public result snippets and bounded page excerpts;
+inspect them before sharing if you replace the bundled cases with private queries.
+
+The Stage 1 assessment and recorded run are in [baselines](baselines/2026-09-18-stage1.md).
+
+## Offline and historical checks
+
 The public MCP workflow now returns search results and page content to the calling model.
 Evidence-ledger fixtures below exercise the retained historical research library, not a validation
 step performed by `web_search` or `read_url`. The current tool contract is tested in
