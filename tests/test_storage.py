@@ -158,3 +158,44 @@ class SQLiteStoreCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_old_research_journals_survive_initialization_and_maintenance(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "research.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript("""
+            CREATE TABLE research_runs (id TEXT PRIMARY KEY, result TEXT);
+            INSERT INTO research_runs VALUES ('old-run', '{"answer":"historical"}');
+            CREATE TABLE events (id INTEGER PRIMARY KEY, payload TEXT);
+            INSERT INTO events VALUES (1, '{"event":"historical"}');
+        """)
+    store = SQLiteStore(path)
+    try:
+        report = store.maintenance()
+        assert report["legacy_tables"] == {"research_runs": {"rows": 1}, "events": {"rows": 1}}
+        assert "research_runs" not in report["rows_removed"]
+        assert store._connection.execute("SELECT result FROM research_runs").fetchone()[0] == (
+            '{"answer":"historical"}'
+        )
+        assert store._connection.execute("SELECT payload FROM events").fetchone()[0] == (
+            '{"event":"historical"}'
+        )
+    finally:
+        store.close()
+
+
+def test_fresh_store_contains_only_active_tables(tmp_path):
+    store = SQLiteStore(tmp_path / "cache.sqlite3")
+    try:
+        assert store.stats()["legacy_tables"] == {}
+        tables = {
+            row[0]
+            for row in store._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert tables == {"search_cache", "document_cache", "read_snapshots", "engine_health"}
+    finally:
+        store.close()

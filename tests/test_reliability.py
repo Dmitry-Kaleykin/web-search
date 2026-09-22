@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -9,11 +8,8 @@ import httpx
 import pytest
 from mcp.client import Client
 
-from web_research.citations import CitationError, validate_citations
 from web_research.config import Settings
-from web_research.evidence import EvidenceBatch, EvidenceLedger
-from web_research.freshness import publication_window
-from web_research.models import Document, Requirement, ResearchSpec, SourceClass, TaskType
+from web_research.models import Document
 from web_research.readers.http import HTTPReader
 from web_research.readers.router import LayeredReader
 from web_research.safety.urls import canonicalize_url
@@ -25,97 +21,8 @@ from web_research.server import (
     read_url,
 )
 from web_research.storage import SQLiteStore
-from web_research.support import claim_supported
 
-TODAY = date(2026, 9, 14)
 URL = "https://example.com/article/?ref=v2&source=python"
-
-
-@pytest.mark.parametrize(
-    ("request_text", "start", "end"),
-    [
-        ("last 7 days", "2026-09-08", "2026-09-14"),
-        ("since 2025", "2025-01-01", "2026-09-14"),
-        ("published since 2026-08-01", "2026-08-01", "2026-09-14"),
-        ("between 2026-07-01 and 2026-07-31", "2026-07-01", "2026-07-31"),
-        ("news from 2025", "2025-01-01", "2025-12-31"),
-        ("today", "2026-09-14", "2026-09-14"),
-        ("recent", "2026-08-16", "2026-09-14"),
-    ],
-)
-def test_explicit_publication_windows(request_text, start, end):
-    window = publication_window(request_text, as_of=TODAY)
-    assert window.start.isoformat() == start
-    assert window.end.isoformat() == end
-    assert not window.contains("2010-01-01")
-    assert not window.contains("2031-01-01")
-    assert not window.contains(None)
-
-
-def test_partial_publication_date_cannot_claim_day_precision():
-    assert not publication_window("today", as_of=TODAY).contains("2026-09")
-    assert publication_window("from 2025", as_of=TODAY).contains("2025")
-
-
-@pytest.mark.parametrize(
-    ("claim", "excerpt"),
-    [
-        ("The product supports offline mode.", "The product does not support offline mode."),
-        ("The battery lasts 10 hours.", "The battery may last up to 10 hours."),
-        ("Alice defeated Bob.", "Bob defeated Alice."),
-        ("Model A costs $20 and Model B costs $10.", "Model A costs $10 and Model B costs $20."),
-        ("The product is safe.", "The company reportedly claims the product is safe."),
-        ("The product costs $99.", "The product costs $49."),
-    ],
-)
-def test_unsupported_claim_variants(claim, excerpt):
-    assert not claim_supported(claim, excerpt)
-
-
-def test_wrong_citation_rejected_even_when_both_ids_exist():
-    spec = ResearchSpec("Price?", TaskType.FACT, [Requirement("R1", "Price?")])
-    ledger = EvidenceLedger(spec)
-    for index, price in enumerate((49, 99)):
-        text = f"The product costs ${price}."
-        ledger.add_document(
-            Document(
-                f"https://{index}.example/", f"https://{index}.example/", "Price", text, "fixture"
-            ),
-            EvidenceBatch(
-                SourceClass.PRIMARY, [{"requirement_id": "R1", "statement": text, "excerpt": text}]
-            ),
-        )
-    with pytest.raises(CitationError):
-        validate_citations("The product costs $49. [S2]", ledger.evidence_sources(), ledger.claims)
-    validate_citations("The product costs $49. [S1]", ledger.evidence_sources(), ledger.claims)
-
-
-def test_near_duplicate_reporting_does_not_count_as_independent():
-    spec = ResearchSpec(
-        "What happened?", TaskType.FACT, [Requirement("R1", "What happened?", min_sources=2)]
-    )
-    ledger = EvidenceLedger(spec)
-    article = "The laboratory measured a value of 42. " + " ".join(
-        f"observation{i}" for i in range(120)
-    )
-    for index in range(3):
-        url = f"https://publisher{index}.example/article"
-        ledger.add_document(
-            Document(url, url, "Report", f"Publisher {index}. {article}", "fixture"),
-            EvidenceBatch(
-                SourceClass.NEWS,
-                [
-                    {
-                        "requirement_id": "R1",
-                        "statement": "The laboratory measured a value of 42.",
-                        "excerpt": "The laboratory measured a value of 42.",
-                        "confidence": 0.9,
-                    }
-                ],
-            ),
-        )
-    assert ledger.coverage().items[0].source_count == 1
-    assert not ledger.coverage().sufficient
 
 
 async def test_http_fetch_preserves_exact_resource_and_refreshes(tmp_path):
@@ -320,18 +227,6 @@ def test_snapshot_eviction_is_explicit_and_bounded(tmp_path):
             store.get_snapshot(oldest)
     finally:
         store.close()
-
-
-async def test_research_reader_bypasses_cache_for_fresh_requirements():
-    from web_research.controller import _read_for_research
-
-    reader = SimpleNamespace(read_for_research=AsyncMock())
-    await _read_for_research(reader, URL, "last 7 days", fresh=True)
-    reader.read_for_research.assert_awaited_once_with(URL, query="last 7 days", max_age_seconds=0)
-
-
-def test_dropping_source_attribution_is_not_supported():
-    assert not claim_supported("The product is safe.", "The vendor claims the product is safe.")
 
 
 def test_browser_action_descriptors_exclude_forms_and_destructive_controls():

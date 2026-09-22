@@ -12,7 +12,6 @@ license = "MIT"
 dependencies = [
   "httpx>=0.28,<1",
   "mcp>=2,<3",
-  "tld>=0.13,<1",
   "trafilatura>=2.2,<3",
   "pypdf>=6,<7",
   "pypdfium2>=4,<6",
@@ -41,9 +40,10 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
 
 [tool.setuptools.package-data]
-web_research = ["research_workflow.md"]
+web_research = ["research_workflow.md", "benchmark_data/*.json", "benchmark_data/*.mjs"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

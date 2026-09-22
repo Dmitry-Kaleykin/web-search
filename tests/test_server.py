@@ -222,8 +222,6 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 data_dir=Path(directory),
                 search_healthy_engines="brave,google cse",
                 search_timeout_seconds=timeout,
-                model_id="unused-model",
-                reranker_model_id="unused-reranker",
             )
             store = SQLiteStore(Path(directory) / "test.sqlite3")
             runtime = SimpleNamespace(store=store, reader=SimpleNamespace(read=AsyncMock()))
@@ -285,8 +283,10 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                     }
                 )
                 runtime.reader.read.assert_not_awaited()
-                self.assertEqual(
-                    store._connection.execute("SELECT COUNT(*) FROM research_runs").fetchone()[0], 0
+                self.assertIsNone(
+                    store._connection.execute(
+                        "SELECT name FROM sqlite_master WHERE name = 'research_runs'"
+                    ).fetchone()
                 )
 
     async def test_search_preserves_results_and_reports_degraded_engines(self):

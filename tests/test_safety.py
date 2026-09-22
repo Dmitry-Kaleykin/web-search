@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, patch
 from web_research.safety.urls import (
     UnsafeUrlError,
     canonicalize_url,
-    registrable_domain,
     validate_public_url,
 )
 
@@ -63,12 +62,6 @@ class UrlSafetyTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_http_scheme_is_blocked(self) -> None:
         with self.assertRaises(UnsafeUrlError):
             await validate_public_url("file:///etc/passwd")
-
-    def test_source_family_uses_registrable_domain(self) -> None:
-        self.assertEqual(
-            registrable_domain("https://support.example.co.uk/article"), "example.co.uk"
-        )
-        self.assertEqual(registrable_domain("https://www.example.co.uk/shop"), "example.co.uk")
 
 
 if __name__ == "__main__":

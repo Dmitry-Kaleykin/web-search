@@ -175,13 +175,6 @@ class LayeredReader:
                 f"browser: {browser_error}"
             ) from browser_error
 
-    async def read_for_research(
-        self, url: str, *, query: str, max_age_seconds: int | None = None
-    ) -> Document:
-        """Read with result-context available for relevance-based browser escalation."""
-
-        return await self.read(url, query=query, max_age_seconds=max_age_seconds)
-
 
 def _browser_recommended(document: Document) -> bool:
     if rendering_signals(document.content):

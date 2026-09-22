@@ -7,16 +7,14 @@ identical request cannot fix that: a CAPTCHA wall and a rate-limit suspension bo
 retries, and nested retries deepen the block.
 
 This provider therefore (a) never retries an anti-bot challenge, (b) honours ``Retry-After``,
-(c) puts failing engines on a cooldown, and (d) re-issues a collapsed query pinned to engines that
-are actually answering.
+(c) puts failing engines on a cooldown. Each call makes at most one network request.
+The caller sees the diagnostics and decides whether to change engines or query.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
-import random
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -91,11 +89,7 @@ class SearXNGSearchProvider:
         cache_ttl_seconds: int = 900,
         timeout_seconds: float = 20.0,
         user_agent: str = "LocalResearchBot/0.1",
-        max_retries: int = 2,
-        retry_base_seconds: float = 1.0,
         healthy_engines: str = "",
-        diversity_min_results: int = 3,
-        max_retry_wait_seconds: float = 10.0,
     ) -> None:
         try:
             import httpx
@@ -104,10 +98,6 @@ class SearXNGSearchProvider:
         self.base_url = base_url.rstrip("/")
         self.store = store
         self.cache_ttl_seconds = cache_ttl_seconds
-        self.max_retries = max(0, max_retries)
-        self.retry_base_seconds = max(0.0, retry_base_seconds)
-        self.diversity_min_results = max(2, diversity_min_results)
-        self.max_retry_wait_seconds = max(0.0, max_retry_wait_seconds)
         self.healthy_engines = _parse_engine_list(healthy_engines)
         self.last_cache_hit = False
         self.last_retrieved_at: str | None = None
@@ -169,13 +159,6 @@ class SearXNGSearchProvider:
                 reason=f"{reason} (restored)", expires=time.monotonic() + remaining
             )
 
-    def _available_engines(self, *, exclude: set[str] | None = None) -> list[str]:
-        """Known-good engines minus anything cooling down or already over-represented."""
-        if not self.healthy_engines:
-            return []
-        skip = set(self.engine_health()) | (exclude or set())
-        return [engine for engine in self.healthy_engines if engine not in skip]
-
     async def search(
         self,
         query: str,
@@ -192,6 +175,7 @@ class SearXNGSearchProvider:
         self.last_retrieved_at = None
         self.last_warnings = []
         self.last_engine_health = {}
+        engines = engines or ",".join(self.healthy_engines) or None
         cache_key = _cache_key(query, page, language, time_range, categories, limit, engines)
         if self.store and not refresh:
             cached = self.store.get_search_entry(cache_key, self.cache_ttl_seconds)
@@ -213,122 +197,36 @@ class SearXNGSearchProvider:
         if engines:
             params["engines"] = engines
 
-        results: list[SearchResult] = []
-        seen: set[str] = set()
-        engine_failures: list[str] = []
-        pinned = bool(engines)
-
-        for attempt in range(self.max_retries + 1):
-            last = attempt == self.max_retries
-            try:
-                dispatch_params = dict(params)
-                if params.get("engines"):
-                    cooling = {
-                        name.casefold(): reason for name, reason in self.engine_health().items()
-                    }
-                    if "searxng" in cooling:
-                        raise SearXNGRateLimitedError(
-                            f"SearXNG endpoint is cooling down: {cooling['searxng']}"
-                        )
-                    requested = _parse_engine_list(str(params["engines"]))
-                    available = [name for name in requested if name.casefold() not in cooling]
-                    if not available:
-                        raise SearXNGChallengeError("All requested search engines are cooling down")
-                    skipped = [name for name in requested if name.casefold() in cooling]
-                    if skipped:
-                        warning = "search_engines_skipped_at_retrieval:" + ", ".join(skipped)
-                        if warning not in self.last_warnings:
-                            self.last_warnings.append(warning)
-                    dispatch_params["engines"] = ",".join(available)
-                payload = await self._request(dispatch_params)
-                self.last_retrieved_at = datetime.now(UTC).isoformat()
-            except SearXNGChallengeError:
-                raise
-            except SearXNGRateLimitedError as exc:
-                # A declared Retry-After is an instruction, not a suggestion. Sleeping less than it
-                # re-triggers the same block, and waiting longer than the run can afford is worse
-                # than returning what the earlier attempts already produced.
-                if last:
-                    raise
-                wait = exc.retry_after
-                if wait is None:
-                    await self._backoff(attempt)
-                    continue
-                if wait > self.max_retry_wait_seconds:
-                    self.last_warnings.append(
-                        f"searxng_rate_limited: retry_after {int(wait)}s exceeds the "
-                        f"{int(self.max_retry_wait_seconds)}s retry budget; keeping earlier results"
-                    )
-                    break
-                await asyncio.sleep(wait)
-                continue
-            except SearXNGError:
-                if last:
-                    raise
-                await self._backoff(attempt)
-                continue
-
-            for failure in payload["failures"]:
-                engine_failures.append(f"{failure[0]}: {failure[1]}")
-                self._cool(failure[0], failure[1])
-
-            engine_failures = list(dict.fromkeys(engine_failures))
-            if engine_failures:
-                warning = "search_engines_unresponsive:" + ", ".join(engine_failures[:12])
-                # Append rather than reassign: a later attempt that succeeds cleanly must not erase
-                # the collapse diagnosis raised by the attempt that needed widening.
-                if warning not in self.last_warnings:
-                    self.last_warnings.append(warning)
-
-            remaining = limit - len(results)
-            if remaining > 0:
-                results.extend(
-                    _parse_results(
-                        payload["results"],
-                        remaining,
-                        seen,
-                        start_rank=len(results) + 1,
-                    )
-                )
-
-            if results:
-                if pinned or last:
-                    break
-                collapse = _collapsed_engine(results, self.diversity_min_results)
-                available = self._available_engines(exclude={collapse}) if collapse else []
-                if not available:
-                    if collapse:
-                        self.last_warnings.append(
-                            f"search_engine_diversity_collapsed:all {len(results)} attributed "
-                            f"results came from '{collapse}'; "
-                            "no non-cooled engines available to widen the query"
-                        )
-                    break
-                # Diversity is the point. If the collapsed engine already filled the quota, the
-                # widened request would run and then be discarded, so free the lower half of the
-                # results and let the healthy engines fill those slots instead.
-                collapsed_count = len(results)
-                del results[max(1, limit // 2) :]
-                params["engines"] = ",".join(available)
-                params.pop("categories", None)
-                pinned = True
+        cooling = {name.casefold(): reason for name, reason in self.engine_health().items()}
+        if "searxng" in cooling:
+            raise SearXNGRateLimitedError(f"SearXNG endpoint is cooling down: {cooling['searxng']}")
+        if engines:
+            requested = _parse_engine_list(engines)
+            available = [name for name in requested if name.casefold() not in cooling]
+            if not available:
+                raise SearXNGChallengeError("All requested search engines are cooling down")
+            skipped = [name for name in requested if name.casefold() in cooling]
+            if skipped:
                 self.last_warnings.append(
-                    f"search_engine_diversity_collapsed:all {collapsed_count} attributed results "
-                    f"came from '{collapse}'; re-queried pinned to {','.join(available)}"
+                    "search_engines_skipped_at_retrieval:" + ", ".join(skipped)
                 )
-                continue
-
-            # Engines that answered with nothing are an authoritative empty result. Only retry when
-            # the emptiness is explained by engines that failed, otherwise this loop hammers a
-            # genuinely thin query.
-            if not engine_failures:
-                break
-            if last:
-                raise SearXNGError(
-                    "SearXNG returned no results because upstream engines were unresponsive after "
-                    f"{attempt + 1} attempt(s): {', '.join(engine_failures)}"
-                )
-            await self._backoff(attempt)
+            params["engines"] = ",".join(available)
+        payload = await self._request(params)
+        self.last_retrieved_at = datetime.now(UTC).isoformat()
+        failures = list(dict.fromkeys(tuple(failure) for failure in payload["failures"]))
+        for engine, reason in failures:
+            self._cool(engine, reason)
+        if failures:
+            self.last_warnings.append(
+                "search_engines_unresponsive:"
+                + ", ".join(f"{engine}: {reason}" for engine, reason in failures[:12])
+            )
+        results = _parse_results(payload["results"], limit, set())
+        if not results and failures:
+            raise SearXNGError(
+                "SearXNG returned no results because upstream engines were unresponsive: "
+                + ", ".join(f"{engine}: {reason}" for engine, reason in failures)
+            )
 
         self.last_engine_health = self.engine_health()
 
@@ -392,17 +290,6 @@ class SearXNGSearchProvider:
             "failures": _unresponsive_engines(decoded),
         }
 
-    async def _backoff(self, attempt: int) -> None:
-        """Exponential backoff with jitter.
-
-        A flat sub-second delay is the worst possible cadence against a rate limit: it looks like
-        a scripted retry loop. Full jitter spreads attempts so consecutive queries do not stack.
-        """
-        if not self.retry_base_seconds:
-            return
-        ceiling = self.retry_base_seconds * (2**attempt)
-        await asyncio.sleep(random.uniform(ceiling / 2, ceiling))
-
 
 def _parse_results(
     raw_results: list[Any],
@@ -443,29 +330,6 @@ def _parse_results(
         if len(results) >= limit:
             break
     return results
-
-
-def _collapsed_engine(results: list[SearchResult], min_results: int) -> str | None:
-    """Return the sole engine behind a result set, or None when diversity is acceptable.
-
-    Only conclusive when the payload actually carries per-result engine attribution: results with
-    no engine metadata are unknown, not collapsed. Engine failures are judged separately, because
-    a single-engine answer set is still a collapse even when nothing reported an error.
-    """
-    if len(results) < min_results:
-        return None
-    counts: dict[str, int] = {}
-    attributed = 0
-    for result in results:
-        engines = result.engines
-        if not engines:
-            continue
-        attributed += 1
-        for engine in engines:
-            counts[engine] = counts.get(engine, 0) + 1
-    if attributed < min_results or len(counts) > 1:
-        return None
-    return next(iter(counts))
 
 
 def _retry_after_seconds(response: Any) -> float | None:

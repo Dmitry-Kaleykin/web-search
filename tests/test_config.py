@@ -1,81 +1,48 @@
 from __future__ import annotations
 
 import os
-import tempfile
-import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from web_research.config import Settings
 
 
-class SettingsTests(unittest.TestCase):
-    def test_read_url_output_limits_can_be_overridden(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            env_file = Path(directory) / ".env"
-            env_file.write_text(
-                "WEB_SEARCH_READ_URL_MAX_CHARS=12345\nWEB_SEARCH_READ_URL_MAX_LINKS=17\n",
-                encoding="utf-8",
-            )
-            with patch.dict(os.environ, {"WEB_SEARCH_DATA_DIR": directory}, clear=True):
-                settings = Settings.from_env(env_file=env_file)
-
-        self.assertEqual(settings.read_url_max_chars, 12345)
-        self.assertEqual(settings.read_url_max_links, 17)
-
-    def test_process_environment_overrides_project_env(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            env_file = Path(directory) / ".env"
-            env_file.write_text(
-                "WEB_SEARCH_MODEL_API_KEY=file-secret\nWEB_SEARCH_LOG_LEVEL=DEBUG\n",
-                encoding="utf-8",
-            )
-            environment = {
-                "WEB_SEARCH_DATA_DIR": directory,
-                "WEB_SEARCH_MODEL_API_KEY": "process-secret",
-                "WEB_SEARCH_LOG_LEVEL": "WARNING",
-            }
-            with patch.dict(os.environ, environment, clear=True):
-                settings = Settings.from_env(env_file=env_file)
-
-        self.assertEqual(settings.model_api_key, "process-secret")
-        self.assertEqual(settings.log_level, "WARNING")
-
-    def test_reranker_inherits_local_endpoint_and_authentication(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            env_file = Path(directory) / ".env"
-            env_file.write_text(
-                "WEB_SEARCH_MODEL_BASE_URL=http://omlx.test/v1\n"
-                "WEB_SEARCH_MODEL_API_KEY=local-token\n"
-                "WEB_SEARCH_RERANKER_MODEL_ID=reranker\n",
-                encoding="utf-8",
-            )
-            with patch.dict(os.environ, {"WEB_SEARCH_DATA_DIR": directory}, clear=True):
-                settings = Settings.from_env(env_file=env_file)
-
-        self.assertEqual(settings.reranker_base_url, "http://omlx.test/v1")
-        self.assertEqual(settings.reranker_api_key, "local-token")
-        self.assertEqual(settings.reranker_model_id, "reranker")
-        self.assertEqual(settings.reranker_min_relevance_score, 0.08)
-        self.assertEqual(settings.reranker_relative_relevance_ratio, 0.15)
-        self.assertEqual(settings.lexical_min_relevance_score, 0.01)
-
-    def test_relevance_gate_thresholds_can_be_overridden(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            env_file = Path(directory) / ".env"
-            env_file.write_text(
-                "WEB_SEARCH_RERANKER_MIN_RELEVANCE_SCORE=0.12\n"
-                "WEB_SEARCH_RERANKER_RELATIVE_RELEVANCE_RATIO=0.2\n"
-                "WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE=0.03\n",
-                encoding="utf-8",
-            )
-            with patch.dict(os.environ, {"WEB_SEARCH_DATA_DIR": directory}, clear=True):
-                settings = Settings.from_env(env_file=env_file)
-
-        self.assertEqual(settings.reranker_min_relevance_score, 0.12)
-        self.assertEqual(settings.reranker_relative_relevance_ratio, 0.2)
-        self.assertEqual(settings.lexical_min_relevance_score, 0.03)
+def test_process_environment_overrides_project_defaults(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("WEB_SEARCH_LOG_LEVEL=DEBUG\nWEB_SEARCH_READ_URL_MAX_CHARS=12345\n")
+    with patch.dict(os.environ, {"WEB_SEARCH_LOG_LEVEL": "WARNING"}, clear=True):
+        settings = Settings.from_env(env_file=env_file)
+    assert settings.log_level == "WARNING"
+    assert settings.read_url_max_chars == 12345
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_retired_model_and_stopping_settings_are_ignored(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "WEB_SEARCH_MODEL_MAX_TOKENS=obsolete\n"
+        "WEB_SEARCH_RERANKER_MIN_RELEVANCE_SCORE=obsolete\n"
+        "WEB_SEARCH_SEARCH_MAX_RETRIES=obsolete\n"
+        "WEB_SEARCH_PREFETCH_PAGES=obsolete\n"
+        "WEB_SEARCH_READ_URL_MAX_LINKS=17\n"
+    )
+    with patch.dict(os.environ, {}, clear=True):
+        settings = Settings.from_env(env_file=env_file)
+    assert settings.read_url_max_links == 17
+    assert not hasattr(settings, "model_id")
+    assert not hasattr(settings, "reranker_model_id")
+    assert not hasattr(settings, "search_max_retries")
+
+
+def test_active_resource_limits_are_bounded(tmp_path):
+    with patch.dict(
+        os.environ,
+        {
+            "WEB_SEARCH_READ_URL_MAX_CHARS": "0",
+            "WEB_SEARCH_READ_URL_MAX_LINKS": "-1",
+            "WEB_SEARCH_SEARCH_TIMEOUT_SECONDS": "0",
+        },
+        clear=True,
+    ):
+        settings = Settings.from_env(env_file=tmp_path / "missing.env")
+    assert settings.read_url_max_chars == 1
+    assert settings.read_url_max_links == 0
+    assert settings.search_timeout_seconds == 1

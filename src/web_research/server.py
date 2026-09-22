@@ -396,7 +396,6 @@ async def web_search(
                     cache_ttl_seconds=settings.search_cache_ttl_seconds,
                     timeout_seconds=min(20.0, settings.search_timeout_seconds),
                     user_agent=settings.user_agent,
-                    max_retries=0,
                     healthy_engines=settings.search_healthy_engines,
                 )
                 try:

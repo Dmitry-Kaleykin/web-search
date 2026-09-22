@@ -4,7 +4,7 @@ The calling model owns research reasoning. The MCP server supplies discovery and
 
 ```text
 Calling model
-  |-- web_search(query, language, time_range, page, limit, refresh)
+  |-- web_search(query, language, time_range, page, limit, refresh, engine)
   |      |-- bounded dispatch queue
   |      |-- SQLite search cache and persisted engine cooldowns
   |      |-- one SearXNG request, pinned to available configured engines
@@ -22,7 +22,8 @@ Calling model
 ## Boundaries
 
 `server.py` exposes exactly `web_search` and `read_url`. It does not import or instantiate the
-research controller, agent, model clients, or reranker. There is no server-side query planning,
+retired research controller, agent, model clients, or reranker; those modules have been removed.
+There is no server-side query planning,
 claim extraction, coverage calculation, semantic relevance gate, source-count rule, or synthesis.
 The model interprets untrusted source content and is responsible for its final answer.
 
@@ -36,8 +37,8 @@ are active. It adds no tools, model calls, or external storage and respects othe
 
 `web_search` has a configurable 30-second default deadline covering dispatch queue and upstream
 request time. Dispatches are serialized so each provider instance restores cooldowns recorded by
-its predecessor. The provider is configured with zero retries and an explicit general-web engine
-pool. It returns cached results or performs one request, without diversity widening or page reads.
+its predecessor. The provider has no internal retry or diversity-widening loop and uses an explicit general-web
+engine pool. It returns cached results or performs one request, without diversity widening or page reads.
 The caller may choose one engine from that pool with `engine`. The selection is part of
 cache identity; selection cannot bypass cooldowns or introduce unconfigured engines.
 Cancellation propagates and closes the HTTP client. Successful empty searches are distinguished
@@ -62,10 +63,20 @@ coverage, research traces, and synthesis outcomes. Clients must reload tool sche
 Sampling capability, sampling approval, model endpoints, and reranker endpoints are unnecessary.
 The doctor and console report retrieval readiness without probing model services.
 
-The old research modules and deterministic evaluation fixtures remain available for historical
-comparison and direct library callers, but are unreachable from the public MCP workflow. Their
-configuration fields do not control the two tools. The [old design](docs/legacy-research-architecture.md)
-is archived separately. See [README.md](README.md) for setup, API fields, and resource limits.
+Retired Python research APIs, model/reranker settings, and their deterministic ledger evaluations
+have been removed. The [historical design note](docs/legacy-research-architecture.md) points to their
+Git revision. Existing SQLite `research_runs` and `events` tables remain untouched and are reported
+as historical records; fresh stores create only caches, snapshots, and engine health. Production
+research history belongs to the caller's session. See [README.md](README.md) for setup and limits.
+
+## Evaluation boundaries
+
+`web-search-eval check` exercises actual MCP retrieval against controlled responses, without network
+or model calls. The console uses this mode and propagates failures. `web-search-eval retrieval`
+records a live retrieval baseline. Neither mode grades research reasoning. `web-search-eval research`
+explicitly invokes the configured Pi caller. Benchmark cases, the comparison policy, and the Pi
+adapter are packaged under `benchmark_data/`, independent of checkout paths. Generated reports and
+private caller logs stay outside the package.
 
 `research_benchmark.py` is an opt-in evaluation runner, outside the production path. An isolated Pi
 caller receives only the two actual MCP schemas. Controlled cases replace search/HTTP network

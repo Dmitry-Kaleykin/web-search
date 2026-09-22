@@ -61,12 +61,12 @@ const actions = [
   {
     value: "doctor",
     label: "Run readiness checks",
-    description: "Check browser, search API, and configuration",
+    description: "Check browser runtime, search, public-page reading, and configuration",
   },
   {
     value: "evaluation",
-    label: "Run offline evaluation",
-    description: "Replay deterministic coverage, freshness, and conflict fixtures",
+    label: "Test search and reading (offline)",
+    description: "Check the public tools with fixtures; no network or model calls",
   },
   {
     value: "logs",
@@ -277,11 +277,11 @@ async function refreshStatus() {
             ? "container running; API unavailable"
             : "stopped",
       ),
-      statusLine(browserReady, "Chromium", browserReady ? "runtime installed" : "runtime missing"),
+      statusLine(browserReady, "Chromium", browserReady ? "directory present; run readiness checks" : "runtime missing"),
       statusLine(
         pythonReady && mcpReady,
         "MCP",
-        pythonReady && mcpReady ? "ready; launched on demand by Pi" : "not installed",
+        pythonReady && mcpReady ? "installed; launched on demand by Pi" : "not installed",
       ),
     ].join("\n"),
   );
@@ -364,7 +364,7 @@ async function runEvaluation() {
   if (!(await exists(EVALUATOR, true))) {
     throw new Error("The evaluator is not installed yet. Run Install / update first.");
   }
-  await run(EVALUATOR, [], { allowFailure: true });
+  await run(EVALUATOR, ["check"]);
 }
 
 function startLogs() {

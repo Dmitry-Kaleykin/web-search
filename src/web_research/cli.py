@@ -61,7 +61,6 @@ async def _doctor() -> int:
     search = SearXNGSearchProvider(
         settings.searxng_url,
         store=store,
-        max_retries=0,
         timeout_seconds=min(20.0, settings.search_timeout_seconds),
         healthy_engines=settings.search_healthy_engines,
         user_agent=settings.user_agent,
@@ -164,8 +163,10 @@ def _storage_report(settings: Settings, failed: bool) -> bool:
     print(
         f"OK   storage: {file_mb:.1f} MB | documents={documents['rows']} "
         f"({documents['bytes'] / 1e6:.1f} MB, largest {largest_mb:.2f} MB) | "
-        f"searches={stats['search_cache']['rows']} | events={stats['events']['rows']}"
+        f"searches={stats['search_cache']['rows']} | snapshots={stats['read_snapshots']['rows']}"
     )
+    for table, entry in stats["legacy_tables"].items():
+        print(f"INFO historical {table}: {entry['rows']} records preserved; not current logs")
     ceiling_mb = settings.cache_document_max_payload_bytes / 1e6
     if largest_mb > ceiling_mb:
         print(
@@ -212,12 +213,14 @@ def _maintenance() -> int:
     print(
         f"evicted search_cache={removed['search_cache']} document_cache={removed['document_cache']}"
     )
-    for table in ("search_cache", "document_cache", "research_runs", "events"):
+    for table in ("search_cache", "document_cache", "read_snapshots", "engine_health"):
         entry = report[table]
         print(
             f"  {table:14} rows={entry['rows']:<5} "
             f"{entry['bytes'] / 1e6:6.1f} MB largest={entry['largest_row_bytes'] / 1e6:.2f} MB"
         )
+    for table, entry in report["legacy_tables"].items():
+        print(f"  historical {table}: {entry['rows']} records preserved")
     print(f"database {before:.1f} MB -> {after:.1f} MB")
     return 0
 

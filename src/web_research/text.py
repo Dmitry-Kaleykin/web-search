@@ -26,15 +26,6 @@ def compact_text(text: str) -> str:
     return SPACE_RE.sub(" ", text).strip()
 
 
-def best_excerpt(content: str, target: str, *, limit: int = 700) -> str:
-    paragraphs = [compact_text(item) for item in re.split(r"\n\s*\n|(?<=[.!?])\s+", content)]
-    paragraphs = [item for item in paragraphs if item]
-    if not paragraphs:
-        return compact_text(content)[:limit]
-    best = max(paragraphs, key=lambda item: lexical_similarity(item, target))
-    return best[:limit]
-
-
 class BasicHTMLExtractor(HTMLParser):
     """Small text fallback; Trafilatura is the production extractor."""
 

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Document, ResearchResult, SearchResult
+from .models import Document, SearchResult
 
 
 @dataclass(slots=True)
@@ -21,7 +21,7 @@ class CachedSearch:
 
 
 class SQLiteStore:
-    """Local cache and run journal.
+    """Local retrieval caches, read snapshots, and engine cooldowns.
 
     TTLs are enforced on read, which is not the same as eviction: without deletion the file grows
     monotonically and every read pays the cost of scanning an ever-larger index. Writes therefore
@@ -83,21 +83,6 @@ class SQLiteStore:
                     reason TEXT NOT NULL,
                     expires_at REAL NOT NULL,
                     updated_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS research_runs (
-                    id TEXT PRIMARY KEY,
-                    started_at REAL NOT NULL,
-                    completed_at REAL,
-                    query TEXT NOT NULL,
-                    effort TEXT NOT NULL,
-                    result TEXT
-                );
-                CREATE TABLE IF NOT EXISTS events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    research_id TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    event_type TEXT NOT NULL,
-                    payload TEXT NOT NULL
                 );
                 """
             )
@@ -257,42 +242,6 @@ class SQLiteStore:
             if expires_at > current
         }
 
-    def start_run(self, research_id: str, query: str, effort: str) -> None:
-        with self._lock, self._connection:
-            self._connection.execute(
-                "INSERT INTO research_runs(id, started_at, query, effort) VALUES (?, ?, ?, ?)",
-                (research_id, time.time(), query, effort),
-            )
-
-    def finish_run(self, result: ResearchResult) -> None:
-        with self._lock, self._connection:
-            self._connection.execute(
-                "UPDATE research_runs SET completed_at = ?, result = ? WHERE id = ?",
-                (time.time(), json.dumps(result.as_dict(), ensure_ascii=False), result.research_id),
-            )
-
-    def cancel_run(self, research_id: str) -> None:
-        """Finalize an unfinished run and record its cancellation atomically."""
-        with self._lock, self._connection:
-            cursor = self._connection.execute(
-                "UPDATE research_runs SET completed_at = ? WHERE id = ? AND completed_at IS NULL",
-                (time.time(), research_id),
-            )
-            if cursor.rowcount:
-                self._connection.execute(
-                    "INSERT INTO events(research_id, created_at, event_type, payload) "
-                    "VALUES (?, ?, 'cancelled', '{}')",
-                    (research_id, time.time()),
-                )
-
-    def event(self, research_id: str, event_type: str, payload: dict[str, Any]) -> None:
-        with self._lock, self._connection:
-            self._connection.execute(
-                "INSERT INTO events(research_id, created_at, event_type, payload) "
-                "VALUES (?, ?, ?, ?)",
-                (research_id, time.time(), event_type, json.dumps(payload, ensure_ascii=False)),
-            )
-
     def _get_fresh(
         self, table: str, key_column: str, key: str, ttl_seconds: int
     ) -> sqlite3.Row | None:
@@ -398,8 +347,6 @@ class SQLiteStore:
         tables = {
             "search_cache": "payload",
             "document_cache": "payload",
-            "research_runs": "result",
-            "events": "payload",
             "engine_health": "reason",
             "read_snapshots": "payload",
         }
@@ -415,6 +362,20 @@ class SQLiteStore:
                     "bytes": int(row["bytes"]),
                     "largest_row_bytes": int(row["largest"]),
                 }
+            # Historical journals remain readable, but are never created or maintained as logs.
+            existing = {
+                row[0]
+                for row in self._connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            out["legacy_tables"] = {
+                table: {
+                    "rows": self._connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                }
+                for table in ("research_runs", "events")
+                if table in existing
+            }
             out["file_bytes"] = self.path.stat().st_size if self.path.exists() else 0
             # WAL and SHM sidecars hold real committed data; ignoring them under-reports usage.
             for suffix in ("-wal", "-shm"):

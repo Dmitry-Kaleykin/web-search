@@ -34,8 +34,6 @@ class DoctorSearchTests(unittest.IsolatedAsyncioTestCase):
                 data_dir=Path(directory),
                 enable_crawl4ai=False,
                 search_healthy_engines="brave,google cse",
-                model_id="unused-model",
-                reranker_model_id="unused-reranker",
             )
             store = SQLiteStore(Path(directory) / "research.sqlite3")
             store.record_engine_cooldown("brave", "too many requests", time.time() + 900)

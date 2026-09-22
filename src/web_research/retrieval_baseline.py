@@ -132,11 +132,15 @@ async def record_baseline(cases: list[dict]) -> dict:
     return report
 
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cases", type=Path, default=Path("eval/retrieval_cases.json"))
+    parser.add_argument(
+        "--cases",
+        type=Path,
+        default=Path(__file__).with_name("benchmark_data") / "retrieval_cases.json",
+    )
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     cases = json.loads(args.cases.read_text())
     report = asyncio.run(record_baseline(cases))
     args.output.parent.mkdir(parents=True, exist_ok=True)

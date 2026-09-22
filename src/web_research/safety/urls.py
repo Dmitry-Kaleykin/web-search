@@ -105,19 +105,3 @@ def canonicalize_url(url: str) -> str:
 
 def resolve_redirect(base_url: str, location: str) -> str:
     return urljoin(base_url, location)
-
-
-def registrable_domain(url: str) -> str:
-    """Return a public-suffix-aware key for independence/source-family checks."""
-    try:
-        from tld import get_fld
-
-        value = get_fld(url, fail_silently=True)
-        if value:
-            return value.lower()
-    except ImportError:  # pragma: no cover - tld is a declared runtime dependency
-        pass
-    host = (urlsplit(url).hostname or "").lower().rstrip(".")
-    if host.startswith("www."):
-        host = host[4:]
-    return host

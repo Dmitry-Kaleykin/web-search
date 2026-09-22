@@ -28,7 +28,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(_published_at({"title": "A page", "content": "18 hours ago"}))
 
-    async def test_unresponsive_engines_are_retried_and_reported(self):
+    async def test_unresponsive_engines_are_reported_without_hidden_retries(self):
         requests: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -40,8 +40,6 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
 
         provider = SearXNGSearchProvider(
             "http://searxng.test",
-            max_retries=2,
-            retry_base_seconds=0,
         )
         await provider._client.aclose()
         provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -51,7 +49,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await provider.close()
 
-        self.assertEqual(len(requests), 3)
+        self.assertEqual(len(requests), 1)
         self.assertEqual(provider.last_warnings, ["search_engines_unresponsive:brave: timeout"])
 
     async def test_partial_engine_failure_is_exposed_with_usable_results(self):
@@ -172,7 +170,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                 headers={"content-type": "text/html; charset=utf-8"},
             )
 
-        provider = SearXNGSearchProvider("http://searxng.test", retry_base_seconds=0)
+        provider = SearXNGSearchProvider("http://searxng.test")
         await provider._client.aclose()
         provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
@@ -190,7 +188,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             return httpx.Response(403, text="Forbidden")
 
-        provider = SearXNGSearchProvider("http://searxng.test", retry_base_seconds=0)
+        provider = SearXNGSearchProvider("http://searxng.test")
         await provider._client.aclose()
         provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
@@ -201,131 +199,58 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(requests), 1)
 
-    async def test_retry_after_beyond_budget_keeps_earlier_results(self):
-        requests: list[httpx.Request] = []
+    async def test_retry_after_blocks_next_call_without_sleeping_or_retrying(self):
+        requests = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request):
             requests.append(request)
-            if request.url.params.get("engines"):
-                return httpx.Response(429, headers={"retry-after": "600"}, text="slow down")
+            return httpx.Response(429, headers={"retry-after": "600"}, text="slow down")
+
+        provider = SearXNGSearchProvider("http://searxng.test")
+        await provider._client.aclose()
+        provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with self.assertRaisesRegex(SearXNGError, "retry after 600s"):
+                await provider.search("example")
+            with self.assertRaisesRegex(SearXNGError, "cooling down"):
+                await provider.search("different query")
+            self.assertEqual(len(requests), 1)
+            self.assertIn("searxng", provider.engine_health())
+        finally:
+            await provider.close()
+
+    async def test_single_engine_results_are_preserved_without_hidden_widening(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
             return httpx.Response(
                 200,
                 json={
                     "results": [
-                        {"url": f"https://example.com/{index}", "engines": ["google cse"]}
-                        for index in range(4)
-                    ],
-                    "unresponsive_engines": [["duckduckgo", "CAPTCHA"]],
+                        {"url": f"https://example.com/{i}", "engines": ["general"]}
+                        for i in range(10)
+                    ]
                 },
             )
 
         provider = SearXNGSearchProvider(
-            "http://searxng.test",
-            retry_base_seconds=0,
-            max_retry_wait_seconds=10.0,
-            healthy_engines="mwmbl",
+            "http://searxng.test", healthy_engines="general,specialist"
         )
         await provider._client.aclose()
         provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
-            results = await provider.search("context engineering")
-        finally:
-            await provider.close()
-
-        self.assertEqual(len(requests), 2)
-        self.assertEqual(len(results), 4)
-        self.assertTrue(
-            any("retry_after 600s" in warning for warning in provider.last_warnings),
-            provider.last_warnings,
-        )
-        self.assertIn("searxng", provider.engine_health())
-
-    async def test_diversity_collapse_requeries_pinned_to_healthy_engines(self):
-        requests: list[httpx.Request] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            requests.append(request)
-            if request.url.params.get("engines"):
-                return httpx.Response(
-                    200,
-                    json={
-                        "results": [
-                            {"url": "https://mwmbl.example/one", "engines": ["mwmbl"]},
-                            {"url": "https://searchmysite.example/two", "engines": ["mojeek"]},
-                        ]
-                    },
-                )
-            return httpx.Response(
-                200,
-                json={
-                    "results": [
-                        {"url": f"https://cse.example/{index}", "engines": ["google cse"]}
-                        for index in range(4)
-                    ],
-                    "unresponsive_engines": [["duckduckgo", "CAPTCHA"]],
-                },
+            provider._cool("specialist", "CAPTCHA")
+            results = await provider.search("example")
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0].url.params["engines"], "general")
+            self.assertEqual(len(results), 10)
+            self.assertEqual([result.rank for result in results], list(range(1, 11)))
+            self.assertEqual(
+                provider.last_warnings, ["search_engines_skipped_at_retrieval:specialist"]
             )
-
-        provider = SearXNGSearchProvider(
-            "http://searxng.test",
-            retry_base_seconds=0,
-            healthy_engines="mwmbl,mojeek",
-        )
-        await provider._client.aclose()
-        provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        try:
-            results = await provider.search("context engineering")
         finally:
             await provider.close()
-
-        self.assertEqual(len(requests), 2)
-        self.assertEqual(requests[0].url.params.get("engines"), None)
-        self.assertEqual(requests[1].url.params["engines"], "mwmbl,mojeek")
-        self.assertEqual(len(results), 6)
-        self.assertEqual([result.rank for result in results], list(range(1, 7)))
-        self.assertTrue(
-            any(
-                warning.startswith("search_engine_diversity_collapsed:")
-                for warning in provider.last_warnings
-            ),
-            provider.last_warnings,
-        )
-        self.assertIn("duckduckgo", provider.engine_health())
-
-    async def test_cooled_engine_is_excluded_from_pinning(self):
-        requests: list[httpx.Request] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            requests.append(request)
-            if request.url.params.get("engines"):
-                return httpx.Response(
-                    200,
-                    json={"results": [{"url": "https://mwmbl.example/one", "engines": ["mwmbl"]}]},
-                )
-            return httpx.Response(
-                200,
-                json={
-                    "results": [
-                        {"url": f"https://cse.example/{index}", "engines": ["google cse"]}
-                        for index in range(3)
-                    ],
-                    "unresponsive_engines": [["duckduckgo", "CAPTCHA"]],
-                },
-            )
-
-        provider = SearXNGSearchProvider(
-            "http://searxng.test",
-            retry_base_seconds=0,
-            healthy_engines="duckduckgo,mwmbl",
-        )
-        await provider._client.aclose()
-        provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        try:
-            await provider.search("context engineering")
-        finally:
-            await provider.close()
-
-        self.assertEqual(requests[1].url.params["engines"], "mwmbl")
 
     async def test_missing_engine_attribution_is_not_reported_as_collapse(self):
         requests: list[httpx.Request] = []
@@ -340,9 +265,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
-        provider = SearXNGSearchProvider(
-            "http://searxng.test", retry_base_seconds=0, healthy_engines="mwmbl"
-        )
+        provider = SearXNGSearchProvider("http://searxng.test", healthy_engines="mwmbl")
         await provider._client.aclose()
         provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
@@ -368,7 +291,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                 health = provider.engine_health()
                 self.assertIn("brave", health)
                 self.assertIn("restored", health["brave"])
-                self.assertEqual(provider._available_engines(), ["wiby"])
+
             finally:
                 await provider.close()
                 store.close()

@@ -1,11 +1,11 @@
-# Retrieval and historical research evaluations
+# Evaluating the current search-and-read workflow
 
 ## Caller research benchmark
 
-From the project root, with Pi configured for the model you intend to use:
+With Pi configured for the model you intend to use:
 
 ```sh
-.venv/bin/python -m web_research.research_benchmark run \
+.venv/bin/web-search-eval research \
   --directory /tmp/web-search-research-current
 ```
 
@@ -26,7 +26,7 @@ not a production concurrency or latency benchmark.
 An explicit live case exercises the real search service and public Python documentation:
 
 ```sh
-.venv/bin/python -m web_research.research_benchmark run --live \
+.venv/bin/web-search-eval research --live \
   --directory /tmp/web-search-research-live
 ```
 
@@ -54,22 +54,23 @@ The saved previous policy comes from the revision named in `research_previous_po
 Keep raw caller logs local: they can contain model reasoning. Publish reviewed answers and tool traces
 instead. A smoke run is useful evidence about these cases, not a broad accuracy or efficiency claim.
 
-The [Stage 2 baseline](baselines/2026-09-18-stage2.md) records the local caller comparison, live check,
-and limitations found by reviewing the generated answers.
+New generated baselines and private session reviews stay local, excluded from version control.
+The checked-in Stage 1 baseline is a historical retrieval record, not a requirement for running the
+benchmarks or evidence of current answer accuracy.
 
 ## Live retrieval baseline
 
 Run from the project root with SearXNG running and the reader configured:
 
 ```sh
-.venv/bin/python -m web_research.retrieval_baseline \
+.venv/bin/web-search-eval retrieval \
   --output eval/baselines/$(date +%Y-%m-%d)-retrieval.json
 ```
 
-This is an opt-in network check, separate from the offline research fixtures. It uses the public
+This is an opt-in network check, separate from controlled caller research. It uses the public
 MCP tools in-process with no model, performs two focused searches (English/Russian), reads official
 Python documentation and public package JSON, and checks search-cache provenance and immutable
-read continuation. Cases are in `retrieval_cases.json`; `--cases` selects another manifest.
+read continuation. Cases ship in `src/web_research/benchmark_data/retrieval_cases.json`; `--cases` selects another manifest.
 It records exact tool arguments, outputs, timings, retrieval warnings, and per-case checks.
 Initial calls request fresh data. Follow-up calls specifically exercise cache and pagination.
 
@@ -79,62 +80,55 @@ prompt. Empty, blocked, or changed live sources remain recorded failures rather 
 until the report turns green. Reports contain public result snippets and bounded page excerpts;
 inspect them before sharing if you replace the bundled cases with private queries.
 
-The Stage 1 assessment and recorded run are in [baselines](baselines/2026-09-18-stage1.md).
+The exit status and saved results describe this run only; upstream engines and sources can change.
 
-## Offline and historical checks
-
-The public MCP workflow now returns search results and page content to the calling model.
-Evidence-ledger fixtures below exercise the retained historical research library, not a validation
-step performed by `web_search` or `read_url`. The current tool contract is tested in
-`tests/test_server.py`; reader integrations still apply to the public workflow.
-
-Run deterministic evidence cases:
+## Offline public-tool checks
 
 ```sh
-.venv/bin/web-search-eval
+.venv/bin/web-search-eval check
+# No arguments also selects check.
 ```
 
-Run the local retrieval integrations too:
+This is the console's “Test search and reading (offline)” action. It makes calls through the two
+actual MCP tools with fixture search and HTTP responses. It checks discovery, source text, cache
+provenance, explicit engine selection, invalid engine rejection, backend failure, and unavailable
+pages. It invokes neither network services nor a model and requires no development extras.
+Failures produce a nonzero exit status. These checks do not grade coverage, source independence,
+claim support, freshness judgments, or stopping decisions.
+
+All required manifests and the Pi adapter ship in `web_research/benchmark_data/`. Defaults resolve
+relative to the installed package, not the working directory. Custom live retrieval manifests can be
+supplied with `--cases`; caller research cases and authored references are maintained in the package.
+
+## Reader integration tests
+
+From the checkout with the development and browser extras installed:
 
 ```sh
-.venv/bin/web-search-eval --integration
+.venv/bin/pytest -q
+WEB_SEARCH_RUN_BROWSER_TESTS=1 .venv/bin/pytest -q tests/test_browser_integration.py
+node --test integrations/pi/workflow.test.mjs
 ```
 
-The integration command needs the `dev` and `browser` extras, installed Chromium, permission to
-bind a localhost test server, and Tesseract for the real OCR case. It makes no search-engine or
-model API calls. Without Tesseract, the OCR integration is explicitly skipped; the missing-OCR
-fallback is still tested. Install Tesseract with `brew install tesseract` on macOS or the system
-package manager on Linux. The default OCR language is English.
+The browser tests need installed Chromium and permission to bind a local test server. They use local
+pages and make no search-engine or model calls. Document tests also exercise local PDF extraction,
+page images, and OCR when Tesseract is installed; missing OCR is reported as a skip. Cache refresh,
+continuation snapshots, cancellation, URL safety, and malformed pages remain covered by the active
+retrieval tests. Retired evidence-ledger fixtures are no longer an evaluation mode; their source and
+tests are available through the [historical design note](../docs/legacy-research-architecture.md).
 
-| Failure | Evaluation and acceptance criterion |
-|---|---|
-| Stale/future evidence | Fixed `as_of_date`; out-of-window articles contribute zero accepted claims. |
-| Syndication | Identical/near-identical reports count as one family across different domains. |
-| Unsupported answers | Negation, qualifications, actor order, numbers, missing citations and incorrect source associations are rejected. |
-| Cache freshness | An explicit refresh reaches the source; creating a cache variant cannot renew old evidence. |
-| Pagination | Reassembled chunks equal one extraction, even after the source changes and the store reopens. Expired or mismatched cursors fail explicitly. |
-| Duplicate work | Concurrent identical reads share a fetch; cancelling one waiter preserves the others; cancelling the last waiter stops retrieval. |
-| Documents | A generated PDF retains page numbers and values; a scanned PDF is OCR'd; page images remain available without OCR. |
-| Difficult pages | A local JavaScript article renders; tabs/load-more controls expose changed content; an unrelated destructive control is refused; soft errors remain marked. |
+## Reviewing research quality
 
-A passing adversarial JSON fixture means the expected rejection happened. It does not mean an
-incorrect answer was accepted. The `answer_valid` field in JSON output distinguishes these cases.
-The historical controller cases supply fixed evidence so their outcomes are repeatable.
+For additional manual exercises, [live_cases.json](live_cases.json) lists prompts requiring evaluator
+choices; it is not an automated benchmark manifest.
 
-To add a case, copy a JSON fixture, use a fixed `as_of_date`, and set exact expectations such as
-`accepted_claims`, `source_count`, `sufficient`, `unresolved_gaps`, and `answer_valid`. Tests for
-actual fetching and browser behavior belong in `tests/test_reliability.py`,
-`tests/test_documents.py`, or `tests/test_browser_integration.py`.
+Review the complete final answer against the pages actually read, including dates, scope, negation,
+qualifications, and units. Check that cited URLs were opened and that recommendations and forecasts
+have supporting evidence or are clearly identified as inference. For time-sensitive answers, record
+the run date and distinguish it from each source's publication date and the event date.
 
-## Live research quality
-
-Local tests establish retrieval and validation behavior; they do not measure recall across the
-live web. For an end-to-end check in the connected main-model session, use the cases in
-`live_cases.json`. Let the calling model run each request using `web_search` and `read_url`, record the tool calls
-and final answer, and manually check the cited passages. Record supported/unsupported factual statements, required
-items covered, independent source families, elapsed time, fetched pages, and unnecessary retries.
-Do not turn unstable live answers into fixed unit-test expectations. Date-sensitive questions use
-an explicit date supplied at execution time; record that date with the run.
-
-No second model or external judge is required. A human-reviewed source passage is the reference
-for live answer quality; the model's own confidence or a valid citation ID is not a correctness label.
+Review whether follow-ups addressed outstanding gaps and whether the final stop reason fits the
+observed evidence and access limitations. Passing retrieval checks or authored benchmark cases does
+not establish broad live-web recall, general factual accuracy, or appropriate stopping on new tasks.
+A human-reviewed source passage is the reference for live answer quality; the caller's confidence
+and a valid-looking citation are not correctness labels.

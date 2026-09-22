@@ -35,9 +35,6 @@ def _string_env(environment: Mapping[str, str], name: str, default: str = "") ->
 @dataclass(frozen=True, slots=True)
 class Settings:
     searxng_url: str = "http://127.0.0.1:8080"
-    model_base_url: str = "http://127.0.0.1:8000/v1"
-    model_id: str = ""
-    model_api_key: str = ""
     data_dir: Path = Path(".web-search-data")
     log_level: str = "INFO"
     user_agent: str = "LocalResearchBot/0.1 (+local personal research)"
@@ -52,38 +49,17 @@ class Settings:
     document_cache_ttl_seconds: int = 21_600
     search_cache_ttl_seconds: int = 900
     enable_crawl4ai: bool = True
-    model_timeout_seconds: float = 90.0
-    model_max_tokens: int = 4096
-    model_temperature: float = 0.1
-    reranker_base_url: str = ""
-    reranker_model_id: str = ""
-    reranker_api_key: str = ""
-    reranker_timeout_seconds: float = 30.0
-    reranker_max_candidates: int = 24
-    reranker_min_relevance_score: float = 0.08
-    reranker_relative_relevance_ratio: float = 0.15
-    lexical_min_relevance_score: float = 0.01
-    prefetch_pages: int = 2
     read_url_max_chars: int = 60_000
     read_url_max_links: int = 100
     search_timeout_seconds: float = 30.0
-    search_retry_base_seconds: float = 1.0
-    search_max_retries: int = 2
     search_healthy_engines: str = "google cse,duckduckgo web,mwmbl,searchmysite,mojeek,crowdview"
-    search_diversity_min_results: int = 3
-    search_max_retry_wait_seconds: float = 10.0
 
     @classmethod
     def from_env(cls, *, env_file: Path | None = None) -> Settings:
         environment = _merged_environment(env_file or PROJECT_ENV_PATH)
         data_dir = Path(environment.get("WEB_SEARCH_DATA_DIR", ".web-search-data")).expanduser()
-        model_base_url = environment.get("WEB_SEARCH_MODEL_BASE_URL", "http://127.0.0.1:8000/v1")
-        model_api_key = environment.get("WEB_SEARCH_MODEL_API_KEY", "")
         return cls(
             searxng_url=environment.get("WEB_SEARCH_SEARXNG_URL", "http://127.0.0.1:8080"),
-            model_base_url=model_base_url,
-            model_id=environment.get("WEB_SEARCH_MODEL_ID", ""),
-            model_api_key=model_api_key,
             data_dir=data_dir,
             log_level=environment.get("WEB_SEARCH_LOG_LEVEL", "INFO").upper(),
             user_agent=environment.get(
@@ -110,28 +86,6 @@ class Settings:
                 environment, "WEB_SEARCH_SEARCH_CACHE_TTL_SECONDS", 900
             ),
             enable_crawl4ai=_bool_env(environment, "WEB_SEARCH_ENABLE_CRAWL4AI", True),
-            model_timeout_seconds=_float_env(environment, "WEB_SEARCH_MODEL_TIMEOUT_SECONDS", 90.0),
-            model_max_tokens=_int_env(environment, "WEB_SEARCH_MODEL_MAX_TOKENS", 4096),
-            model_temperature=_float_env(environment, "WEB_SEARCH_MODEL_TEMPERATURE", 0.1),
-            reranker_base_url=_string_env(
-                environment, "WEB_SEARCH_RERANKER_BASE_URL", model_base_url
-            ),
-            reranker_model_id=_string_env(environment, "WEB_SEARCH_RERANKER_MODEL_ID"),
-            reranker_api_key=_string_env(environment, "WEB_SEARCH_RERANKER_API_KEY", model_api_key),
-            reranker_timeout_seconds=_float_env(
-                environment, "WEB_SEARCH_RERANKER_TIMEOUT_SECONDS", 30.0
-            ),
-            reranker_max_candidates=_int_env(environment, "WEB_SEARCH_RERANKER_MAX_CANDIDATES", 24),
-            reranker_min_relevance_score=_float_env(
-                environment, "WEB_SEARCH_RERANKER_MIN_RELEVANCE_SCORE", 0.08
-            ),
-            reranker_relative_relevance_ratio=_float_env(
-                environment, "WEB_SEARCH_RERANKER_RELATIVE_RELEVANCE_RATIO", 0.15
-            ),
-            lexical_min_relevance_score=_float_env(
-                environment, "WEB_SEARCH_LEXICAL_MIN_RELEVANCE_SCORE", 0.01
-            ),
-            prefetch_pages=max(1, _int_env(environment, "WEB_SEARCH_PREFETCH_PAGES", 2)),
             read_url_max_chars=max(
                 1, _int_env(environment, "WEB_SEARCH_READ_URL_MAX_CHARS", 60_000)
             ),
@@ -139,20 +93,10 @@ class Settings:
             search_timeout_seconds=max(
                 1.0, _float_env(environment, "WEB_SEARCH_SEARCH_TIMEOUT_SECONDS", 30.0)
             ),
-            search_retry_base_seconds=_float_env(
-                environment, "WEB_SEARCH_SEARCH_RETRY_BASE_SECONDS", 1.0
-            ),
-            search_max_retries=_int_env(environment, "WEB_SEARCH_SEARCH_MAX_RETRIES", 2),
             search_healthy_engines=_string_env(
                 environment,
                 "WEB_SEARCH_SEARCH_HEALTHY_ENGINES",
                 "google cse,duckduckgo web,mwmbl,searchmysite,mojeek,crowdview",
-            ),
-            search_diversity_min_results=max(
-                2, _int_env(environment, "WEB_SEARCH_SEARCH_DIVERSITY_MIN_RESULTS", 3)
-            ),
-            search_max_retry_wait_seconds=_float_env(
-                environment, "WEB_SEARCH_SEARCH_MAX_RETRY_WAIT_SECONDS", 10.0
             ),
         )
 
@@ -185,60 +129,3 @@ def _read_env_file(path: Path) -> dict[str, str]:
             value = value[1:-1]
         values[key] = value
     return values
-
-
-@dataclass(frozen=True, slots=True)
-class Budget:
-    max_seconds: float
-    max_searches: int
-    max_pages: int
-    max_pages_per_domain: int
-    checkpoint_every_pages: int
-    min_gain: float
-    max_wall_seconds: float | None = None
-    synthesis_reserve_seconds: float = 0.0
-    max_attempts_per_search_batch: int = 3
-
-
-BUDGETS: dict[str, Budget] = {
-    "quick": Budget(
-        15.0,
-        1,
-        2,
-        1,
-        1,
-        0.2,
-        max_wall_seconds=60.0,
-        synthesis_reserve_seconds=30.0,
-        max_attempts_per_search_batch=1,
-    ),
-    "auto": Budget(
-        120.0,
-        8,
-        20,
-        4,
-        2,
-        0.08,
-        max_wall_seconds=720.0,
-        synthesis_reserve_seconds=105.0,
-        max_attempts_per_search_batch=3,
-    ),
-    "thorough": Budget(
-        600.0,
-        20,
-        60,
-        8,
-        3,
-        0.04,
-        max_wall_seconds=1500.0,
-        synthesis_reserve_seconds=105.0,
-        max_attempts_per_search_batch=4,
-    ),
-}
-
-
-def budget_for(effort: str) -> Budget:
-    try:
-        return BUDGETS[effort]
-    except KeyError as exc:
-        raise ValueError(f"Unknown effort level: {effort}") from exc

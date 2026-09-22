@@ -34,11 +34,14 @@ an intentional API change:
   `time_range`, `page`, `limit`, and `refresh` parameters.
 - Consume `results`, then call `read_url` on selected URLs. There is no `answer_markdown`, coverage
   score, source-count threshold, requirement graph, automatic page analysis, or synthesis fallback.
-- Remove sampling and sampling-auto-approval configuration for this server. Existing model,
-  reranker, and research-budget settings are unused by the public tools.
+- Remove sampling and sampling-auto-approval configuration for this server. Retired model,
+  reranker, retry, and research-budget environment settings are ignored and can be removed from
+  your `.env`. No model credentials belong in this server's configuration.
 
-The previous controller and its evaluations remain in the repository for reference and independent
-library use. They are not exposed as an MCP tool or invoked by either public operation.
+The previous controller, model clients, evidence ledger, and their Python library APIs have been
+removed. Their source and tests remain available in Git history; see the
+[historical design note](docs/legacy-research-architecture.md). This cleanup does not change the two
+current MCP schemas or delete existing data.
 
 ## Requirements
 
@@ -229,13 +232,18 @@ The concurrency ceilings are fixed on first use; restart the MCP server to chang
 
 Run `./web-search` from this project (or the installed `web-search` launcher). The optional console
 installs the application and browser runtime, manages Docker/SearXNG, shows retrieval readiness,
-and runs the doctor. It does not modify your model configuration.
+and runs the doctor. “Test search and reading (offline)” exercises the actual MCP tools with fixture
+responses and reports a failure if any check fails. It uses no network or model. It does not modify
+your model configuration.
 
 ## Storage and safety
 
 Search and document caches use SQLite with TTL pruning, row limits, and per-document size limits.
 Immutable read snapshots allow stable pagination. Use `.venv/bin/web-search-maint` to prune and
-compact the cache; `--help` lists the maintenance options.
+compact the cache while the server is stopped. The database keeps its historical filename,
+`research.sqlite3`, so existing caches remain usable. Old `research_runs` and `events` tables are
+preserved if present and labeled historical by diagnostics; new databases do not create them.
+Current research decisions and answers live in your client session, not a server research journal.
 
 Only public HTTP(S) pages can be read by default. URL credentials, private-network destinations,
 unsafe redirects, and oversized responses are rejected. Browser subrequests receive the same URL
@@ -253,11 +261,21 @@ Blocked pages and extraction limitations are reported rather than treated as usa
 
 Tests cover MCP discovery without sampling, no page reads during search, backend errors, cooldowns,
 cache refresh, timeout/cancellation, input limits, document extraction, and stable read pagination.
-Optional browser integrations and historical research evaluations are described in
-[eval/README.md](eval/README.md). Local tests do not establish live engine recall or answer accuracy.
-An opt-in [retrieval baseline](eval/README.md#live-retrieval-baseline) records actual MCP results,
-warnings, timestamps, and cache/continuation checks separately from research-quality evaluation.
-An opt-in [caller research benchmark](eval/README.md#caller-research-benchmark) runs the configured
-Pi model against controlled sources using the same two MCP tools. It records answers, cited passages,
-stop reasons, and work performed; an explicit live case exercises the real web. Model access for this
-benchmark comes from the user's existing Pi configuration, never from the search server.
+Evaluation commands have distinct scopes:
+
+```bash
+.venv/bin/web-search-eval check
+.venv/bin/web-search-eval retrieval --output /tmp/web-search-retrieval.json
+.venv/bin/web-search-eval research --directory /tmp/web-search-research
+```
+
+`check` (also the default with no arguments) runs offline public-tool checks with fixture responses,
+without a model. `retrieval` checks live search, reading, cache provenance, and pagination without a
+model. `research` explicitly invokes your configured Pi model on controlled sources; add `--live` for
+real-web cases. A hosted Pi model incurs that provider's normal charges. Required cases and the Pi
+benchmark adapter ship inside the Python package, so these commands also work outside a checkout.
+See [eval/README.md](eval/README.md) for interpretation, browser tests, and benchmark options.
+
+Retrieval success does not establish answer accuracy. Research reports record the caller's answer,
+quoted passages, stop reason, and work performed; unsupported additions and the justification for
+stopping still need review. No server confidence score or page count establishes completion.
