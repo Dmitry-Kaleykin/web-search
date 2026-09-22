@@ -10,3 +10,4 @@ build/
 .web-search-data/
 ui/node_modules/
 .idea
+eval/

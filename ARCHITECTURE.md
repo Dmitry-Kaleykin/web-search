@@ -26,10 +26,20 @@ research controller, agent, model clients, or reranker. There is no server-side 
 claim extraction, coverage calculation, semantic relevance gate, source-count rule, or synthesis.
 The model interprets untrusted source content and is responsible for its final answer.
 
+The caller procedure lives in packaged `research_workflow.md`. `workflow.py` supplies the tool-level
+contract and guidance derived from retrieval status, source truncation, and engine attribution.
+These are suggestions, not a confidence score or stopping gate. The caller keeps a compact evidence
+note in its conversation and continuation summaries. It ends with supported completion, unproductive
+available search paths, or a blocked/limited partial result, preserving outstanding gaps.
+Pi can load `integrations/pi/workflow.mjs` to inject the shared procedure whenever both direct tools
+are active. It adds no tools, model calls, or external storage and respects other system instructions.
+
 `web_search` has a configurable 30-second default deadline covering dispatch queue and upstream
 request time. Dispatches are serialized so each provider instance restores cooldowns recorded by
 its predecessor. The provider is configured with zero retries and an explicit general-web engine
 pool. It returns cached results or performs one request, without diversity widening or page reads.
+The caller may choose one engine from that pool with `engine`. The selection is part of
+cache identity; selection cannot bypass cooldowns or introduce unconfigured engines.
 Cancellation propagates and closes the HTTP client. Successful empty searches are distinguished
 from backend failures; partial upstream failures preserve returned results and diagnostics.
 Search caches retain the original retrieval timestamp and warnings, including skipped engines.
@@ -56,3 +66,10 @@ The old research modules and deterministic evaluation fixtures remain available 
 comparison and direct library callers, but are unreachable from the public MCP workflow. Their
 configuration fields do not control the two tools. The [old design](docs/legacy-research-architecture.md)
 is archived separately. See [README.md](README.md) for setup, API fields, and resource limits.
+
+`research_benchmark.py` is an opt-in evaluation runner, outside the production path. An isolated Pi
+caller receives only the two actual MCP schemas. Controlled cases replace search/HTTP network
+boundaries while retaining tool validation, reading, cache behavior, and outputs. Separate live cases
+use the real network. Authored references check requested facts against quoted passages actually read;
+final prose and the quality of the stopping rationale still require review. Time/call ceilings stop
+evaluation runaway and fail the run; they are not evidence thresholds.

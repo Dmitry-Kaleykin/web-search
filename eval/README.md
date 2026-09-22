@@ -1,5 +1,62 @@
 # Retrieval and historical research evaluations
 
+## Caller research benchmark
+
+From the project root, with Pi configured for the model you intend to use:
+
+```sh
+.venv/bin/python -m web_research.research_benchmark run \
+  --directory /tmp/web-search-research-current
+```
+
+This explicitly invokes the user's configured Pi model. A local model keeps the run local; a hosted
+Pi provider uses that provider's normal billing. The production server never invokes a model.
+Use a new output directory per run. `--case simple_fact` selects a case, `--policy previous` selects
+the recorded Stage 1 instructions/descriptions and omits Stage 2 result guidance and engine controls.
+The comparison isolates the caller workflow, not old extraction bugs fixed in Stage 1.
+
+Six controlled cases exercise an authoritative fact, comparison with negation, irrelevant initial
+results, conflicting applicable sources, access failure, and unproductive searches. Each has authored
+source content and reference values. The caller sees the question and tools, not the reference answers.
+It chooses queries, page reads, and stopping itself. Fixtures replace only the network boundaries;
+actual MCP schemas, validation, search caching, HTML extraction, and read outputs remain in use.
+The evaluation adapter serializes its subprocess calls to avoid SQLite initialization races; this is
+not a production concurrency or latency benchmark.
+
+An explicit live case exercises the real search service and public Python documentation:
+
+```sh
+.venv/bin/python -m web_research.research_benchmark run --live \
+  --directory /tmp/web-search-research-live
+```
+
+The runner starts an ephemeral Pi session with only these two tools, disables unrelated extensions,
+skills, context files, and built-in shell/filesystem tools, and supplies the shared workflow. It does
+not change the user's selected model. The default 180-second and 20-call ceilings are configurable
+with `--max-seconds` and `--max-calls` (calls reaching the MCP bridge). Invalid arguments rejected by
+Pi before dispatch are counted separately in attempted calls and are bounded by the time ceiling.
+Hitting a ceiling leaves an incomplete failed run, never a
+successful research result. No research-success rule counts pages or calls.
+
+Each case records `calls.jsonl`, `result.json`, caller events/errors, and the delivered tool protocol.
+The summary reports authored fact checks, citations matched to passages actually returned, required
+source coverage, stop category, exact repeated MCP calls, total attempted calls including validation
+failures, and resource failures. Reports may recover JSON
+from prose/fences or separate stop blocks; a `format_warning` records that deviation. Additional
+findings are flagged for review, not assumed correct merely because a required fact is correct.
+Quoted passages are checked in all reported findings, including additional ones; this detects
+fabricated quotation text without pretending to judge whether an arbitrary claim follows from it.
+Review the full answer for unsupported additions, missing qualifications, and whether the stopping
+reason is justified. The checks are not an independent semantic judge. Synthetic references are
+authored test facts; live reference passages can change and must be reviewed when checks fail.
+
+The saved previous policy comes from the revision named in `research_previous_policy.json`.
+Keep raw caller logs local: they can contain model reasoning. Publish reviewed answers and tool traces
+instead. A smoke run is useful evidence about these cases, not a broad accuracy or efficiency claim.
+
+The [Stage 2 baseline](baselines/2026-09-18-stage2.md) records the local caller comparison, live check,
+and limitations found by reviewing the generated answers.
+
 ## Live retrieval baseline
 
 Run from the project root with SearXNG running and the reader configured:

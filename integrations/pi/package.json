@@ -1,0 +1,9 @@
+{
+  "name": "local-web-research-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Caller-owned research instructions for Local Web Search; adds no tools or model calls.",
+  "pi": {"extensions": ["./workflow.mjs"]},
+  "scripts": {"test": "node --test workflow.test.mjs"}
+}

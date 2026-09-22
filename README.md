@@ -13,6 +13,15 @@ accounts, decides when to stop, and writes the final answer with source links. T
 Search results are not evidence-checked answers; snippets are discovery aids. Read promising sources
 before relying on their detailed claims, and treat retrieved text as untrusted data.
 
+The [research workflow](src/web_research/research_workflow.md) gives that caller a concrete procedure:
+track requested parts and evidence, investigate gaps and contradictions, choose purposeful follow-ups,
+and distinguish sufficient evidence, unproductive available paths, and blocked/incomplete work.
+It is included in MCP instructions, reinforced in both tool descriptions, and supported by short
+result guidance. The optional [Pi integration](integrations/pi/README.md#research-workflow) also
+adds it to the caller's system context, because adapters may not automatically forward MCP instructions.
+The calling model owns the evidence note in its conversation; the server does not enforce a semantic
+completion gate or store a research ledger. No minimum number of pages establishes success.
+
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the current design.
 
 ## Migrating from autonomous research
@@ -125,7 +134,7 @@ with installed adapters; no sampling back-channel is used.
 ## Tool workflow
 
 ```text
-web_search(query, limit=10, page=1, language=null, time_range=null, refresh=false)
+web_search(query, limit=10, page=1, language=null, time_range=null, refresh=false, engine=null)
 read_url(url, query=null, render="auto", cursor=0, max_chars=4000,
          include_links=false, refresh=false, visual=false, page=1, actions=null)
 ```
@@ -150,6 +159,12 @@ server does not decide that a question has been answered just because results we
 - `warnings`: retrieval diagnostics, including engines that failed or were skipped during the
   original retrieval. Cached results preserve these even after the engines' cooldowns expire.
 - `engine_health`: current cooldowns, separate from the original retrieval conditions.
+- `requested_engines` and `available_engines`: the requested pool and configured engines not on
+  cooldown. Availability is not a guarantee of useful results. When an alternate index offers a
+  promising route after weak results, pass one name from `available_engines` as `engine`.
+  The selection is validated, uses a separate cache entry, and respects cooldowns and one dispatch.
+- `guidance`: short suggestions based on observable retrieval conditions. Single-engine attribution
+  is reported without treating engine count as source independence, relevance, or research completion.
 - `cache_hit`, `retrieved_at`, `elapsed_ms`, and `responded_at`: cache status, original retrieval
   time, call duration, and response time. A cache hit preserves `retrieved_at`; neither timestamp
   is a source publication date. Older cache entries without provenance return `retrieved_at=null`
@@ -175,6 +190,8 @@ HTTP extraction resolves relative links against the final response URL, includin
 `base href`, before producing Markdown. The structured link list uses the same resolution.
 Old document cache variants are bypassed after this extraction change; existing continuation
 snapshots remain immutable until they expire.
+Read outputs also include `guidance` about using supporting passages, incomplete/error pages, and
+checking omitted context. This guidance does not certify the content's accuracy or sufficiency.
 
 `next_cursor` is now an opaque string. Copy it unchanged into the next call with the same URL;
 it reads an immutable snapshot, including query-focused browser output, rather than fetching the
@@ -240,3 +257,7 @@ Optional browser integrations and historical research evaluations are described 
 [eval/README.md](eval/README.md). Local tests do not establish live engine recall or answer accuracy.
 An opt-in [retrieval baseline](eval/README.md#live-retrieval-baseline) records actual MCP results,
 warnings, timestamps, and cache/continuation checks separately from research-quality evaluation.
+An opt-in [caller research benchmark](eval/README.md#caller-research-benchmark) runs the configured
+Pi model against controlled sources using the same two MCP tools. It records answers, cited passages,
+stop reasons, and work performed; an explicit live case exercises the real web. Model access for this
+benchmark comes from the user's existing Pi configuration, never from the search server.
