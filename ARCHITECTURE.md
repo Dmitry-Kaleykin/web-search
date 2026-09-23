@@ -41,7 +41,8 @@ its predecessor. The provider has no internal retry or diversity-widening loop a
 engine pool. It returns cached results or performs one request, without diversity widening or page reads.
 The caller may choose one engine from that pool with `engine`. The selection is part of
 cache identity; selection cannot bypass cooldowns or introduce unconfigured engines.
-Cancellation propagates and closes the HTTP client. Successful empty searches are distinguished
+Identical concurrent calls share one operation, including refreshes. Cancellation of the last waiter
+propagates and closes the HTTP client. Successful empty searches are distinguished
 from backend failures; partial upstream failures preserve returned results and diagnostics.
 Search caches retain the original retrieval timestamp and warnings, including skipped engines.
 Current engine cooldowns are reported separately so recovery does not erase a cached result's
@@ -66,7 +67,7 @@ The doctor and console report retrieval readiness without probing model services
 Retired Python research APIs, model/reranker settings, and their deterministic ledger evaluations
 have been removed. The [historical design note](docs/legacy-research-architecture.md) points to their
 Git revision. Existing SQLite `research_runs` and `events` tables remain untouched and are reported
-as historical records; fresh stores create only caches, snapshots, and engine health. Production
+as historical records; fresh stores create only caches, snapshots, engine health, and backend metadata. Production
 research history belongs to the caller's session. See [README.md](README.md) for setup and limits.
 
 ## Evaluation boundaries
@@ -84,3 +85,9 @@ boundaries while retaining tool validation, reading, cache behavior, and outputs
 use the real network. Authored references check requested facts against quoted passages actually read;
 final prose and the quality of the stopping rationale still require review. Time/call ceilings stop
 evaluation runaway and fail the run; they are not evidence thresholds.
+
+Engine access history and transactional recovery leases live in `search/health.py` and SQLite.
+`engine_status` exposes observations separately from eligibility. Per-engine timing headers can
+verify successful empty execution; unsupported filters and absent attribution do not certify health.
+Backend inventory is read from the local `/config` endpoint and cached, with explicit uncertainty if
+it is unavailable. See [search availability](docs/search-availability.md) for the operational policy.

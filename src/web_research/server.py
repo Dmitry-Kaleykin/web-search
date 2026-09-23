@@ -24,6 +24,7 @@ from .readers.quality import page_diagnostics
 from .readers.router import LayeredReader, RenderMode
 from .safety.urls import canonicalize_url
 from .search.searxng import SearXNGError, SearXNGSearchProvider
+from .search.shared import SharedSearches
 from .storage import SQLiteStore
 from .text import lexical_similarity
 from .workflow import CALLER_CONTRACT, RESEARCH_WORKFLOW, read_guidance, search_guidance
@@ -82,7 +83,12 @@ class WebSearchOutput(BaseModel):
     outcome: Literal["success", "empty", "backend_unavailable"]
     warnings: list[str] = Field(description="Retrieval diagnostics, preserved on cache hits.")
     engine_health: dict[str, str] = Field(
-        description="Current engine cooldowns, not historical health."
+        description="Current cooldowns, recovery leases, and configuration exclusions."
+    )
+    engine_status: dict[str, dict] = Field(
+        default_factory=dict,
+        description="Observed health, last success/failure, and estimated recovery time. "
+        "Untested/recovery_due does not mean verified working.",
     )
     cache_hit: bool
     elapsed_ms: int
@@ -92,7 +98,8 @@ class WebSearchOutput(BaseModel):
     )
     available_engines: list[str] = Field(
         description=(
-            "Configured engines not currently cooling down; availability is not guaranteed. "
+            "Configured engines eligible for a request or guarded recovery attempt; "
+            "not verified availability. "
             "Empty if queue timeout prevented inspecting health."
         )
     )
@@ -132,6 +139,7 @@ class ReadUrlOutput(BaseModel):
 _RUNTIMES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _RUNTIME_LIMITS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _SEARCH_LIMITS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_SHARED_SEARCHES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _shared_reader_runtime(settings: Settings):
@@ -143,6 +151,9 @@ def _shared_reader_runtime(settings: Settings):
 
 
 async def close_reader_runtimes() -> None:
+    shared = _SHARED_SEARCHES.pop(asyncio.get_running_loop(), None)
+    if shared is not None:
+        await shared.close()
     runtimes = _RUNTIMES.pop(asyncio.get_running_loop(), {})
     await asyncio.gather(*(runtime.close() for runtime in runtimes.values()))
     _RUNTIME_LIMITS.pop(asyncio.get_running_loop(), None)
@@ -364,9 +375,28 @@ async def web_search(
     ] = None,
 ) -> WebSearchOutput:
     """One bounded discovery request, without page reads or internal model calls."""
+    settings = Settings.from_env()
+    shared = _SHARED_SEARCHES.setdefault(asyncio.get_running_loop(), SharedSearches())
+    key = (settings, query.strip(), limit, page, language, time_range, refresh, engine)
+    return await shared.run(
+        key,
+        lambda: _web_search(
+            query,
+            ctx,
+            settings,
+            limit=limit,
+            page=page,
+            language=language,
+            time_range=time_range,
+            refresh=refresh,
+            engine=engine,
+        ),
+    )
+
+
+async def _web_search(query, ctx, settings, *, limit, page, language, time_range, refresh, engine):
     if not query.strip():
         raise ValueError("query must not be empty")
-    settings = Settings.from_env()
     configured_engines = list(
         dict.fromkeys(
             name.strip() for name in settings.search_healthy_engines.split(",") if name.strip()
@@ -379,6 +409,7 @@ async def web_search(
     results = []
     warnings: list[str] = []
     engine_health: dict[str, str] = {}
+    engine_status = {}
     engine_health_known = False
     cache_hit = False
     retrieved_at = None
@@ -397,6 +428,7 @@ async def web_search(
                     timeout_seconds=min(20.0, settings.search_timeout_seconds),
                     user_agent=settings.user_agent,
                     healthy_engines=settings.search_healthy_engines,
+                    use_catalog=True,
                 )
                 try:
                     await ctx.report_progress(progress=0.1, total=1.0, message="Searching the web")
@@ -415,6 +447,7 @@ async def web_search(
                 finally:
                     warnings.extend(search.last_warnings)
                     engine_health = search.engine_health()
+                    engine_status = search.engine_report()
                     engine_health_known = True
                     cache_hit = search.last_cache_hit
                     retrieved_at = search.last_retrieved_at
@@ -447,6 +480,7 @@ async def web_search(
         outcome=outcome,
         warnings=warnings,
         engine_health=engine_health,
+        engine_status=engine_status,
         cache_hit=cache_hit,
         elapsed_ms=int((time.monotonic() - started) * 1_000),
         responded_at=datetime.now(UTC).isoformat(),

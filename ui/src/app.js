@@ -328,7 +328,7 @@ async function startServices({ pull = false } = {}) {
   if (pull) {
     await run("docker", ["compose", "-f", COMPOSE_FILE, "pull"]);
   }
-  await run("docker", ["compose", "-f", COMPOSE_FILE, "up", "-d"]);
+  await run("docker", ["compose", "-f", COMPOSE_FILE, "up", "-d", "--wait", "--wait-timeout", "60"]);
 }
 
 async function stopServices() {

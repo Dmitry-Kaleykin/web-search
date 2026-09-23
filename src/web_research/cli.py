@@ -5,6 +5,7 @@ import importlib.util
 import os
 import shutil
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Settings
@@ -63,10 +64,12 @@ async def _doctor() -> int:
         store=store,
         timeout_seconds=min(20.0, settings.search_timeout_seconds),
         healthy_engines=settings.search_healthy_engines,
+        use_catalog=True,
         user_agent=settings.user_agent,
     )
     try:
         async with asyncio.timeout(settings.search_timeout_seconds):
+            await search.refresh_catalog(force=True)
             if not search.healthy_engines:
                 raise RuntimeError("No search engines configured")
             results = await search.search(
@@ -87,6 +90,15 @@ async def _doctor() -> int:
         failed = True
         print(f"FAIL SearXNG JSON API: {type(exc).__name__}: {exc}", file=sys.stderr)
     finally:
+        for name, health in search.engine_report().items():
+            if name == "searxng":
+                continue
+            print(
+                f"INFO engine {name}: {health['status']} | "
+                f"consecutive failures={health['consecutive_failures']} | "
+                f"last success={_timestamp(health['last_success'])} | "
+                f"retry at={_timestamp(health['retry_at'])} (estimated)"
+            )
         for warning in search.last_warnings:
             print(f"WARN {warning}")
         await search.close()
@@ -240,6 +252,10 @@ def _browser_runtime_present(directory: Path) -> bool:
         "headless_shell",
     }
     return any(path.is_file() and path.name in executable_names for path in directory.rglob("*"))
+
+
+def _timestamp(value: float | None) -> str:
+    return datetime.fromtimestamp(value, UTC).isoformat() if value is not None else "unknown"
 
 
 def doctor_main() -> None:

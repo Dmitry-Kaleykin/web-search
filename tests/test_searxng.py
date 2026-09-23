@@ -290,7 +290,7 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
             try:
                 health = provider.engine_health()
                 self.assertIn("brave", health)
-                self.assertIn("restored", health["brave"])
+                self.assertIn("cooling_down", health["brave"])
 
             finally:
                 await provider.close()
@@ -309,9 +309,9 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                 provider._cool("brave", "CAPTCHA challenge")
                 active = store.active_engine_cooldowns()
                 self.assertIn("brave", active)
-                # A persisted monotonic value would land nowhere near the 1800s CAPTCHA window.
-                self.assertGreater(active["brave"][1], 1700)
-                self.assertLessEqual(active["brave"][1], 1800)
+                # A persisted monotonic value would land nowhere near the 86400s CAPTCHA window.
+                self.assertGreater(active["brave"][1], 86300)
+                self.assertLessEqual(active["brave"][1], 86400)
             finally:
                 await provider.close()
                 store.close()

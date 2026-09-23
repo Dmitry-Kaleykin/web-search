@@ -13,6 +13,14 @@ server:
   image_proxy: false
 
 search:
+  # Match search/health.py's initial retry estimates. Repeated failures extend the client wait.
+  suspended_times:
+    SearxEngineAccessDenied: 86400
+    SearxEngineCaptcha: 86400
+    SearxEngineTooManyRequests: 3600
+    cf_SearxEngineCaptcha: 1296000
+    cf_SearxEngineAccessDenied: 86400
+    recaptcha_SearxEngineCaptcha: 604800
   safe_search: 0
   autocomplete: ""
   formats:
@@ -23,23 +31,21 @@ outgoing:
   # 4.0s was tight enough to kill engines that were healthy but slow (Codeberg answers in ~4.6s).
   request_timeout: 5.0
   max_request_timeout: 12.0
-  # SearXNG retries upstream itself, and the Python client retries on top of that. Nested
-  # retries multiply request volume against an engine that has already said "too many requests",
-  # which deepens the block instead of clearing it. Retry policy lives in the client layer.
+  # Neither layer retries inside one search. Engine recovery happens on later calls.
   retries: 0
   pool_connections: 100
   pool_maxsize: 10
   keepalive_expiry: 5.0
-  # HTTP/2 fingerprints closer to a real modern browser than HTTP/1.1 does.
+  # Enable HTTP/2 where the upstream supports it; this does not guarantee access.
   enable_http2: true
   useragent_suffix: "local single-user research instance"
 
-# Engine policy. Every verdict below is a per-engine measurement made against this instance with
+# Engine policy. Comments below record earlier per-engine measurements against this instance with
 # `?engines=<name>` pinning, so the numbers are isolated to that engine and not the aggregate.
 # Re-measure before changing anything: engines come and go, and a name that worked last month may
 # now be a CAPTCHA wall.
 engines:
-  # ---------------------------------------------------------------- hard walls: never answer ---
+  # ------------------------------------------- historically blocked: disabled by operator ---
   # Note the endpoint nuance: DuckDuckGo's legacy HTML endpoint is a CAPTCHA magnet while its
   # `/web` and news endpoints answer normally, so only the legacy one is disabled here.
   - name: duckduckgo

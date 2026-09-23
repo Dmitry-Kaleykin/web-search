@@ -40,6 +40,10 @@ class DoctorSearchTests(unittest.IsolatedAsyncioTestCase):
             store.close()
             with (
                 patch("web_research.cli.Settings.from_env", return_value=settings),
+                patch(
+                    "web_research.search.searxng.SearXNGSearchProvider.refresh_catalog",
+                    new_callable=AsyncMock,
+                ),
                 patch("httpx.AsyncClient.get", new_callable=AsyncMock) as get,
                 patch("httpx.AsyncClient.post", new_callable=AsyncMock) as post,
                 patch("web_research.cli._public_read_report", return_value=True) as read_report,
@@ -62,6 +66,10 @@ class DoctorSearchTests(unittest.IsolatedAsyncioTestCase):
             settings = Settings(data_dir=Path(directory), enable_crawl4ai=False)
             with (
                 patch("web_research.cli.Settings.from_env", return_value=settings),
+                patch(
+                    "web_research.search.searxng.SearXNGSearchProvider.refresh_catalog",
+                    new_callable=AsyncMock,
+                ),
                 patch("web_research.cli._public_read_report", return_value=False),
                 patch(
                     "web_research.search.searxng.SearXNGSearchProvider._request",

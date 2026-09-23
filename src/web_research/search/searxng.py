@@ -15,15 +15,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from ..dates import normalize_published_at
 from ..models import SearchResult
 from ..safety.urls import canonicalize_url
 from ..storage import SQLiteStore
+from .health import EngineHealth
 
 
 class SearXNGError(RuntimeError):
@@ -46,10 +49,6 @@ class SearXNGRateLimitedError(SearXNGError):
         self.retry_after = retry_after
 
 
-_CAPTCHA_MARKERS = ("captcha", "access denied", "unusual traffic", "blocked", "suspended")
-_RATE_LIMIT_MARKERS = ("too many requests", "rate limit", "429", "ratelimit")
-_TRANSIENT_MARKERS = ("timeout", "timed out", "crash", "connection", "reset", "temporarily", "eof")
-
 _CHALLENGE_MARKERS = (
     "verifying your browser",
     "just a moment",
@@ -62,24 +61,6 @@ _CHALLENGE_MARKERS = (
 )
 
 
-@dataclass(slots=True)
-class _EngineCooldown:
-    reason: str
-    expires: float
-
-
-def _classify_failure(reason: str) -> float:
-    """Seconds to leave an engine out of rotation, by how it failed."""
-    text = reason.casefold()
-    if any(marker in text for marker in _RATE_LIMIT_MARKERS):
-        return 900.0
-    if any(marker in text for marker in _CAPTCHA_MARKERS):
-        return 1800.0
-    if any(marker in text for marker in _TRANSIENT_MARKERS):
-        return 120.0
-    return 300.0
-
-
 class SearXNGSearchProvider:
     def __init__(
         self,
@@ -90,6 +71,7 @@ class SearXNGSearchProvider:
         timeout_seconds: float = 20.0,
         user_agent: str = "LocalResearchBot/0.1",
         healthy_engines: str = "",
+        use_catalog: bool = False,
     ) -> None:
         try:
             import httpx
@@ -103,8 +85,10 @@ class SearXNGSearchProvider:
         self.last_retrieved_at: str | None = None
         self.last_warnings: list[str] = []
         self.last_engine_health: dict[str, str] = {}
-        self._cooldowns: dict[str, _EngineCooldown] = {}
-        self._restore_cooldowns()
+        self.health = EngineHealth(store)
+        self.use_catalog = use_catalog
+        self.timeout_seconds = timeout_seconds
+        self.catalog = store.get_backend_metadata(self.base_url) if store else None
         self._client = httpx.AsyncClient(
             timeout=timeout_seconds,
             headers={"User-Agent": user_agent, "Accept": "application/json"},
@@ -113,51 +97,90 @@ class SearXNGSearchProvider:
     async def close(self) -> None:
         await self._client.aclose()
 
+    def engine_report(self) -> dict[str, dict]:
+        names = list(dict.fromkeys([*(self.healthy_engines or self.health.records()), "searxng"]))
+        report = self.health.snapshot(names)
+        inventory = (self.catalog or {}).get("engines")
+        for name in self.healthy_engines:
+            report[name]["configuration_verified"] = inventory is not None
+            if inventory is not None and (name not in inventory or not inventory[name]["enabled"]):
+                report[name].update(
+                    status="disabled" if name in inventory else "missing",
+                    reason="Engine is not enabled in the SearXNG configuration",
+                )
+        return report
+
     def engine_health(self) -> dict[str, str]:
-        """Engines currently on cooldown and why, with seconds remaining."""
-        now = time.monotonic()
-        snapshot = {}
-        for engine, cooldown in list(self._cooldowns.items()):
-            remaining = cooldown.expires - now
-            if remaining <= 0:
-                self._cooldowns.pop(engine, None)
-                continue
-            snapshot[engine] = f"{cooldown.reason} ({int(remaining)}s cooldown left)"
-        return snapshot
+        now = time.time()
+        return {
+            name: f"{entry['reason']} ({max(0, int((entry['retry_at'] or now) - now))}s; "
+            f"{entry['status']})"
+            for name, entry in self.engine_report().items()
+            if entry["status"] in {"cooling_down", "recovering", "disabled", "missing"}
+        }
 
     def _cool(self, engine: str, reason: str, seconds: float | None = None) -> None:
-        duration = seconds if seconds is not None else _classify_failure(reason)
-        expiry = time.monotonic() + duration
-        existing = self._cooldowns.get(engine)
-        # Never shorten an in-flight cooldown: a second failure is evidence, not a reset.
-        if existing and existing.expires >= expiry:
-            return
-        self._cooldowns[engine] = _EngineCooldown(reason=reason, expires=expiry)
-        if self.store is None:
+        self.health.failed(engine, reason, seconds)
+
+    async def refresh_catalog(self, *, force: bool = False) -> None:
+        """Read only local backend metadata; failed inspection never certifies configuration."""
+        if not force and self.catalog and self.catalog.get("refresh_after", 0) > time.time():
             return
         try:
-            # Persisted as wall clock: a monotonic expiry is meaningless in the next process.
-            self.store.record_engine_cooldown(engine, reason, time.time() + duration)
-        except Exception as exc:  # pragma: no cover - storage must not break search
-            self.last_warnings.append(f"engine_cooldown_not_persisted:{exc}")
-
-    def _restore_cooldowns(self) -> None:
-        """Reload penalties from a previous process so a restart does not re-probe dead engines.
-
-        Without this, every restart looks healthy for exactly as long as it takes to get blocked
-        again, which is precisely the blind spot that made the original failure so hard to see.
-        """
-        if self.store is None:
-            return
-        try:
-            active = self.store.active_engine_cooldowns()
-        except Exception as exc:  # pragma: no cover - storage must not break search
-            self.last_warnings.append(f"engine_cooldown_restore_failed:{exc}")
-            return
-        for engine, (reason, remaining) in active.items():
-            self._cooldowns[engine] = _EngineCooldown(
-                reason=f"{reason} (restored)", expires=time.monotonic() + remaining
+            response = await self._client.get(f"{self.base_url}/config", timeout=2)
+            response.raise_for_status()
+            payload = response.json()
+            entries = payload["engines"]
+            if not isinstance(entries, list) or not entries:
+                raise ValueError("missing engine inventory")
+            self.catalog = {
+                "engines": {
+                    item["name"]: {
+                        "enabled": item.get("enabled") is True,
+                        "paging": item.get("paging") is True,
+                        "time_range_support": item.get("time_range_support") is True,
+                    }
+                    for item in entries
+                    if isinstance(item, dict) and isinstance(item.get("name"), str)
+                },
+                "version": payload.get("version"),
+                "refresh_after": time.time() + 900,
+            }
+        except Exception as exc:
+            # Catalog availability must not disable an otherwise working JSON search service.
+            self.catalog = {"error": type(exc).__name__, "refresh_after": time.time() + 60}
+            self.last_warnings.append(
+                "engine_configuration_unverified: backend /config unavailable"
             )
+        if self.store:
+            self.store.put_backend_metadata(self.base_url, self.catalog)
+
+    def _filter_catalog(self, params: dict) -> None:
+        inventory = (self.catalog or {}).get("engines")
+        if inventory is None or not params.get("engines"):
+            return
+        requested = _parse_engine_list(params["engines"])
+        available = []
+        for name in requested:
+            entry = inventory.get(name)
+            reason = (
+                "missing"
+                if not entry
+                else "disabled"
+                if not entry["enabled"]
+                else "paging_unsupported"
+                if params["pageno"] > 1 and not entry["paging"]
+                else "time_filter_unsupported"
+                if params.get("time_range") and not entry["time_range_support"]
+                else None
+            )
+            if reason:
+                self.last_warnings.append(f"search_engine_skipped:{name}:{reason}")
+            else:
+                available.append(name)
+        if not available:
+            raise SearXNGError("No configured engine can execute these search parameters")
+        params["engines"] = ",".join(available)
 
     async def search(
         self,
@@ -204,29 +227,87 @@ class SearXNGSearchProvider:
             requested = _parse_engine_list(engines)
             available = [name for name in requested if name.casefold() not in cooling]
             if not available:
-                raise SearXNGChallengeError("All requested search engines are cooling down")
+                raise SearXNGChallengeError(
+                    "All requested search engines are cooling down or excluded by configuration"
+                )
             skipped = [name for name in requested if name.casefold() in cooling]
             if skipped:
                 self.last_warnings.append(
                     "search_engines_skipped_at_retrieval:" + ", ".join(skipped)
                 )
             params["engines"] = ",".join(available)
-        payload = await self._request(params)
-        self.last_retrieved_at = datetime.now(UTC).isoformat()
-        failures = list(dict.fromkeys(tuple(failure) for failure in payload["failures"]))
-        for engine, reason in failures:
-            self._cool(engine, reason)
-        if failures:
-            self.last_warnings.append(
-                "search_engines_unresponsive:"
-                + ", ".join(f"{engine}: {reason}" for engine, reason in failures[:12])
+        # A failed engine must prove recovery. One engine recovery per discovery request;
+        # SQLite leases prevent another process from probing that same engine concurrently.
+        leases = {}
+        statuses = self.health.snapshot(["searxng", *_parse_engine_list(params.get("engines"))])
+        attempted = _parse_engine_list(params.get("engines"))
+        recovered_engine_selected = False
+        for name in ["searxng", *attempted]:
+            if statuses[name]["status"] != "recovery_due":
+                continue
+            if name != "searxng" and recovered_engine_selected:
+                attempted.remove(name)
+                self.last_warnings.append(f"engine_recovery_deferred:{name}")
+                continue
+            token = self.health.claim(name, self.timeout_seconds + 5)
+            if token:
+                leases[name] = token
+                recovered_engine_selected |= name != "searxng"
+            elif name == "searxng":
+                raise SearXNGError("SearXNG recovery already in progress")
+            else:
+                attempted.remove(name)
+        if params.get("engines"):
+            if not attempted:
+                for name, token in leases.items():
+                    self.health.release(name, token)
+                raise SearXNGError("Requested engines are waiting for a recovery attempt")
+            params["engines"] = ",".join(attempted)
+        started = time.monotonic()
+        started_at = self.health.clock()
+        try:
+            payload = await self._request(params)
+            self.last_retrieved_at = datetime.now(UTC).isoformat()
+            self.health.succeeded(
+                "searxng",
+                len(payload["results"]),
+                (time.monotonic() - started) * 1000,
+                started_at=started_at,
             )
-        results = _parse_results(payload["results"], limit, set())
-        if not results and failures:
-            raise SearXNGError(
-                "SearXNG returned no results because upstream engines were unresponsive: "
-                + ", ".join(f"{engine}: {reason}" for engine, reason in failures)
-            )
+            failures = list(dict.fromkeys(tuple(failure) for failure in payload["failures"]))
+            for engine, reason in failures:
+                self._cool(engine, reason)
+            if failures:
+                self.last_warnings.append(
+                    "search_engines_unresponsive:"
+                    + ", ".join(f"{engine}: {reason}" for engine, reason in failures[:12])
+                )
+            failed = {name for name, _ in failures}
+            counts = {}
+            for item in payload["results"]:
+                if not isinstance(item, dict):
+                    continue
+                names = item.get("engines") or item.get("engine") or []
+                if not isinstance(names, (list, str)):
+                    continue
+                for name in [names] if isinstance(names, str) else names:
+                    if isinstance(name, str) and name in attempted:
+                        counts[name] = counts.get(name, 0) + 1
+            timings = payload.get("timings", {})
+            for name in set(counts) | (set(timings) & set(attempted)):
+                if name not in failed:
+                    self.health.succeeded(
+                        name, counts.get(name, 0), timings.get(name), started_at=started_at
+                    )
+            results = _parse_results(payload["results"], limit, set())
+            if not results and failures:
+                raise SearXNGError(
+                    "SearXNG returned no results because upstream engines were unresponsive: "
+                    + ", ".join(f"{engine}: {reason}" for engine, reason in failures)
+                )
+        finally:
+            for name, token in leases.items():
+                self.health.release(name, token, inconclusive=True)
 
         self.last_engine_health = self.engine_health()
 
@@ -245,9 +326,13 @@ class SearXNGSearchProvider:
         """One HTTP round trip, classified. Raises for anything a retry cannot fix."""
         import httpx
 
+        if self.use_catalog:
+            await self.refresh_catalog()
+            self._filter_catalog(params)
         try:
             response = await self._client.get(f"{self.base_url}/search", params=params)
         except httpx.HTTPError as exc:
+            self._cool("searxng", "connection failure")
             raise SearXNGError(f"SearXNG request failed: {exc}") from exc
 
         status = response.status_code
@@ -260,17 +345,20 @@ class SearXNGSearchProvider:
                 retry_after=retry_after,
             )
         if status == 403:
+            self._cool("searxng", "HTTP 403 access denied")
             raise SearXNGChallengeError(
                 "SearXNG refused the request with HTTP 403. For a JSON query this normally means "
                 "'json' is missing from search.formats in settings.yml, or the limiter classified "
                 "this client as a bot."
             )
         if status >= 400:
+            self._cool("searxng", f"HTTP {status}")
             raise SearXNGError(f"SearXNG returned HTTP {status}")
 
         content_type = response.headers.get("content-type", "")
         body = response.text
         if "json" not in content_type.casefold():
+            self._cool("searxng", "blocked: non-JSON response")
             marker = next((m for m in _CHALLENGE_MARKERS if m in body.casefold()), "")
             raise SearXNGChallengeError(
                 "SearXNG answered with text/html instead of JSON"
@@ -280,14 +368,18 @@ class SearXNGSearchProvider:
         try:
             decoded = json.loads(body)
         except json.JSONDecodeError as exc:
+            self._cool("searxng", "malformed JSON response")
             raise SearXNGChallengeError(f"SearXNG returned malformed JSON: {exc}") from exc
         if not isinstance(decoded, dict):
+            self._cool("searxng", "invalid JSON response")
             raise SearXNGError("SearXNG returned a non-object JSON response")
         if not isinstance(decoded.get("results"), list):
+            self._cool("searxng", "missing JSON results array")
             raise SearXNGError("SearXNG returned no JSON results array")
         return {
             "results": decoded["results"],
             "failures": _unresponsive_engines(decoded),
+            "timings": _engine_timings(response.headers.get("server-timing", "")),
         }
 
 
@@ -332,14 +424,35 @@ def _parse_results(
     return results
 
 
+def _engine_timings(value: str) -> dict[str, float]:
+    # SearXNG emits total_<index>_<engine>;dur=<milliseconds>, including engines
+    # that executed successfully but returned zero hits. Unsupported filters have no timing.
+    timings = {}
+    for part in value.split(","):
+        match = re.fullmatch(r"\s*total_\d+_(.+?);dur=([0-9.]+)\s*", part)
+        if match:
+            try:
+                duration = float(match[2])
+                if math.isfinite(duration) and duration >= 0:
+                    timings[match[1]] = duration
+            except ValueError:
+                pass
+    return timings
+
+
 def _retry_after_seconds(response: Any) -> float | None:
     value = response.headers.get("retry-after", "").strip()
     if not value:
         return None
     try:
-        return max(1.0, float(value))
+        seconds = float(value)
     except ValueError:
-        return None
+        try:
+            date = parsedate_to_datetime(value)
+            seconds = date.timestamp() - time.time()
+        except (ValueError, TypeError, OverflowError):
+            return None
+    return max(1.0, seconds) if math.isfinite(seconds) else None
 
 
 def _parse_engine_list(value: str | None) -> list[str]:

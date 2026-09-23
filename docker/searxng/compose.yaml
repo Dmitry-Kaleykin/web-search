@@ -1,13 +1,18 @@
 services:
   searxng:
-    image: docker.io/searxng/searxng:latest
+    image: docker.io/searxng/searxng@sha256:b36af7984b87191b595bc5301418ed6432c047668a4547ab531a7439b816fac3
     container_name: local-web-search-searxng
     restart: unless-stopped
     mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/config', timeout=2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     ports:
       - "127.0.0.1:8080:8080"
     environment:
       SEARXNG_BASE_URL: http://127.0.0.1:8080/
     volumes:
       - ./settings.yml:/etc/searxng/settings.yml:ro
-

@@ -144,7 +144,7 @@ class SQLiteStoreCacheTests(unittest.TestCase):
             self.assertGreater(active["brave"][1], 1700)
             store.close()
 
-    def test_expired_cooldowns_are_dropped_not_just_hidden(self) -> None:
+    def test_expired_cooldowns_preserve_recovery_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = self._store(directory)
             store.record_engine_cooldown("brave", "CAPTCHA challenge", time.time() - 1)
@@ -152,7 +152,7 @@ class SQLiteStoreCacheTests(unittest.TestCase):
             remaining = store._connection.execute("SELECT COUNT(*) FROM engine_health").fetchone()[
                 0
             ]
-            self.assertEqual(remaining, 0)
+            self.assertEqual(remaining, 1)
             store.close()
 
 
@@ -196,6 +196,12 @@ def test_fresh_store_contains_only_active_tables(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert tables == {"search_cache", "document_cache", "read_snapshots", "engine_health"}
+        assert tables == {
+            "search_cache",
+            "document_cache",
+            "read_snapshots",
+            "engine_health",
+            "backend_metadata",
+        }
     finally:
         store.close()

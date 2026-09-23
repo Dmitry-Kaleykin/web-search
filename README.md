@@ -67,7 +67,7 @@ use the same location, so Pi does not depend on whichever working directory it w
 ## 2. Start SearXNG
 
 ```bash
-docker compose -f docker/searxng/compose.yaml up -d
+docker compose -f docker/searxng/compose.yaml up -d --wait --wait-timeout 60
 ```
 
 This binds SearXNG only to `127.0.0.1:8080` and enables JSON output. The configured upstream engines
@@ -92,11 +92,12 @@ Existing process environment variables override `.env`. Neither a model ID nor A
 | `WEB_SEARCH_BROWSER_MAX_CONCURRENT_RENDERS` | `2` | Shared browser-render ceiling |
 | `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Compatibility with synthetic TUN proxy DNS |
 
-Search dispatch is serialized and reloads persisted cooldowns before each request. A call makes at
-most one SearXNG search request: it does not retry, expand queries, or re-query for engine diversity.
+Search dispatch is serialized and reloads persisted health before each request. Identical concurrent
+searches share one operation, including refreshes. A call makes at most one SearXNG search request: it does not retry, expand queries, or re-query for engine diversity.
 SearXNG itself may contact multiple engines. The configured general-web engine pool is pinned on
-every request, minus cooled engines. Update that pool to match your instance. The calling model can
-choose another query or try later after inspecting the result diagnostics.
+every request, minus blocked engines and those excluded by the backend inventory. Update that pool
+to match your instance. The calling model can choose another query or try later after inspecting
+the result diagnostics.
 
 Rate limits, challenges, and transport failures are reported explicitly. Results that survive other
 engines failing are retained with warnings. When all configured engines or the endpoint are cooling
@@ -161,10 +162,15 @@ server does not decide that a question has been answered just because results we
   or timeout. These describe retrieval, not answer quality.
 - `warnings`: retrieval diagnostics, including engines that failed or were skipped during the
   original retrieval. Cached results preserve these even after the engines' cooldowns expire.
-- `engine_health`: current cooldowns, separate from the original retrieval conditions.
-- `requested_engines` and `available_engines`: the requested pool and configured engines not on
-  cooldown. Availability is not a guarantee of useful results. When an alternate index offers a
-  promising route after weak results, pass one name from `available_engines` as `engine`.
+- `engine_health`: current cooldowns, recovery leases, and configuration exclusions, separate from
+  the original retrieval conditions.
+- `engine_status`: observed health and recent history, distinguishing untested engines, verified
+  execution, stale observations, cooldowns, and guarded recovery. Retry timestamps are estimates;
+  they do not certify availability.
+- `requested_engines` and `available_engines`: the requested pool and configured engines eligible
+  for a request or guarded recovery attempt. Availability is not a guarantee of useful results.
+  When an alternate index offers a promising route after weak results, pass one name from
+  `available_engines` as `engine`.
   The selection is validated, uses a separate cache entry, and respects cooldowns and one dispatch.
 - `guidance`: short suggestions based on observable retrieval conditions. Single-engine attribution
   is reported without treating engine count as source independence, relevance, or research completion.
@@ -175,7 +181,10 @@ server does not decide that a question has been answered just because results we
 
 The output is capped at 20 results (default 10), with titles capped at 1,000 characters and snippets
 at 4,000. Search pages range from 1 to 10. `time_range` accepts `day`, `month`, or `year`.
-Cancellation propagates to the active request and releases the dispatch slot.
+Cancellation propagates when the last shared waiter leaves and releases the dispatch slot.
+
+See [search availability](docs/search-availability.md) for recovery, engine inventory checks,
+backend version pinning, and the reserve-engine assessment.
 
 ## Reading pages and documents
 

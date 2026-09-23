@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +54,7 @@ class SQLiteStore:
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._initialize()
+        self._upgrade_health()
 
     def close(self) -> None:
         with self._lock:
@@ -86,6 +88,72 @@ class SQLiteStore:
                 );
                 """
             )
+
+    def _upgrade_health(self) -> None:
+        # Serialize migrations across MCP/doctor processes sharing the database.
+        with self._lock, self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            columns = {
+                row[1] for row in self._connection.execute("PRAGMA table_info(engine_health)")
+            }
+            if "state" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE engine_health ADD COLUMN state TEXT NOT NULL DEFAULT '{}'"
+                )
+            self._connection.execute(
+                "CREATE TABLE IF NOT EXISTS backend_metadata ("
+                "url TEXT PRIMARY KEY, stored_at REAL NOT NULL, payload TEXT NOT NULL)"
+            )
+
+    def engine_records(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {
+                row["engine"]: {**dict(row), "state": json.loads(row["state"])}
+                for row in self._connection.execute("SELECT * FROM engine_health")
+            }
+
+    def update_engine(self, engine: str, update: Callable) -> dict[str, Any]:
+        """Atomic state transitions, including exclusive recovery leases across processes."""
+        with self._lock, self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            row = self._connection.execute(
+                "SELECT * FROM engine_health WHERE engine = ?", (engine,)
+            ).fetchone()
+            record = (
+                {**dict(row), "state": json.loads(row["state"])}
+                if row
+                else {"engine": engine, "reason": "", "expires_at": 0, "updated_at": 0, "state": {}}
+            )
+            update(record)
+            self._connection.execute(
+                "INSERT INTO engine_health(engine, reason, expires_at, updated_at, state) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(engine) DO UPDATE SET "
+                "reason=excluded.reason, expires_at=excluded.expires_at, "
+                "updated_at=excluded.updated_at, state=excluded.state",
+                (
+                    engine,
+                    record["reason"],
+                    record["expires_at"],
+                    record["updated_at"],
+                    json.dumps(record["state"]),
+                ),
+            )
+            return record
+
+    def put_backend_metadata(self, url: str, payload: dict) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO backend_metadata VALUES (?, ?, ?)",
+                (url, time.time(), json.dumps(payload)),
+            )
+
+    def get_backend_metadata(self, url: str, ttl: float = 900) -> dict | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM backend_metadata WHERE url = ? AND stored_at >= ?",
+                (url, time.time() - ttl),
+            ).fetchone()
+            return json.loads(row[0]) if row else None
 
     def put_snapshot(self, document: Document) -> str:
         """Immutable, expiring continuation state, bounded independently of mutable URL caches."""
@@ -225,17 +293,12 @@ class SQLiteStore:
             )
 
     def active_engine_cooldowns(self, now: float | None = None) -> dict[str, tuple[str, float]]:
-        """Restores cooldowns recorded by an earlier process; expired rows are dropped."""
+        """Return active waits without deleting the history needed for recovery."""
         current = time.time() if now is None else now
         with self._lock, self._connection:
             rows = self._connection.execute(
                 "SELECT engine, reason, expires_at FROM engine_health ORDER BY expires_at DESC"
             ).fetchall()
-            expired = self._connection.execute(
-                "DELETE FROM engine_health WHERE expires_at <= ?", (current,)
-            ).rowcount
-            if expired:
-                self._connection.commit()
         return {
             engine: (reason, expires_at - current)
             for engine, reason, expires_at in rows
@@ -304,7 +367,8 @@ class SQLiteStore:
     def _prune_engine_health(self) -> int:
         with self._lock, self._connection:
             return self._connection.execute(
-                "DELETE FROM engine_health WHERE expires_at <= ?", (time.time(),)
+                "DELETE FROM engine_health WHERE updated_at < ? AND expires_at <= ?",
+                (time.time() - 90 * 86400, time.time()),
             ).rowcount
 
     def prune(self) -> dict[str, int]:
@@ -323,6 +387,9 @@ class SQLiteStore:
             ),
             "engine_health": self._prune_engine_health(),
             "read_snapshots": self._prune_snapshots(),
+            "backend_metadata": self._prune_table(
+                "backend_metadata", ttl_seconds=86400, max_rows=100
+            ),
         }
 
     def maintenance(self) -> dict[str, Any]:
@@ -349,6 +416,7 @@ class SQLiteStore:
             "document_cache": "payload",
             "engine_health": "reason",
             "read_snapshots": "payload",
+            "backend_metadata": "payload",
         }
         out: dict[str, Any] = {}
         with self._lock:
