@@ -37,7 +37,15 @@ class Settings:
     searxng_url: str = "http://127.0.0.1:8080"
     data_dir: Path = Path(".web-search-data")
     log_level: str = "INFO"
+    # Identification for the plain HTTP reader and the search provider. The rendered path uses
+    # `browser_*` instead, because a bot User-Agent there contradicts the Chrome profile Chromium
+    # is already reporting and is itself the weakest detection signal.
     user_agent: str = "LocalResearchBot/0.1 (+local personal research)"
+    # Empty means: derive the Chrome version from the installed Playwright Chromium so the claimed
+    # version matches the engine that actually renders.
+    browser_user_agent: str = ""
+    browser_accept_language: str = "en-US,en;q=0.9"
+    browser_stealth: bool = True
     allow_private_urls: bool = False
     allow_proxy_fake_ips: bool = False
     max_response_bytes: int = 5_000_000
@@ -65,6 +73,11 @@ class Settings:
             user_agent=environment.get(
                 "WEB_SEARCH_USER_AGENT", "LocalResearchBot/0.1 (+local personal research)"
             ),
+            browser_user_agent=_string_env(environment, "WEB_SEARCH_BROWSER_USER_AGENT"),
+            browser_accept_language=_string_env(
+                environment, "WEB_SEARCH_BROWSER_ACCEPT_LANGUAGE", "en-US,en;q=0.9"
+            ),
+            browser_stealth=_bool_env(environment, "WEB_SEARCH_BROWSER_STEALTH", True),
             allow_private_urls=_bool_env(environment, "WEB_SEARCH_ALLOW_PRIVATE_URLS", False),
             allow_proxy_fake_ips=_bool_env(environment, "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS", False),
             max_response_bytes=_int_env(environment, "WEB_SEARCH_MAX_RESPONSE_BYTES", 5_000_000),

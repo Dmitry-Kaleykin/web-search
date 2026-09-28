@@ -36,6 +36,7 @@ class HTTPReader:
         cache_ttl_seconds: int = 21_600,
         timeout_seconds: float = 25.0,
         user_agent: str = "LocalResearchBot/0.1",
+        accept_language: str = "en-US,en;q=0.9",
         max_response_bytes: int = 5_000_000,
         max_content_chars: int = 1_000_000,
         allow_private_urls: bool = False,
@@ -61,6 +62,9 @@ class HTTPReader:
             headers={
                 "User-Agent": user_agent,
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+                # Servers and CDNs routinely reject requests that omit it, and a missing
+                # Accept-Language is the classic non-browser tell.
+                **({"Accept-Language": accept_language} if accept_language.strip() else {}),
             },
         )
 

@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import re
+import subprocess
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -13,6 +19,86 @@ from .base import cap_content
 from .http import ReaderError
 from .quality import page_diagnostics, rendering_signals
 
+# Anti-bot layers grade whether a profile is internally consistent more than whether any single
+# property looks scripted. These defaults travel together: Crawl4AI derives `sec-ch-ua` from the
+# User-Agent, Playwright-Stealth rewrites the JavaScript identity and pins `navigator.platform` to
+# Win32, and the language header has to agree with `navigator.languages`. A macOS User-Agent would
+# contradict the pinned platform string, so the Windows profile is the coherent pairing here.
+DEFAULT_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+)
+_VIEWPORT = (1366, 768, 1)
+_GPU_DISABLE_FLAGS = frozenset(
+    {"--disable-gpu", "--disable-gpu-compositing", "--disable-software-rasterizer"}
+)
+# Chromium reports the host's real memory here, and a 16/32 GiB value is outside the enumeration
+# the Device Memory spec allows. Headless also answers `denied` for notification permission where
+# a fresh real profile answers `prompt`; Playwright-Stealth mirrors this property into
+# `permissions.query`, so patching it moves both APIs together instead of trading one signal for
+# the other.
+_STEALTH_INIT_SCRIPTS = (
+    "Object.defineProperty(navigator,'deviceMemory',{get:()=>8});",
+    "Object.defineProperty(Notification,'permission',{get:()=>'prompt'});",
+)
+_STRUCTURAL_SINGLE_SIGNALS = frozenset(
+    {"minimal_text", "no_content_elements", "script_heavy_shell"}
+)
+_VERSION_MAJOR_RE = re.compile(r"(\d+)(?:\.\d+)*")
+_LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+
+
+def _chromium_major_version() -> int | None:
+    """Read the major version from the Playwright Chromium the reader will actually launch."""
+    roots = [
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+        str(Path(os.environ.get("CRAWL4_AI_BASE_DIRECTORY", ".web-search-data")) / "ms-playwright"),
+    ]
+    candidates: list[Path] = []
+    for root in (item for item in roots if item):
+        base = Path(root).expanduser()
+        candidates.extend(
+            sorted(base.glob("chromium-*/chrome-*/Google Chrome for Testing.app/Contents/MacOS/*"))
+            + sorted(base.glob("chromium-*/chrome-linux*/chrome"))
+            + sorted(base.glob("chromium-*/chrome-headless-shell-*/*-headless-shell"))
+        )
+    for executable in reversed(candidates):
+        # Fixed argv: the browser binary comes from this project's own store.
+        try:
+            reported = subprocess.run(
+                [str(executable), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        match = _VERSION_MAJOR_RE.search(reported)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+@lru_cache(maxsize=8)
+def resolve_browser_user_agent(configured: str = "") -> str:
+    """Prefer an operator-supplied User-Agent, else match the installed Chromium's major version."""
+    if configured:
+        return configured
+    major = _chromium_major_version()
+    if major is None:
+        return DEFAULT_BROWSER_USER_AGENT
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+
+
+def _locale_from_accept_language(value: str) -> str | None:
+    """Take the primary language tag, so `--lang` cannot carry arbitrary flag characters."""
+    primary = value.split(",", 1)[0].split(";", 1)[0].strip()
+    return primary if _LOCALE_RE.fullmatch(primary) else None
+
 
 class Crawl4AIReader:
     """JavaScript-capable reader, loaded only when the optional extra is installed."""
@@ -21,7 +107,9 @@ class Crawl4AIReader:
         self,
         *,
         store: SQLiteStore | None = None,
-        user_agent: str = "LocalResearchBot/0.1",
+        browser_user_agent: str = "",
+        accept_language: str = "en-US,en;q=0.9",
+        stealth: bool = True,
         allow_private_urls: bool = False,
         allow_proxy_fake_ips: bool = False,
         page_timeout_ms: int = 35_000,
@@ -30,7 +118,10 @@ class Crawl4AIReader:
         render_semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         self.store = store
-        self.user_agent = user_agent
+        self.browser_user_agent = browser_user_agent
+        self.accept_language = accept_language.strip()
+        self.stealth = stealth
+        self.browser_identity = resolve_browser_user_agent(browser_user_agent)
         self.allow_private_urls = allow_private_urls
         self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.page_timeout_ms = page_timeout_ms
@@ -84,7 +175,7 @@ class Crawl4AIReader:
         ):
             raise ReaderError("Read-only browser action failed or targeted an unsupported control")
         markdown, content_filtered = _markdown_text(result.markdown)
-        recovered_structural_warning = _recoverable_structural_warning(result, markdown)
+        recovered_structural_warning = _recoverable_structural_reason(result, markdown)
         if not result.success and not recovered_structural_warning:
             raise ReaderError(f"Crawl4AI failed for {url}: {result.error_message}")
 
@@ -103,7 +194,7 @@ class Crawl4AIReader:
         if query:
             warnings.append("query_focused_extraction")
         if recovered_structural_warning:
-            warnings.append("crawl4ai_false_positive:minimal_text")
+            warnings.append(f"crawl4ai_false_positive:{recovered_structural_warning}")
         status_code = _status_code(result)
         warnings.extend(
             f"suspected_error_page:{reason}"
@@ -155,7 +246,7 @@ class Crawl4AIReader:
             if self._crawler is not None:
                 return self._crawler, self._run_config
             try:
-                from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
+                from crawl4ai import AsyncWebCrawler, CacheMode, CrawlerRunConfig
                 from crawl4ai.content_filter_strategy import PruningContentFilter
                 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
             except ImportError as exc:
@@ -163,11 +254,7 @@ class Crawl4AIReader:
                     "Crawl4AI is unavailable; install the optional `browser` dependency"
                 ) from exc
 
-            browser_config = BrowserConfig(
-                headless=True,
-                verbose=False,
-                user_agent=self.user_agent,
-            )
+            browser_config = self._browser_config()
             self._run_config = CrawlerRunConfig(
                 cache_mode=CacheMode.BYPASS,
                 check_robots_txt=True,
@@ -185,6 +272,7 @@ class Crawl4AIReader:
             )
             self._crawler = AsyncWebCrawler(config=browser_config)
             self._install_network_guard(self._crawler)
+            self._keep_webgl_rendering(self._crawler)
             try:
                 await self._crawler.start()
             except Exception as exc:
@@ -194,11 +282,66 @@ class Crawl4AIReader:
                 ) from exc
             return self._crawler, self._run_config
 
+    def _browser_config(self):
+        """Build the Chromium profile. Every identity layer has to agree with the others."""
+        from crawl4ai import BrowserConfig
+
+        kwargs: dict[str, Any] = {
+            "headless": True,
+            "verbose": False,
+            "user_agent": self.browser_identity,
+            # 1080x600 is neither a real screen nor a real window; it is the library default.
+            "viewport_width": _VIEWPORT[0],
+            "viewport_height": _VIEWPORT[1],
+            "device_scale_factor": _VIEWPORT[2],
+        }
+        if self.accept_language:
+            # Crawl4AI merges these into the request headers it sets from the User-Agent, so
+            # Accept-Language lands alongside sec-ch-ua instead of replacing it.
+            kwargs["headers"] = {"Accept-Language": self.accept_language}
+        if self.stealth:
+            kwargs["enable_stealth"] = True
+            locale = _locale_from_accept_language(self.accept_language)
+            if locale:
+                kwargs["extra_args"] = [f"--lang={locale}"]
+            kwargs["init_scripts"] = list(_STEALTH_INIT_SCRIPTS)
+        return BrowserConfig(**kwargs)
+
+    def _keep_webgl_rendering(self, crawler) -> None:
+        """Let the GPU stack stay alive so WebGL reports a renderer instead of failing outright.
+
+        Crawl4AI hard-codes ``--disable-gpu`` and friends into its dedicated launch path, which
+        leaves ``canvas.getContext('webgl')`` null. A desktop Chrome never reports that, so the
+        absence is a signal regardless of how clean the rest of the profile is. Stealth mode keeps
+        SwiftShader alive on the managed launch path; this brings the same exception to the
+        default one. The launch helper is private to the installed Crawl4AI, so a build that moves
+        it just keeps the previous behaviour.
+        """
+        if not self.stealth:
+            return
+        try:
+            manager = crawler.crawler_strategy.browser_manager
+            build_args = manager._build_browser_args
+        except AttributeError:
+            return
+
+        def build_without_gpu_disable():
+            args = build_args()
+            args["args"] = [flag for flag in args.get("args", ()) if flag not in _GPU_DISABLE_FLAGS]
+            return args
+
+        manager._build_browser_args = build_without_gpu_disable
+
     def _install_network_guard(self, crawler) -> None:
         allow_private = self.allow_private_urls
         allow_proxy_fake_ips = self.allow_proxy_fake_ips
 
         async def on_page_context_created(page, context, **_kwargs):
+            # Crawl4AI plants a `cookiesEnabled` cookie the site never issued, so it arrives on the
+            # very first request as a crawler marker. Remove that one cookie only: clearance
+            # cookies a challenge page sets later in the same read have to survive.
+            with contextlib.suppress(Exception):  # an older browser API must not fail the read
+                await context.clear_cookies(name="cookiesEnabled")
             host_cache: dict[str, bool] = {}
 
             async def route_filter(route):
@@ -258,17 +401,28 @@ def _query_run_config(run_config: Any, query: str) -> Any:
         return run_config
 
 
-def _recoverable_structural_warning(result: Any, markdown: str) -> bool:
-    """Accept Crawl4AI's known small-page false positive without masking real blocks."""
+def _recoverable_structural_reason(result: Any, markdown: str) -> str | None:
+    """Name Crawl4AI's single-signal small-page block suspicion when rendering disproves it.
+
+    The library treats any one weak structural signal on a page under 5000 bytes as a silent
+    anti-bot block: `minimal_text`, `no_content_elements`, or `script_heavy_shell`. A short page
+    that carries real extracted Markdown contradicts that guess, so the read proceeds with the
+    reason recorded. Two or more signals stay fatal; they are the shape of a real interstitial.
+    """
     if result.success or not markdown.strip():
-        return False
+        return None
     status_code = getattr(result, "status_code", None)
     if not isinstance(status_code, int) or not 200 <= status_code < 300:
-        return False
+        return None
     message = str(getattr(result, "error_message", "") or "")
-    return message.startswith(
-        "Blocked by anti-bot protection: Structural: minimal_text on small page"
-    )
+    if not message.startswith("Blocked by anti-bot protection: Structural:"):
+        return None
+    _, _, remainder = message.partition("Structural: ")
+    reason, _, details = remainder.partition(" ")
+    if not details.startswith("on small page"):
+        return None
+    reason = reason.rstrip(".,")
+    return reason if reason in _STRUCTURAL_SINGLE_SIGNALS else None
 
 
 def _result_links(value: Any) -> list[str]:

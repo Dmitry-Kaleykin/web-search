@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from web_research.readers.crawl4ai import Crawl4AIReader
+from web_research.readers.crawl4ai import Crawl4AIReader, resolve_browser_user_agent
 from web_research.readers.http import ReaderError
 
 
@@ -107,6 +107,107 @@ class Crawl4AIReaderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(document.content, "Browser support details")
         self.assertIn("browser_content_filtered", document.warnings)
+
+
+class BrowserProfileTests(unittest.TestCase):
+    """The rendered profile has to stay internally consistent or it reads as scripted."""
+
+    def test_identity_layers_agree(self) -> None:
+        reader = Crawl4AIReader(browser_user_agent="", accept_language="en-US,en;q=0.9")
+        config = reader._browser_config()
+
+        self.assertTrue(config.enable_stealth)
+        self.assertNotIn("LocalResearchBot", config.user_agent)
+        self.assertIn("Windows", config.user_agent)
+        self.assertEqual(config.headers["Accept-Language"], "en-US,en;q=0.9")
+        self.assertEqual(["--lang=en-US"], config.extra_args)
+        self.assertEqual(1366, config.viewport_width)
+        self.assertEqual(2, len(config.init_scripts))
+
+    def test_user_agent_matches_the_installed_browser(self) -> None:
+        detected = resolve_browser_user_agent("")
+
+        self.assertNotIn("LocalResearchBot", detected)
+        self.assertNotIn("Headless", detected)
+        self.assertEqual(detected, resolve_browser_user_agent(""))
+        self.assertEqual("CustomAgent/9", resolve_browser_user_agent("CustomAgent/9"))
+
+    def test_gpu_disable_flags_are_dropped_so_webgl_keeps_a_renderer(self) -> None:
+        reader = Crawl4AIReader()
+        launched: dict = {}
+
+        class Manager:
+            def _build_browser_args(self):
+                return {
+                    "headless": True,
+                    "args": [
+                        "--disable-gpu",
+                        "--disable-gpu-compositing",
+                        "--disable-software-rasterizer",
+                        "--no-sandbox",
+                    ],
+                }
+
+        class Strategy:
+            browser_manager = Manager()
+
+        crawler = SimpleNamespace(crawler_strategy=Strategy())
+        reader._keep_webgl_rendering(crawler)
+        launched.update(crawler.crawler_strategy.browser_manager._build_browser_args())
+
+        self.assertEqual(["--no-sandbox"], launched["args"])
+
+    def test_stealth_off_restores_library_defaults(self) -> None:
+        reader = Crawl4AIReader(stealth=False)
+        config = reader._browser_config()
+
+        self.assertFalse(config.enable_stealth)
+        self.assertEqual([], config.extra_args)
+        self.assertEqual([], config.init_scripts)
+
+        manager = SimpleNamespace(_build_browser_args=lambda: {"args": ["--disable-gpu"]})
+        reader._keep_webgl_rendering(
+            SimpleNamespace(crawler_strategy=SimpleNamespace(browser_manager=manager))
+        )
+        self.assertEqual(["--disable-gpu"], manager._build_browser_args()["args"])
+
+    def test_language_tag_cannot_inject_browser_flags(self) -> None:
+        config = Crawl4AIReader(accept_language="*/*;--evil=1")._browser_config()
+
+        self.assertEqual([], config.extra_args)
+
+
+class StructuralFalsePositiveTests(unittest.IsolatedAsyncioTestCase):
+    async def reader_for(self, result):
+        reader = Crawl4AIReader(allow_private_urls=True)
+        reader._ensure_crawler = AsyncMock(
+            return_value=(SimpleNamespace(arun=AsyncMock(return_value=result)), object())
+        )
+        return reader
+
+    async def read(self, error_message):
+        result = crawl_result(success=False, error_message=error_message)
+        return await (await self.reader_for(result)).read("http://127.0.0.1/short")
+
+    async def test_recovers_any_single_structural_signal(self) -> None:
+        document = await self.read(
+            "Blocked by anti-bot protection: Structural: no_content_elements on small page "
+            "(1019 bytes, 959 chars visible)"
+        )
+
+        self.assertEqual("Rendered details", document.content)
+        self.assertIn("crawl4ai_false_positive:no_content_elements", document.warnings)
+
+    async def test_multiple_structural_signals_stay_fatal(self) -> None:
+        with self.assertRaisesRegex(ReaderError, "minimal_text"):
+            await self.read(
+                "Blocked by anti-bot protection: Structural: minimal_text, no_content_elements "
+                "(900 bytes, 12 chars visible)"
+            )
+
+    async def test_non_structural_block_reason_is_not_renamed(self) -> None:
+        with self.assertRaisesRegex(ReaderError, "no <body> tag"):
+            await self.read("Blocked by anti-bot protection: Structural: no <body> tag (400 bytes)")
 
 
 if __name__ == "__main__":

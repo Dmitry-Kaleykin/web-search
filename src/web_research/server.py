@@ -530,6 +530,7 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
         store=store,
         cache_ttl_seconds=settings.document_cache_ttl_seconds,
         user_agent=settings.user_agent,
+        accept_language=settings.browser_accept_language,
         max_response_bytes=settings.max_response_bytes,
         document_semaphore=limits[1],
         max_content_chars=settings.document_max_chars,
@@ -539,7 +540,9 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
     browser_reader = (
         Crawl4AIReader(
             store=store,
-            user_agent=settings.user_agent,
+            browser_user_agent=settings.browser_user_agent,
+            accept_language=settings.browser_accept_language,
+            stealth=settings.browser_stealth,
             max_content_chars=settings.document_max_chars,
             max_concurrent_renders=settings.browser_max_concurrent_renders,
             render_semaphore=limits[2],

@@ -90,6 +90,9 @@ Existing process environment variables override `.env`. Neither a model ID nor A
 | `WEB_SEARCH_READ_URL_MAX_CHARS` | `60000` | Maximum inline text per read |
 | `WEB_SEARCH_READ_URL_MAX_LINKS` | `100` | Maximum links when requested |
 | `WEB_SEARCH_BROWSER_MAX_CONCURRENT_RENDERS` | `2` | Shared browser-render ceiling |
+| `WEB_SEARCH_BROWSER_USER_AGENT` | empty | Rendered-page User-Agent; empty matches the installed Chromium version |
+| `WEB_SEARCH_BROWSER_ACCEPT_LANGUAGE` | `en-US,en;q=0.9` | Language header for both readers; also seeds `--lang` |
+| `WEB_SEARCH_BROWSER_STEALTH` | `true` | Playwright-Stealth profile for rendered pages |
 | `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Compatibility with synthetic TUN proxy DNS |
 
 Search dispatch is serialized and reloads persisted health before each request. Identical concurrent
@@ -197,6 +200,25 @@ inline chunks; continue with `next_cursor`. Set `query` for a long or navigation
 return the most relevant content window first. Rendered pages use filtered Markdown when Crawl4AI
 can identify the main content. Use a smaller `max_chars` with `include_links=false` for batched or
 fan-out calls.
+
+### Rendered-page identity
+
+Detection stacks grade whether a profile contradicts itself more than whether any single property
+looks scripted, so the rendered profile is configured as one set rather than property by property.
+`WEB_SEARCH_USER_AGENT` (a self-identifying research bot) applies to the plain HTTP reader and the
+search provider. Rendered pages send a Chrome profile instead: the User-Agent tracks the installed
+Chromium's major version, `sec-ch-ua` is derived from it, `Accept-Language` agrees with
+`navigator.languages`, and `WEB_SEARCH_BROWSER_STEALTH` repairs the browser-API layer that headless
+Chromium reports differently (`navigator.plugins`, `window.chrome`, the UA-Client-Hints brand, which
+reads `HeadlessChrome` otherwise, and notification permission) and keeps a WebGL renderer alive
+instead of letting GPU-disabling launch flags null it out.
+
+This addresses the browser-API and header-coherence layer. It does not change the TLS and HTTP/2
+fingerprints, which come from the Chromium build itself, and it adds no human cursor motion, so a
+stack that scores pointer behaviour or matches headless TLS hashes can still classify the reader. A
+deliberate browser escalation is also reported to the caller as a `browser_escalation` warning, and
+Crawl4AI's own block detections stay visible as `suspected_error_page:*` or
+`crawl4ai_false_positive:*`.
 
 HTTP extraction resolves relative links against the final response URL, including any HTML
 `base href`, before producing Markdown. The structured link list uses the same resolution.

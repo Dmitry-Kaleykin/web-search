@@ -319,6 +319,32 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await reader.close()
 
+    async def test_requests_state_a_language_and_identify_as_research(self) -> None:
+        """CDNs reject requests with no Accept-Language; the polite UA still has to stay visible."""
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["headers"] = request.headers
+            return httpx.Response(
+                200,
+                text="<html><body><article><p>alpha beta gamma</p></article></body></html>",
+                headers={"Content-Type": "text/html"},
+            )
+
+        reader = HTTPReader(allow_private_urls=True)
+        default_headers = dict(reader._client.headers)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), headers=default_headers
+        )
+        try:
+            await reader.read("http://127.0.0.1/page")
+        finally:
+            await reader.close()
+
+        self.assertEqual("en-US,en;q=0.9", seen["headers"]["accept-language"])
+        self.assertIn("LocalResearchBot", seen["headers"]["user-agent"])
+
 
 if __name__ == "__main__":
     unittest.main()
