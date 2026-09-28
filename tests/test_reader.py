@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import importlib.util
 import sys
 import unittest
 from types import SimpleNamespace
@@ -9,7 +10,11 @@ from unittest.mock import patch
 import httpx
 
 from web_research.readers.base import cap_content
-from web_research.readers.http import HTTPReader, ReaderError, _extract_main_content
+from web_research.readers.http import (
+    HTTPReader,
+    ReaderError,
+    _extract_main_content,
+)
 from web_research.storage import SQLiteStore
 
 
@@ -344,6 +349,18 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("en-US,en;q=0.9", seen["headers"]["accept-language"])
         self.assertIn("LocalResearchBot", seen["headers"]["user-agent"])
+
+    async def test_http_transport_offers_h2_when_available(self) -> None:
+        """The plain HTTP path should share the transport browsers use, when h2 is installed.
+
+        Negotiation itself is verified against a real TLS+HTTP/2 server (see the Layer 3 capture
+        in the README note); this pins the availability decision the reader makes.
+        """
+        reader = HTTPReader(allow_private_urls=True)
+        try:
+            self.assertEqual(importlib.util.find_spec("h2") is not None, reader.http2)
+        finally:
+            await reader.close()
 
 
 if __name__ == "__main__":

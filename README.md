@@ -93,6 +93,8 @@ Existing process environment variables override `.env`. Neither a model ID nor A
 | `WEB_SEARCH_BROWSER_USER_AGENT` | empty | Rendered-page User-Agent; empty matches the installed Chromium version |
 | `WEB_SEARCH_BROWSER_ACCEPT_LANGUAGE` | `en-US,en;q=0.9` | Language header for both readers; also seeds `--lang` |
 | `WEB_SEARCH_BROWSER_STEALTH` | `true` | Playwright-Stealth profile for rendered pages |
+| `WEB_SEARCH_BROWSER_CHANNEL` | empty | Optional Playwright build, e.g. `chromium` for the full new-headless binary |
+| `WEB_SEARCH_BROWSER_PROXY` | empty | Optional `http`/`https`/`socks5(h)` proxy for rendered pages (network origin) |
 | `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Compatibility with synthetic TUN proxy DNS |
 
 Search dispatch is serialized and reloads persisted health before each request. Identical concurrent
@@ -219,6 +221,16 @@ stack that scores pointer behaviour or matches headless TLS hashes can still cla
 deliberate browser escalation is also reported to the caller as a `browser_escalation` warning, and
 Crawl4AI's own block detections stay visible as `suspected_error_page:*` or
 `crawl4ai_false_positive:*`.
+
+At the transport layer the rendered path already looks like desktop Chrome: measured ClientHellos
+carry GREASE and encrypted ClientHello, and the HTTP/2 SETTINGS, window updates, stream priority and
+header order match Chrome's. The plain HTTP reader runs on Python's TLS stack, so its fingerprint is
+OpenSSL's whatever else is tuned; it now offers HTTP/2 (`h2` in ALPN) so it at least shares the
+transport, and its identity stays honestly non-browser. `WEB_SEARCH_BROWSER_CHANNEL` selects a
+different Playwright build for rendering quality (a real GPU path), not for the fingerprint, and
+`WEB_SEARCH_BROWSER_PROXY` changes network origin, which no fingerprint patch can do. See
+[transport fingerprints](docs/transport-fingerprints.md) for the measurements and
+`tools/transport_fingerprint.py` to reproduce them.
 
 HTTP extraction resolves relative links against the final response URL, including any HTML
 `base href`, before producing Markdown. The structured link list uses the same resolution.

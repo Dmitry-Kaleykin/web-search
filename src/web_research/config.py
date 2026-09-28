@@ -46,6 +46,14 @@ class Settings:
     browser_user_agent: str = ""
     browser_accept_language: str = "en-US,en;q=0.9"
     browser_stealth: bool = True
+    # Playwright browser build for rendered pages. Empty keeps the library default
+    # (chrome-headless-shell). "chromium" selects the full build with a real GPU path; measured
+    # TLS and HTTP/2 fingerprints are identical either way, so this is a rendering choice, not a
+    # transport one. An unavailable build falls back to the default.
+    browser_channel: str = ""
+    # Upstream proxy for rendered pages (http, https, socks5, socks5h): changes network origin,
+    # which no fingerprint patch can do.
+    browser_proxy: str = ""
     allow_private_urls: bool = False
     allow_proxy_fake_ips: bool = False
     max_response_bytes: int = 5_000_000
@@ -78,6 +86,8 @@ class Settings:
                 environment, "WEB_SEARCH_BROWSER_ACCEPT_LANGUAGE", "en-US,en;q=0.9"
             ),
             browser_stealth=_bool_env(environment, "WEB_SEARCH_BROWSER_STEALTH", True),
+            browser_channel=_string_env(environment, "WEB_SEARCH_BROWSER_CHANNEL"),
+            browser_proxy=_string_env(environment, "WEB_SEARCH_BROWSER_PROXY"),
             allow_private_urls=_bool_env(environment, "WEB_SEARCH_ALLOW_PRIVATE_URLS", False),
             allow_proxy_fake_ips=_bool_env(environment, "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS", False),
             max_response_bytes=_int_env(environment, "WEB_SEARCH_MAX_RESPONSE_BYTES", 5_000_000),

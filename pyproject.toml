@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
-  "httpx>=0.28,<1",
+  "httpx[http2]>=0.28,<1",  # h2 keeps the plain HTTP path on the browser transport
   "mcp>=2,<3",
   "trafilatura>=2.2,<3",
   "pypdf>=6,<7",

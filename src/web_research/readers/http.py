@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import ipaddress
 import json
 from urllib.parse import urlsplit
@@ -56,9 +57,17 @@ class HTTPReader:
         self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.max_redirects = max_redirects
         self._document_limit = document_semaphore or asyncio.Semaphore(2)
+        # h2 is an optional extra of httpx and the base install does not need it. Offering it puts
+        # the plain HTTP path on the transport browsers use. The ALPN *order* stays httpcore's
+        # (`http/1.1`, `h2`) because it rewrites the context per connection, and GREASE plus
+        # encrypted ClientHello are unreachable from Python's TLS stack - so this path keeps an
+        # honest non-browser TLS fingerprint rather than a half-finished imitation.
+        http2 = importlib.util.find_spec("h2") is not None
+        self.http2 = http2
         self._client = httpx.AsyncClient(
             timeout=timeout_seconds,
             follow_redirects=False,
+            http2=http2,
             headers={
                 "User-Agent": user_agent,
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",

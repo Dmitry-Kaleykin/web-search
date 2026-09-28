@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from web_research.readers.crawl4ai import Crawl4AIReader, resolve_browser_user_agent
+from web_research.readers.crawl4ai import (
+    Crawl4AIReader,
+    _proxy_config,
+    resolve_browser_user_agent,
+)
 from web_research.readers.http import ReaderError
 
 
@@ -152,10 +156,42 @@ class BrowserProfileTests(unittest.TestCase):
             browser_manager = Manager()
 
         crawler = SimpleNamespace(crawler_strategy=Strategy())
-        reader._keep_webgl_rendering(crawler)
+        reader._install_launch_tweaks(crawler)
         launched.update(crawler.crawler_strategy.browser_manager._build_browser_args())
 
         self.assertEqual(["--no-sandbox"], launched["args"])
+
+    def test_new_headless_channel_needs_the_launch_argument(self) -> None:
+        """Crawl4AI never forwards channel='chromium', so it has to be injected."""
+        reader = Crawl4AIReader(channel="chromium")
+        manager = SimpleNamespace(_build_browser_args=lambda: {"args": ["--disable-gpu"]})
+        reader._install_launch_tweaks(
+            SimpleNamespace(crawler_strategy=SimpleNamespace(browser_manager=manager)), "chromium"
+        )
+
+        launched = manager._build_browser_args()
+        self.assertEqual("chromium", launched["channel"])
+        self.assertEqual([], launched["args"])
+        # A build other than that one travels through Crawl4AI's own field instead.
+        self.assertEqual(
+            "chromium-headless-shell",
+            Crawl4AIReader(channel="chromium-headless-shell")._browser_config().chrome_channel,
+        )
+
+    def test_unusable_channels_and_proxies_are_ignored(self) -> None:
+        self.assertEqual("", Crawl4AIReader(channel="../../sbin/init").channel)
+        self.assertIsNone(_proxy_config(""))
+        self.assertIsNone(_proxy_config("ftp://cache.internal:21"))
+        self.assertIsNone(_proxy_config("http://"))
+
+        proxy = _proxy_config("http://user:pass@cache.internal:8888")
+        self.assertEqual("http://cache.internal:8888", proxy.server)
+        self.assertEqual(("user", "pass"), (proxy.username, proxy.password))
+
+    def test_proxy_reaches_the_browser_config(self) -> None:
+        config = Crawl4AIReader(proxy="socks5h://gateway.internal:1080")._browser_config()
+
+        self.assertEqual("socks5h://gateway.internal:1080", config.proxy_config.server)
 
     def test_stealth_off_restores_library_defaults(self) -> None:
         reader = Crawl4AIReader(stealth=False)
@@ -166,7 +202,7 @@ class BrowserProfileTests(unittest.TestCase):
         self.assertEqual([], config.init_scripts)
 
         manager = SimpleNamespace(_build_browser_args=lambda: {"args": ["--disable-gpu"]})
-        reader._keep_webgl_rendering(
+        reader._install_launch_tweaks(
             SimpleNamespace(crawler_strategy=SimpleNamespace(browser_manager=manager))
         )
         self.assertEqual(["--disable-gpu"], manager._build_browser_args()["args"])
@@ -175,6 +211,56 @@ class BrowserProfileTests(unittest.TestCase):
         config = Crawl4AIReader(accept_language="*/*;--evil=1")._browser_config()
 
         self.assertEqual([], config.extra_args)
+
+    async def test_unavailable_build_falls_back_to_the_default_channel(self) -> None:
+        """An uninstalled browser build must not cost the caller the page."""
+        reader = Crawl4AIReader(allow_private_urls=True, channel="chrome-beta")
+        started: list[dict] = []
+        attempts = iter([RuntimeError("no such channel"), None])
+
+        class Crawler:
+            def __init__(self, config):
+                self.config = config
+
+            async def start(self):
+                error = next(attempts)
+                started.append(self.config.chrome_channel)
+                if error:
+                    raise error
+
+            async def close(self):
+                return None
+
+        import crawl4ai
+
+        with patch.object(crawl4ai, "AsyncWebCrawler", Crawler):
+            crawler, _ = await reader._ensure_crawler()
+
+        self.assertEqual(["chrome-beta", None], started)  # retried on the library default
+        self.assertIs(crawler, reader._crawler)
+        self.assertEqual("", reader.channel_in_use)
+
+    async def test_persistent_start_failure_is_still_an_error(self) -> None:
+        reader = Crawl4AIReader(allow_private_urls=True)
+
+        class Crawler:
+            def __init__(self, _config):
+                pass
+
+            async def start(self):
+                raise RuntimeError("chrome vanished")
+
+            async def close(self):
+                return None
+
+        import crawl4ai
+
+        with (
+            patch.object(crawl4ai, "AsyncWebCrawler", Crawler),
+            self.assertRaisesRegex(ReaderError, "could not start Chromium"),
+        ):
+            await reader._ensure_crawler()
+        self.assertIsNone(reader._crawler)
 
 
 class StructuralFalsePositiveTests(unittest.IsolatedAsyncioTestCase):

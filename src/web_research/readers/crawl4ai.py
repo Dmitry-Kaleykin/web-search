@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import re
 import subprocess
@@ -18,6 +19,8 @@ from .actions import action_script, discover_actions
 from .base import cap_content
 from .http import ReaderError
 from .quality import page_diagnostics, rendering_signals
+
+LOGGER = logging.getLogger(__name__)
 
 # Anti-bot layers grade whether a profile is internally consistent more than whether any single
 # property looks scripted. These defaults travel together: Crawl4AI derives `sec-ch-ua` from the
@@ -44,6 +47,8 @@ _STEALTH_INIT_SCRIPTS = (
 _STRUCTURAL_SINGLE_SIGNALS = frozenset(
     {"minimal_text", "no_content_elements", "script_heavy_shell"}
 )
+_PROXY_SCHEMES = frozenset({"http", "https", "socks4", "socks5", "socks5h"})
+_CHANNEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _VERSION_MAJOR_RE = re.compile(r"(\d+)(?:\.\d+)*")
 _LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 
@@ -110,6 +115,8 @@ class Crawl4AIReader:
         browser_user_agent: str = "",
         accept_language: str = "en-US,en;q=0.9",
         stealth: bool = True,
+        channel: str = "",
+        proxy: str = "",
         allow_private_urls: bool = False,
         allow_proxy_fake_ips: bool = False,
         page_timeout_ms: int = 35_000,
@@ -121,6 +128,9 @@ class Crawl4AIReader:
         self.browser_user_agent = browser_user_agent
         self.accept_language = accept_language.strip()
         self.stealth = stealth
+        self.channel = channel.strip() if _CHANNEL_RE.fullmatch(channel.strip()) else ""
+        self.channel_in_use = channel
+        self.proxy = proxy.strip()
         self.browser_identity = resolve_browser_user_agent(browser_user_agent)
         self.allow_private_urls = allow_private_urls
         self.allow_proxy_fake_ips = allow_proxy_fake_ips
@@ -254,7 +264,6 @@ class Crawl4AIReader:
                     "Crawl4AI is unavailable; install the optional `browser` dependency"
                 ) from exc
 
-            browser_config = self._browser_config()
             self._run_config = CrawlerRunConfig(
                 cache_mode=CacheMode.BYPASS,
                 check_robots_txt=True,
@@ -270,22 +279,37 @@ class Crawl4AIReader:
                     )
                 ),
             )
-            self._crawler = AsyncWebCrawler(config=browser_config)
-            self._install_network_guard(self._crawler)
-            self._keep_webgl_rendering(self._crawler)
-            try:
-                await self._crawler.start()
-            except Exception as exc:
-                self._crawler = None
-                raise ReaderError(
-                    "Crawl4AI could not start Chromium; run `crawl4ai-setup` and `crawl4ai-doctor`"
-                ) from exc
-            return self._crawler, self._run_config
+            last_error: Exception | None = None
+            # Try the configured build, then the library default: an uninstalled browser build is
+            # a configuration gap, not a reason to lose the page.
+            for channel in dict.fromkeys((self.channel, "")):
+                crawler = AsyncWebCrawler(config=self._browser_config(channel))
+                self._install_network_guard(crawler)
+                self._install_launch_tweaks(crawler, channel)
+                try:
+                    await crawler.start()
+                except Exception as exc:
+                    last_error = exc
+                    with contextlib.suppress(Exception):
+                        await crawler.close()
+                    if channel:
+                        LOGGER.warning(
+                            "Chromium build %r failed to start; retrying with default", channel
+                        )
+                    continue
+                self._crawler = crawler
+                self.channel_in_use = channel
+                return self._crawler, self._run_config
+            self._crawler = None
+            raise ReaderError(
+                "Crawl4AI could not start Chromium; run `crawl4ai-setup` and `crawl4ai-doctor`"
+            ) from last_error
 
-    def _browser_config(self):
+    def _browser_config(self, channel: str | None = None):
         """Build the Chromium profile. Every identity layer has to agree with the others."""
         from crawl4ai import BrowserConfig
 
+        channel = self.channel if channel is None else channel
         kwargs: dict[str, Any] = {
             "headless": True,
             "verbose": False,
@@ -305,32 +329,54 @@ class Crawl4AIReader:
             if locale:
                 kwargs["extra_args"] = [f"--lang={locale}"]
             kwargs["init_scripts"] = list(_STEALTH_INIT_SCRIPTS)
+        # Anything but the literal "chromium" reaches Playwright through Crawl4AI's own
+        # `chrome_channel` field. That value names the new-headless build, and Crawl4AI withholds
+        # it on Windows, so it goes through the launch arguments instead.
+        if channel and channel != "chromium":
+            kwargs["chrome_channel"] = channel
+        proxy = _proxy_config(self.proxy)
+        if proxy is not None:
+            kwargs["proxy_config"] = proxy
         return BrowserConfig(**kwargs)
 
-    def _keep_webgl_rendering(self, crawler) -> None:
-        """Let the GPU stack stay alive so WebGL reports a renderer instead of failing outright.
+    def _install_launch_tweaks(self, crawler, channel: str = "") -> None:
+        """Adjust the launch arguments Crawl4AI builds for the browser process.
 
-        Crawl4AI hard-codes ``--disable-gpu`` and friends into its dedicated launch path, which
-        leaves ``canvas.getContext('webgl')`` null. A desktop Chrome never reports that, so the
-        absence is a signal regardless of how clean the rest of the profile is. Stealth mode keeps
-        SwiftShader alive on the managed launch path; this brings the same exception to the
-        default one. The launch helper is private to the installed Crawl4AI, so a build that moves
-        it just keeps the previous behaviour.
+        Two things are corrected here, both about the process launch rather than the page:
+
+        * GPU-disabling flags. Crawl4AI hard-codes ``--disable-gpu`` and friends into its dedicated
+          launch path, which leaves ``canvas.getContext('webgl')`` null. A desktop Chrome never
+          reports that, so the absence is a signal however clean the rest of the profile is.
+          Stealth mode already keeps SwiftShader alive on the managed launch path; this brings the
+          same exception to the default one.
+        * The requested browser build when it is the new-headless ``chromium`` channel, which
+          Crawl4AI deliberately never forwards.
+
+        The launch helper is private to the installed Crawl4AI, so a build that moves it simply
+        keeps the previous behaviour.
         """
-        if not self.stealth:
-            return
         try:
             manager = crawler.crawler_strategy.browser_manager
             build_args = manager._build_browser_args
         except AttributeError:
             return
 
-        def build_without_gpu_disable():
+        drop_gpu_flags = self.stealth
+        use_new_headless = channel == "chromium"
+        if not drop_gpu_flags and not use_new_headless:
+            return
+
+        def build_adjusted_args():
             args = build_args()
-            args["args"] = [flag for flag in args.get("args", ()) if flag not in _GPU_DISABLE_FLAGS]
+            if drop_gpu_flags:
+                args["args"] = [
+                    flag for flag in args.get("args", ()) if flag not in _GPU_DISABLE_FLAGS
+                ]
+            if use_new_headless:
+                args["channel"] = "chromium"
             return args
 
-        manager._build_browser_args = build_without_gpu_disable
+        manager._build_browser_args = build_adjusted_args
 
     def _install_network_guard(self, crawler) -> None:
         allow_private = self.allow_private_urls
@@ -399,6 +445,29 @@ def _query_run_config(run_config: Any, query: str) -> Any:
         )
     except (AttributeError, ImportError, TypeError):
         return run_config
+
+
+def _proxy_config(value: str):
+    """Translate a proxy URL into Crawl4AI's ProxyConfig, rejecting unusable schemes.
+
+    A rendered page fetches through this proxy, so the proxy - not this process - resolves names
+    for the browser. That is the point of it (network origin is the one signal no fingerprint
+    patch can move), but it also means `validate_public_url`'s local resolution no longer
+    describes the browser's actual peer, so the proxy stays an explicit operator choice.
+    """
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    if parsed.scheme not in _PROXY_SCHEMES or not parsed.hostname:
+        return None
+    from crawl4ai import ProxyConfig
+
+    port = f":{parsed.port}" if parsed.port else ""
+    return ProxyConfig(
+        server=f"{parsed.scheme}://{parsed.hostname}{port}",
+        username=parsed.username or None,
+        password=parsed.password or None,
+    )
 
 
 def _recoverable_structural_reason(result: Any, markdown: str) -> str | None:
