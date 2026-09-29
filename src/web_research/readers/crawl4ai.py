@@ -31,7 +31,22 @@ DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 )
-_VIEWPORT = (1366, 768, 1)
+# A maximized Chrome window on the most common desktop resolution, expressed the way a site can
+# observe it. Playwright derives `screen` from the viewport, so a viewport set to the full screen
+# reports a window with no taskbar, no tab strip and no address bar: `innerWidth == outerWidth ==
+# screen.width` and `availHeight == screen.height`, which no real maximized window produces. The
+# three numbers below are one arithmetic chain (screen, minus a 40px Windows taskbar, minus about
+# 80px of browser chrome) and are patched together for the same reason.
+_SCREEN = (1366, 768)
+_WORK_AREA_HEIGHT = 728
+_VIEWPORT = (1366, 648, 1)
+# Crawl4AI builds `Stealth()` with no arguments, which leaves Playwright-Stealth's own defaults
+# ("Intel Inc." / "Intel Iris OpenGL Engine") in place. Those are macOS strings sitting underneath
+# a profile that claims Windows -- the exact cross-layer mismatch the ranking grades. A Windows
+# Chrome reports the ANGLE adapter string here, while the *masked* `gl.VENDOR` stays "WebKit" in
+# both real Chrome and this build (already measured), because that one comes from the GLES layer.
+_GPU_VENDOR = "Google Inc. (Intel)"
+_GPU_RENDERER = "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)"
 _GPU_DISABLE_FLAGS = frozenset(
     {"--disable-gpu", "--disable-gpu-compositing", "--disable-software-rasterizer"}
 )
@@ -43,6 +58,12 @@ _GPU_DISABLE_FLAGS = frozenset(
 _STEALTH_INIT_SCRIPTS = (
     "Object.defineProperty(navigator,'deviceMemory',{get:()=>8});",
     "Object.defineProperty(Notification,'permission',{get:()=>'prompt'});",
+    (
+        "const d=(o,k,v)=>Object.defineProperty(o,k,{get:()=>v,configurable:true});"
+        f"d(screen,'width',{_SCREEN[0]});d(screen,'height',{_SCREEN[1]});"
+        f"d(screen,'availWidth',{_SCREEN[0]});d(screen,'availHeight',{_WORK_AREA_HEIGHT});"
+        f"d(window,'outerWidth',{_SCREEN[0]});d(window,'outerHeight',{_WORK_AREA_HEIGHT});"
+    ),
 )
 _STRUCTURAL_SINGLE_SIGNALS = frozenset(
     {"minimal_text", "no_content_elements", "script_heavy_shell"}
@@ -286,6 +307,7 @@ class Crawl4AIReader:
                 crawler = AsyncWebCrawler(config=self._browser_config(channel))
                 self._install_network_guard(crawler)
                 self._install_launch_tweaks(crawler, channel)
+                self._install_stealth_profile(crawler)
                 try:
                     await crawler.start()
                 except Exception as exc:
@@ -377,6 +399,34 @@ class Crawl4AIReader:
             return args
 
         manager._build_browser_args = build_adjusted_args
+
+    def _install_stealth_profile(self, crawler) -> None:
+        """Give the stealth helper GPU strings that match the claimed operating system.
+
+        ``StealthAdapter`` instantiates ``Stealth()`` with no arguments, so the library's macOS
+        renderer defaults survive under a User-Agent, ``navigator.platform`` and UA-Client-Hints
+        that all say Windows. Substituting the adapter's instance keeps the values inside the
+        library's own patch instead of racing it from an init script: whichever `getParameter`
+        wrapper runs last wins, and the library's is installed per page, after context scripts.
+        """
+        if not self.stealth:
+            return
+        try:
+            adapter = crawler.crawler_strategy.browser_manager._stealth_adapter
+            current = adapter._stealth
+        except AttributeError:
+            return
+        if current is None:
+            return
+        try:
+            from playwright_stealth import Stealth
+        except ImportError:
+            return
+        # Every other evasion keeps its default; only the two renderer strings change.
+        adapter._stealth = Stealth(
+            webgl_vendor_override=_GPU_VENDOR,
+            webgl_renderer_override=_GPU_RENDERER,
+        )
 
     def _install_network_guard(self, crawler) -> None:
         allow_private = self.allow_private_urls

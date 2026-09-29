@@ -5,6 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from web_research.readers.crawl4ai import (
+    _GPU_RENDERER,
+    _GPU_VENDOR,
+    _SCREEN,
+    _VIEWPORT,
+    _WORK_AREA_HEIGHT,
     Crawl4AIReader,
     _proxy_config,
     resolve_browser_user_agent,
@@ -126,7 +131,70 @@ class BrowserProfileTests(unittest.TestCase):
         self.assertEqual(config.headers["Accept-Language"], "en-US,en;q=0.9")
         self.assertEqual(["--lang=en-US"], config.extra_args)
         self.assertEqual(1366, config.viewport_width)
-        self.assertEqual(2, len(config.init_scripts))
+        self.assertEqual(_VIEWPORT[1], config.viewport_height)
+        self.assertEqual(3, len(config.init_scripts))
+
+    def test_window_geometry_describes_a_real_window(self) -> None:
+        """A maximized window leaves room for a taskbar and browser chrome; headless had neither.
+
+        The chain has to stay arithmetically plausible in both gaps, and the viewport must not
+        equal the screen, which is what made the old profile read as a window with no chrome.
+        """
+        reader = Crawl4AIReader()
+        config = reader._browser_config()
+        taskbar = _SCREEN[1] - _WORK_AREA_HEIGHT
+        browser_chrome = _WORK_AREA_HEIGHT - _VIEWPORT[1]
+
+        self.assertTrue(0 < taskbar <= 80, taskbar)
+        self.assertTrue(40 < browser_chrome <= 120, browser_chrome)
+        self.assertNotEqual(_SCREEN[1], _VIEWPORT[1])
+        self.assertEqual(_SCREEN[0], _VIEWPORT[0])  # maximized windows have no side chrome
+        joined = "".join(config.init_scripts)
+        for value in (str(_SCREEN[1]), str(_WORK_AREA_HEIGHT)):
+            self.assertIn(value, joined)
+
+    def test_gpu_strings_agree_with_the_claimed_platform(self) -> None:
+        """Crawl4AI's arg-less Stealth() defaults to macOS GPU strings under a Windows profile."""
+        from playwright_stealth import Stealth
+
+        reader = Crawl4AIReader()
+        adapter = SimpleNamespace(_stealth=Stealth())
+        crawler = SimpleNamespace(
+            crawler_strategy=SimpleNamespace(
+                browser_manager=SimpleNamespace(_stealth_adapter=adapter)
+            )
+        )
+        before = adapter._stealth.webgl_renderer_override
+
+        reader._install_stealth_profile(crawler)
+
+        self.assertNotEqual(before, adapter._stealth.webgl_renderer_override)
+        self.assertEqual(_GPU_RENDERER, adapter._stealth.webgl_renderer_override)
+        self.assertEqual(_GPU_VENDOR, adapter._stealth.webgl_vendor_override)
+        self.assertIn("Windows", reader._browser_config().user_agent)
+        self.assertIn("ANGLE", adapter._stealth.webgl_renderer_override)
+        # Substituting the instance must not silently change any other evasion.
+        self.assertEqual(Stealth().navigator_platform, adapter._stealth.navigator_platform)
+
+    def test_stealth_off_leaves_the_adapter_alone(self) -> None:
+        reader = Crawl4AIReader(stealth=False)
+        adapter = SimpleNamespace(_stealth="sentinel")
+        crawler = SimpleNamespace(
+            crawler_strategy=SimpleNamespace(
+                browser_manager=SimpleNamespace(_stealth_adapter=adapter)
+            )
+        )
+
+        reader._install_stealth_profile(crawler)
+
+        self.assertEqual("sentinel", adapter._stealth)
+
+    def test_missing_stealth_adapter_is_not_a_failure(self) -> None:
+        """A Crawl4AI build that moves the private adapter simply keeps the old behaviour."""
+        reader = Crawl4AIReader()
+        crawler = SimpleNamespace(crawler_strategy=SimpleNamespace())
+
+        reader._install_stealth_profile(crawler)
 
     def test_user_agent_matches_the_installed_browser(self) -> None:
         detected = resolve_browser_user_agent("")

@@ -215,9 +215,20 @@ Chromium reports differently (`navigator.plugins`, `window.chrome`, the UA-Clien
 reads `HeadlessChrome` otherwise, and notification permission) and keeps a WebGL renderer alive
 instead of letting GPU-disabling launch flags null it out.
 
-This addresses the browser-API and header-coherence layer. It does not change the TLS and HTTP/2
-fingerprints, which come from the Chromium build itself, and it adds no human cursor motion, so a
-stack that scores pointer behaviour or matches headless TLS hashes can still classify the reader. A
+Two coherence details are set rather than left to defaults, because they contradict the rest of the
+profile otherwise. The WebGL `UNMASKED_*` strings become a Windows ANGLE adapter string: the stealth
+library's own defaults are macOS strings, which would sit under a User-Agent, `navigator.platform`
+and UA-Client-Hints that all claim Windows. And the window is described as a maximized window rather
+than a bare viewport — screen 1366x768, 728px of work area below a Windows taskbar, 648px of viewport
+below the tab strip and address bar — instead of the `innerWidth == outerWidth == screen.width` that
+a viewport set to the full screen produces. The masked `gl.VENDOR` stays `WebKit` deliberately; real
+Chrome reports that too, since it comes from the GLES layer rather than the adapter.
+
+This addresses the browser-API, header and window-geometry layers. It does not change the TLS and
+HTTP/2 fingerprints, which come from the Chromium build itself, it does not make SwiftShader
+rasterize like a real GPU (only the strings change, not the pixels they describe), and it adds no
+human cursor motion, so a stack that scores pointer behaviour, hashes canvas output, or matches
+headless TLS records can still classify the reader. A
 deliberate browser escalation is also reported to the caller as a `browser_escalation` warning, and
 Crawl4AI's own block detections stay visible as `suspected_error_page:*` or
 `crawl4ai_false_positive:*`.
