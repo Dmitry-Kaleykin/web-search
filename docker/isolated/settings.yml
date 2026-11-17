@@ -1,0 +1,42 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - google cse
+      - duckduckgo web
+      - mwmbl
+      - searchmysite
+      - mojeek
+      - crowdview
+
+general:
+  instance_name: Isolated Web Search
+
+server:
+  secret_key: isolated-local-only-no-published-ports
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats: [json]
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 20.0
+  retries: 0
+  enable_http2: true
+
+engines:
+  - name: google cse
+    disabled: false
+  - name: duckduckgo web
+    disabled: false
+  - name: mwmbl
+    disabled: false
+  - name: searchmysite
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: crowdview
+    disabled: false

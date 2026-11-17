@@ -1,0 +1,12 @@
+# Allowlist only. The build never receives .env, caches, home files, or Git history.
+**
+!pyproject.toml
+!README.md
+!LICENSE
+!src/
+!src/**
+src/**/__pycache__/
+!docker/
+!docker/isolated/
+!docker/isolated/runtime-requirements.txt
+!docker/isolated/settings.yml

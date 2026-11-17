@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import ClassVar
 
+from ..models import Document
 from ..text import compact_text
 
 _WORD_RE = re.compile(r"[^\W_]+(?:['\u2019-][^\W_]+)*", re.UNICODE)
@@ -48,6 +49,18 @@ _ACCESS_DENIED_RE = re.compile(
     re.IGNORECASE,
 )
 _CLOUDFLARE_ERROR_RE = re.compile(r"\b(52[0-7])\b")
+_CHALLENGE_TITLE_RE = re.compile(
+    r"^(?:just a moment|checking your browser|security (?:check|verification)|"
+    r"verify (?:that )?you are (?:a )?human|attention required[! ]*\|\s*cloudflare)[.!… ]*$",
+    re.IGNORECASE,
+)
+_CHALLENGE_PROMPT_RE = re.compile(
+    r"\b(?:verify (?:that )?you are (?:a )?human|verifying (?:that )?you are human|"
+    r"checking your browser|performing security verification|"
+    r"please (?:solve|complete) (?:the |this )?(?:captcha|security check)|"
+    r"enable javascript and cookies to continue)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,9 +114,16 @@ def assess_html_quality(
     elif not _has_meaningful_text(extracted_content):
         reasons.append("no_extracted_content")
 
+    diagnostics = page_diagnostics(title, extracted_content, status_code=status_code)
+    if "bot_challenge" in diagnostics:
+        reasons.append("browser_check_interstitial")
+    if "access_denied" in diagnostics:
+        reasons.append("access_denied")
+    if status_code in {401, 403, 429}:
+        reasons.append(f"http_{status_code}")
     return HTMLQualityAssessment(
         tuple(dict.fromkeys(reasons)),
-        page_diagnostics(title, extracted_content, status_code=status_code),
+        diagnostics,
     )
 
 
@@ -122,6 +142,13 @@ def page_diagnostics(
 
     if status_code is not None and status_code >= 400:
         reasons.append(f"http_{status_code}")
+
+    # Require a challenge title, or a prompt at the start of a short interstitial. Merely
+    # mentioning Cloudflare/CAPTCHA (or embedding a contact-form widget) is not a block.
+    if _CHALLENGE_TITLE_RE.fullmatch(normalized_title) or (
+        len(content) < 2_000 and _CHALLENGE_PROMPT_RE.match(content_prefix.lstrip("# *"))
+    ):
+        reasons.append("bot_challenge")
 
     cloudflare_match = _CLOUDFLARE_ERROR_RE.search(normalized_title)
     if cloudflare_match and (
@@ -167,6 +194,42 @@ def has_meaningful_text(content: str) -> bool:
     """Whether extraction recovered language or numeric content, independent of its length."""
 
     return _has_meaningful_text(content)
+
+
+def document_needs_rendering(document: Document) -> bool:
+    return (
+        bool(rendering_signals(document.content))
+        or any(
+            warning.startswith(("browser_recommended:", "possibly_incomplete:"))
+            for warning in document.warnings
+        )
+        or "bot_challenge" in page_diagnostics(document.title, document.content)
+    )
+
+
+def document_has_error(document: Document) -> bool:
+    return bool(
+        page_diagnostics(document.title, document.content, status_code=document.status_code)
+    ) or any(warning.startswith("suspected_error_page:") for warning in document.warnings)
+
+
+def cacheable_document(document: Document) -> bool:
+    """Do not turn a transient interstitial or failed browser attempt into a six-hour result."""
+    return (
+        has_meaningful_text(document.content)
+        and not document_needs_rendering(document)
+        and not document_has_error(document)
+        and not any(
+            warning.startswith(
+                (
+                    "browser_output_incomplete:",
+                    "browser_fallback_failed:",
+                    "browser_result_rejected:",
+                )
+            )
+            for warning in document.warnings
+        )
+    )
 
 
 def _has_meaningful_text(content: str) -> bool:

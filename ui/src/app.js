@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,17 +15,10 @@ import {
   matchesKey,
   stripTerminalSequences,
 } from "@earendil-works/pi-tui";
+import { createServices } from "./services.js";
 
 const UI_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_DIR = path.resolve(UI_DIR, "..");
-const COMPOSE_FILE = path.join(PROJECT_DIR, "docker", "searxng", "compose.yaml");
-const DATA_DIR = path.join(PROJECT_DIR, ".web-search-data");
-const BROWSER_DIR = path.join(DATA_DIR, "ms-playwright");
-const PYTHON = path.join(PROJECT_DIR, ".venv", "bin", "python");
-const PIP = path.join(PROJECT_DIR, ".venv", "bin", "python");
-const CRAWL4AI_SETUP = path.join(PROJECT_DIR, ".venv", "bin", "crawl4ai-setup");
-const MCP_SERVER = path.join(PROJECT_DIR, ".venv", "bin", "web-search-mcp");
-const DOCTOR = path.join(PROJECT_DIR, ".venv", "bin", "web-search-doctor");
 const EVALUATOR = path.join(PROJECT_DIR, ".venv", "bin", "web-search-eval");
 
 const ansi = {
@@ -41,27 +34,22 @@ const actions = [
   {
     value: "setup",
     label: "Install / update and start",
-    description: "Set up Python, Chromium, Docker, and SearXNG",
+    description: "Build the complete isolated runtime and prepare Docker",
   },
   {
     value: "start",
     label: "Start services",
-    description: "Launch Docker Desktop if needed and start SearXNG",
+    description: "Prepare isolated search; Pi starts its own worker when it connects",
   },
   {
     value: "stop",
-    label: "Stop services",
-    description: "Stop the project SearXNG container",
-  },
-  {
-    value: "restart",
-    label: "Restart services",
-    description: "Restart SearXNG without reinstalling anything",
+    label: "Stop search workers",
+    description: "Disconnect Pi’s search workers; reconnect Pi to search again",
   },
   {
     value: "doctor",
     label: "Run readiness checks",
-    description: "Check browser runtime, search, public-page reading, and configuration",
+    description: "Verify isolation, public-page reading, Chromium, and a real search",
   },
   {
     value: "evaluation",
@@ -71,12 +59,12 @@ const actions = [
   {
     value: "logs",
     label: "Toggle live logs",
-    description: "Follow or stop following SearXNG container output",
+    description: "Follow the network broker’s domain-only connection records",
   },
   {
     value: "refresh",
     label: "Refresh status",
-    description: "Recheck every local component and endpoint",
+    description: "Recheck Docker, the installed runtime, and Pi’s search workers",
   },
   { value: "quit", label: "Quit", description: "Leave services in their current state" },
 ];
@@ -90,7 +78,7 @@ const tui = new TuiAltScreen(terminal, false, undefined, {
 
 const header = new Text(
   `${ansi.accent(ansi.bold("Local Agentic Web Search"))}\n${ansi.dim(
-    "Operator console · MCP remains the Pi integration boundary",
+    "Isolated search · Pi starts its worker when it connects",
   )}`,
   1,
   0,
@@ -136,6 +124,7 @@ let busy = false;
 let activeChild = null;
 let logChild = null;
 let logLines = [];
+const services = createServices({ projectDir: PROJECT_DIR, run, log: appendLog });
 
 function requestRender() {
   statusText.invalidate();
@@ -205,159 +194,41 @@ function run(command, args, options = {}) {
   });
 }
 
-async function readEnvironment() {
-  const values = {};
-  try {
-    const contents = await readFile(path.join(PROJECT_DIR, ".env"), "utf8");
-    for (const rawLine of contents.split("\n")) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith("#")) continue;
-      const separator = line.indexOf("=");
-      if (separator < 1) continue;
-      const key = line.slice(0, separator).trim();
-      let value = line.slice(separator + 1).trim();
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-      values[key] = value;
-    }
-  } catch {
-    // An absent .env is represented in the status output.
-  }
-  return { ...values, ...process.env };
-}
-
-async function fetchOk(url, timeoutMs = 3500, headers = {}) {
-  try {
-    const response = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
-    return { ok: response.ok, status: response.status, json: await response.json().catch(() => null) };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
 function statusLine(ok, label, detail) {
   const marker = ok ? ansi.success("●") : ansi.error("●");
   return `${marker} ${label.padEnd(12)} ${detail}`;
 }
 
 async function refreshStatus() {
-  const environment = await readEnvironment();
-  const docker = await run("docker", ["info", "--format", "{{.ServerVersion}}"], {
-    quiet: true,
-    allowFailure: true,
-  });
-  const compose = docker.code === 0
-    ? await run(
-        "docker",
-        ["compose", "-f", COMPOSE_FILE, "ps", "--status", "running", "--services"],
-        { quiet: true, allowFailure: true },
-      )
-    : { code: 1, stdout: "" };
-  const searchUrl = environment.WEB_SEARCH_SEARXNG_URL || "http://127.0.0.1:8080";
-  const search = await fetchOk(`${searchUrl.replace(/\/$/, "")}/config`);
-  const pythonReady = await exists(PYTHON, true);
-  const mcpReady = await exists(MCP_SERVER, true);
-  const browserReady = await exists(BROWSER_DIR);
-  const searxngRunning = compose.code === 0 && compose.stdout.split(/\s+/).includes("searxng");
-
-  statusText.setText(
-    [
-      statusLine(
-        docker.code === 0,
-        "Docker",
-        docker.code === 0 ? `running (${docker.stdout.trim()})` : "not running",
-      ),
-      statusLine(
-        searxngRunning,
-        "SearXNG",
-        search.ok
-          ? "running; endpoint reachable"
-          : searxngRunning
-            ? "container running; API unavailable"
-            : "stopped",
-      ),
-      statusLine(browserReady, "Chromium", browserReady ? "directory present; run readiness checks" : "runtime missing"),
-      statusLine(
-        pythonReady && mcpReady,
-        "MCP",
-        pythonReady && mcpReady ? "installed; launched on demand by Pi" : "not installed",
-      ),
-    ].join("\n"),
-  );
+  try {
+    const state = await services.status();
+    const workerDetail = !state.dockerReady
+      ? "unavailable · start Docker"
+      : !state.runtimeInstalled || !state.imageReady
+        ? "unavailable · install the isolated runtime"
+        : state.unsafeWorkers.length
+          ? "unexpected isolation settings; stop workers and reconnect Pi"
+      : state.workers.length
+        ? `${state.workers.length} connected · ${state.workers.map((worker) => worker.Name.replace(/^\//, "")).join(", ")}`
+        : "idle · Pi starts its worker when it connects";
+    statusText.setText([
+      statusLine(state.dockerReady, "Docker",
+        state.dockerReady ? `running (${state.dockerVersion})` : "not running"),
+      statusLine(state.runtimeInstalled && state.imageReady, "Runtime",
+        !state.runtimeInstalled ? "not installed; run Install / update"
+          : !state.dockerReady ? "installed; start Docker to verify"
+          : !state.imageReady ? "image missing; run Install / update"
+          : "installed · includes Chromium and search"),
+      statusLine(state.ready, "Pi workers", workerDetail),
+      ...(state.outdatedWorkers.length
+        ? [ansi.warning("  Reconnect Pi to use the updated runtime.")] : []),
+      ...(state.legacyRunning
+        ? [ansi.warning("  Old standalone search is running; Start services will stop it.")] : []),
+    ].join("\n"));
+  } catch (error) {
+    statusText.setText(ansi.error(error instanceof Error ? error.message : String(error)));
+  }
   requestRender();
-}
-
-async function ensureDocker() {
-  let result = await run("docker", ["info", "--format", "{{.ServerVersion}}"], {
-    quiet: true,
-    allowFailure: true,
-  });
-  if (result.code === 0) return;
-  if (process.platform !== "darwin" || !(await exists("/Applications/Docker.app"))) {
-    throw new Error("Docker is not running. Install or start Docker before continuing.");
-  }
-  appendLog("Launching Docker Desktop…", "command");
-  await run("open", ["-a", "Docker"]);
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    result = await run("docker", ["info", "--format", "{{.ServerVersion}}"], {
-      quiet: true,
-      allowFailure: true,
-    });
-    if (result.code === 0) return;
-  }
-  throw new Error("Docker Desktop did not become ready within 60 seconds.");
-}
-
-async function installApplication() {
-  if (!(await exists(PYTHON, true))) {
-    await run("python3", ["-m", "venv", path.join(PROJECT_DIR, ".venv")]);
-  }
-  await run(PIP, ["-m", "pip", "install", "-e", ".[browser]"]);
-  const runtimeEnvironment = {
-    ...process.env,
-    CRAWL4_AI_BASE_DIRECTORY: DATA_DIR,
-    PLAYWRIGHT_BROWSERS_PATH: BROWSER_DIR,
-  };
-  await run(CRAWL4AI_SETUP, [], { env: runtimeEnvironment });
-}
-
-async function startServices({ pull = false } = {}) {
-  await ensureDocker();
-  if (pull) {
-    await run("docker", ["compose", "-f", COMPOSE_FILE, "pull"]);
-  }
-  await run("docker", ["compose", "-f", COMPOSE_FILE, "up", "-d", "--wait", "--wait-timeout", "60"]);
-}
-
-async function stopServices() {
-  if (logChild) stopLogs();
-  await run("docker", ["compose", "-f", COMPOSE_FILE, "stop"]);
-}
-
-async function restartServices() {
-  await ensureDocker();
-  await run("docker", ["compose", "-f", COMPOSE_FILE, "restart"]);
-}
-
-async function runDoctor() {
-  if (!(await exists(DOCTOR, true))) {
-    throw new Error("The application is not installed yet. Run Install / update first.");
-  }
-  const environment = await readEnvironment();
-  const result = await run(DOCTOR, [], {
-    allowFailure: true,
-    env: {
-      ...process.env,
-      ...environment,
-      CRAWL4_AI_BASE_DIRECTORY: DATA_DIR,
-      PLAYWRIGHT_BROWSERS_PATH: BROWSER_DIR,
-    },
-  });
-  if (result.code !== 0) {
-    throw new Error("Readiness checks failed; see diagnostics above.");
-  }
 }
 
 async function runEvaluation() {
@@ -367,21 +238,27 @@ async function runEvaluation() {
   await run(EVALUATOR, ["check"]);
 }
 
-function startLogs() {
+async function startLogs() {
   if (logChild) return;
-  appendLog("docker compose logs --tail 100 --follow", "command");
-  logChild = spawn(
-    "docker",
-    ["compose", "-f", COMPOSE_FILE, "logs", "--tail", "100", "--follow", "--no-color"],
-    { cwd: PROJECT_DIR, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  logChild.stdout.on("data", (chunk) => appendLog(chunk.toString()));
-  logChild.stderr.on("data", (chunk) => appendLog(chunk.toString(), "error"));
-  logChild.on("close", () => {
-    logChild = null;
-    setActivity("Live logs stopped", "normal");
+  const auditLog = await services.prepareLogs();
+  appendLog("Following the network broker’s domain-only connection records.");
+  const child = spawn("/usr/bin/tail", ["-n", "100", "-F", auditLog],
+    { cwd: PROJECT_DIR, stdio: ["ignore", "pipe", "pipe"] });
+  logChild = child;
+  child.stdout.on("data", (chunk) => appendLog(chunk.toString()));
+  child.stderr.on("data", (chunk) => appendLog(chunk.toString(), "error"));
+  child.on("error", (error) => {
+    appendLog(error.message, "error");
+    if (logChild === child) logChild = null;
+    setActivity("Cannot follow network logs", "error");
   });
-  setActivity("Following live SearXNG logs", "success");
+  child.on("close", () => {
+    if (logChild === child) {
+      logChild = null;
+      setActivity("Live logs stopped", "normal");
+    }
+  });
+  setActivity("Following live network records", "success");
 }
 
 function stopLogs() {
@@ -400,26 +277,20 @@ async function performAction(value) {
     shutdown(0);
     return;
   }
-  if (value === "logs") {
-    if (logChild) stopLogs();
-    else startLogs();
-    return;
-  }
-
   busy = true;
   setActivity(`Running: ${actions.find((item) => item.value === value)?.label || value}`);
   try {
     if (value === "setup") {
-      await installApplication();
-      await startServices({ pull: true });
+      await services.install();
     } else if (value === "start") {
-      await startServices();
+      await services.start();
     } else if (value === "stop") {
-      await stopServices();
-    } else if (value === "restart") {
-      await restartServices();
+      await services.stop();
     } else if (value === "doctor") {
-      await runDoctor();
+      await services.doctor();
+    } else if (value === "logs") {
+      if (logChild) stopLogs();
+      else await startLogs();
     } else if (value === "evaluation") {
       await runEvaluation();
     } else if (value === "refresh") {

@@ -36,7 +36,11 @@ forward the server instructions itself. The existing intended Pi configuration u
 
 ## MCP connection
 
-Configure your MCP adapter to launch the absolute `.venv/bin/web-search-mcp` executable using
+For the isolated macOS runtime, build with `.venv/bin/python tools/build_isolated.py` and
+verify with `.venv/bin/python tools/check_isolation.py`. See [isolation](../../docs/isolation.md)
+for the Little Snitch rule and enforced restrictions.
+
+Configure your MCP adapter to launch the absolute `web-search-isolated` executable using
 [mcp-server.example.json](mcp-server.example.json). Adapt the outer configuration shape if needed.
 The adapter must import both tools, forward cancellation, and may forward progress messages.
 No sampling or sampling-auto-approval configuration is needed for this server. The example uses a

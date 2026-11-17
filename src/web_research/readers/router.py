@@ -8,9 +8,14 @@ from contextlib import suppress
 from typing import Literal
 
 from ..models import Document
-from ..text import lexical_similarity
+from ..text import tokens
 from .base import Reader
-from .quality import rendering_signals
+from .quality import (
+    cacheable_document,
+    document_has_error,
+    document_needs_rendering,
+    has_meaningful_text,
+)
 
 RenderMode = Literal["auto", "never", "always"]
 
@@ -51,7 +56,7 @@ class LayeredReader:
         actions: list[dict] | None = None,
     ) -> Document:
         variant = json.dumps([url, render, query, visual, page, actions], sort_keys=True)
-        cache_key = "read:v3:" + hashlib.sha256(variant.encode()).hexdigest()
+        cache_key = "read:v4:" + hashlib.sha256(variant.encode()).hexdigest()
         ttl = (
             getattr(self.primary, "cache_ttl_seconds", 21600)
             if max_age_seconds is None
@@ -59,7 +64,7 @@ class LayeredReader:
         )
         if self.store and ttl > 0 and not actions:
             cached = await asyncio.to_thread(self.store.get_document, cache_key, ttl)
-            if cached:
+            if cached and cacheable_document(cached):
                 cached.warnings.append("cache_hit")
                 return cached
         key = f"{cache_key}:{ttl}"
@@ -79,7 +84,7 @@ class LayeredReader:
                         ),
                         timeout=90,
                     )
-                    if self.store and not actions:
+                    if self.store and not actions and cacheable_document(result):
                         await asyncio.to_thread(self.store.put_document, cache_key, result)
                     return result
 
@@ -133,6 +138,16 @@ class LayeredReader:
             "image/webp",
         }:
             return document
+        # Text, JSON and XML are already documents, not browser applications. Rendering them
+        # can corrupt whitespace/markup and offers no recovery from a missing query term.
+        if (
+            document is not None
+            and document.content_type
+            and document.content_type not in {"text/html", "application/xhtml+xml"}
+            and not visual
+            and not actions
+        ):
+            return document
         if render == "never":
             if document is not None:
                 if _browser_recommended(document):
@@ -159,10 +174,26 @@ class LayeredReader:
 
         try:
             if visual or actions:
-                return await self.browser.read(url, query=query, visual=visual, actions=actions)
-            if query:
-                return await self.browser.read(url, query=query)  # type: ignore[call-arg]
-            return await self.browser.read(url)
+                rendered = await self.browser.read(url, query=query, visual=visual, actions=actions)
+            elif query:
+                rendered = await self.browser.read(url, query=query)  # type: ignore[call-arg]
+            else:
+                rendered = await self.browser.read(url)
+            # A successful browser operation can still return a challenge or loading shell.
+            # Preserve a usable HTTP extraction instead of silently replacing it with that.
+            if (
+                document is not None
+                and cacheable_document(document)
+                and (
+                    document_has_error(rendered)
+                    or document_needs_rendering(rendered)
+                    or not has_meaningful_text(rendered.content)
+                    or any(w.startswith("browser_output_incomplete:") for w in rendered.warnings)
+                )
+            ):
+                document.warnings.append("browser_result_rejected:incomplete_or_error")
+                return document
+            return rendered
         except Exception as browser_error:
             if document is not None:
                 document.warnings.append(
@@ -177,21 +208,14 @@ class LayeredReader:
 
 
 def _browser_recommended(document: Document) -> bool:
-    if rendering_signals(document.content):
-        return True
-    # Honor the old warning until cached documents written by earlier versions expire.
-    return any(
-        warning.startswith(("browser_recommended:", "possibly_incomplete:"))
-        for warning in document.warnings
-    )
+    return document_needs_rendering(document)
 
 
 def _query_render_recommended(document: Document, query: str | None) -> bool:
     if not query or document.method.startswith("crawl4ai"):
         return False
-    title_relevance = lexical_similarity(document.title, query)
-    content_relevance = lexical_similarity(document.content[:20_000], query)
-    if title_relevance >= 0.05 and content_relevance < 0.01:
-        document.warnings.append("browser_recommended:relevant_terms_missing")
-        return True
-    return False
+    query_tokens = tokens(query)
+    # A Jaccard denominator grows with page length: it treated complete long docs as missing
+    # relevant terms and launched Chromium unnecessarily. Check term presence instead.
+    title_matches = bool(query_tokens & tokens(document.title))
+    return title_matches and query_tokens.isdisjoint(tokens(document.content))

@@ -74,7 +74,9 @@ async def offline_checks() -> dict[str, bool]:
             "read_url",
             {"url": blocked["sources"]["blocked"]["url"]},
         )
-        checks["unavailable_page_is_error"] = unavailable["is_error"]
+        checks["unavailable_page_is_not_usable"] = unavailable["is_error"] or (
+            (unavailable["output"] or {}).get("page_status") == "suspected_error"
+        )
     return checks
 
 

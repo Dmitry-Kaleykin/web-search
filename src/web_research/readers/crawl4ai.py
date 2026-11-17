@@ -18,7 +18,7 @@ from ..storage import SQLiteStore
 from .actions import action_script, discover_actions
 from .base import cap_content
 from .http import ReaderError
-from .quality import page_diagnostics, rendering_signals
+from .quality import assess_html_quality, page_diagnostics
 
 LOGGER = logging.getLogger(__name__)
 
@@ -189,7 +189,9 @@ class Crawl4AIReader:
             allow_proxy_fake_ips=self.allow_proxy_fake_ips,
         )
         crawler, run_config = await self._ensure_crawler()
-        effective_config = _query_run_config(run_config, query) if query else run_config
+        # Query selection belongs at the output window, after the complete extraction has
+        # been snapshotted. BM25 filtering here permanently removed context from pagination.
+        effective_config = run_config
         if visual or actions:
             effective_config = effective_config.clone(
                 screenshot=visual,
@@ -210,7 +212,7 @@ class Crawl4AIReader:
         if not result.success and not recovered_structural_warning:
             raise ReaderError(f"Crawl4AI failed for {url}: {result.error_message}")
 
-        final_url = str(result.url or url)
+        final_url = str(getattr(result, "redirected_url", None) or result.url or url)
         await validate_public_url(
             final_url,
             allow_private=self.allow_private_urls,
@@ -222,8 +224,6 @@ class Crawl4AIReader:
         warnings = ["browser_escalation"]
         if content_filtered:
             warnings.append("browser_content_filtered")
-        if query:
-            warnings.append("query_focused_extraction")
         if recovered_structural_warning:
             warnings.append(f"crawl4ai_false_positive:{recovered_structural_warning}")
         status_code = _status_code(result)
@@ -231,8 +231,14 @@ class Crawl4AIReader:
             f"suspected_error_page:{reason}"
             for reason in page_diagnostics(title, markdown, status_code=status_code)
         )
+        assessment = assess_html_quality(
+            str(getattr(result, "html", "") or ""),
+            markdown,
+            title=title,
+            status_code=status_code,
+        )
         warnings.extend(
-            f"browser_output_incomplete:{reason}" for reason in rendering_signals(markdown)
+            f"browser_output_incomplete:{reason}" for reason in assessment.browser_reasons
         )
         markdown, markdown_truncated = cap_content(
             markdown.strip(), self.max_content_chars, method="crawl4ai+chromium"
@@ -278,7 +284,6 @@ class Crawl4AIReader:
                 return self._crawler, self._run_config
             try:
                 from crawl4ai import AsyncWebCrawler, CacheMode, CrawlerRunConfig
-                from crawl4ai.content_filter_strategy import PruningContentFilter
                 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
             except ImportError as exc:
                 raise ReaderError(
@@ -293,12 +298,7 @@ class Crawl4AIReader:
                 delay_before_return_html=0.5,
                 flatten_shadow_dom=True,
                 word_count_threshold=1,
-                markdown_generator=DefaultMarkdownGenerator(
-                    content_filter=PruningContentFilter(
-                        threshold=0.42,
-                        threshold_type="dynamic",
-                    )
-                ),
+                markdown_generator=DefaultMarkdownGenerator(),
             )
             last_error: Exception | None = None
             # Try the configured build, then the library default: an uninstalled browser build is
@@ -341,6 +341,10 @@ class Crawl4AIReader:
             "viewport_height": _VIEWPORT[1],
             "device_scale_factor": _VIEWPORT[2],
         }
+        from ..isolation.transport import isolated
+
+        if isolated():
+            kwargs.update(create_isolated_context=True, ignore_https_errors=False)
         if self.accept_language:
             # Crawl4AI merges these into the request headers it sets from the User-Agent, so
             # Accept-Language lands alongside sec-ch-ua instead of replacing it.
@@ -359,6 +363,14 @@ class Crawl4AIReader:
         proxy = _proxy_config(self.proxy)
         if proxy is not None:
             kwargs["proxy_config"] = proxy
+        if isolated():
+            kwargs.setdefault("extra_args", []).extend(
+                [
+                    "--disable-background-networking",
+                    "--disable-quic",
+                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                ]
+            )
         return BrowserConfig(**kwargs)
 
     def _install_launch_tweaks(self, crawler, channel: str = "") -> None:
@@ -429,6 +441,11 @@ class Crawl4AIReader:
         )
 
     def _install_network_guard(self, crawler) -> None:
+        from ..isolation.transport import isolated
+
+        if isolated():
+            self._install_broker_guard(crawler)
+            return
         allow_private = self.allow_private_urls
         allow_proxy_fake_ips = self.allow_proxy_fake_ips
 
@@ -472,29 +489,84 @@ class Crawl4AIReader:
 
         crawler.crawler_strategy.set_hook("on_page_context_created", on_page_context_created)
 
+    def _install_broker_guard(self, crawler) -> None:
+        """Fulfill browser requests through the native broker; never use route.continue_."""
+        import httpx
+
+        from ..isolation.transport import BrokerTransport
+
+        manager = crawler.crawler_strategy.browser_manager
+        create_context = manager.create_browser_context
+        context_lock = asyncio.Lock()
+
+        async def guarded_context(*args, **kwargs):
+            # Crawl4AI 0.9.2 does not expose Playwright's service_workers setting.
+            # Interpose new_context only while its serialized context creation runs.
+            async with context_lock:
+                return await create_guarded(*args, **kwargs)
+
+        async def create_guarded(*args, **kwargs):
+            browser = manager.browser
+            original = browser.new_context
+
+            async def new_context(**options):
+                options.update(
+                    service_workers="block", accept_downloads=False, ignore_https_errors=False
+                )
+                return await original(**options)
+
+            browser.new_context = new_context
+            try:
+                return await create_context(*args, **kwargs)
+            finally:
+                browser.new_context = original
+
+        manager.create_browser_context = guarded_context
+
+        async def on_page_context_created(page, context, **_kwargs):
+            await context.clear_cookies()
+
+            async def block_socket(route):
+                await route.close()
+
+            await context.route_web_socket("**", block_socket)
+
+            async def broker_route(route):
+                request = route.request
+                if (
+                    request.method not in {"GET", "HEAD"}
+                    or request.post_data_buffer
+                    or request.resource_type in {"font", "media"}
+                ):
+                    await route.abort()
+                    return
+                try:
+                    async with httpx.AsyncClient(
+                        transport=BrokerTransport(), trust_env=False
+                    ) as client:
+                        result = await client.request(
+                            request.method, request.url, headers=request.headers
+                        )
+                    await route.fulfill(
+                        status=result.status_code, headers=dict(result.headers), body=result.content
+                    )
+                except Exception:
+                    await route.abort()
+
+            await context.route("**", broker_route)
+            return page
+
+        crawler.crawler_strategy.set_hook("on_page_context_created", on_page_context_created)
+
 
 def _markdown_text(value: Any) -> tuple[str, bool]:
     if isinstance(value, str):
         return value, False
-    fit = getattr(value, "fit_markdown", None)
-    if isinstance(fit, str) and fit.strip():
-        return fit, True
     raw = getattr(value, "raw_markdown", None)
-    return str(raw or ""), False
-
-
-def _query_run_config(run_config: Any, query: str) -> Any:
-    try:
-        from crawl4ai.content_filter_strategy import BM25ContentFilter
-        from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
-
-        return run_config.clone(
-            markdown_generator=DefaultMarkdownGenerator(
-                content_filter=BM25ContentFilter(user_query=query, bm25_threshold=0.7)
-            )
-        )
-    except (AttributeError, ImportError, TypeError):
-        return run_config
+    if isinstance(raw, str) and raw.strip():
+        return raw, False
+    fit = getattr(value, "fit_markdown", None)
+    return (fit, True) if isinstance(fit, str) else ("", False)
 
 
 def _proxy_config(value: str):
@@ -568,7 +640,10 @@ def _metadata_date(metadata: dict[str, Any]) -> str | None:
 
 
 def _status_code(result: Any) -> int | None:
-    value = getattr(result, "status_code", None)
+    # Crawl4AI retains the first hop's status separately from the final response.
+    value = getattr(result, "redirected_status_code", None)
+    if not isinstance(value, int):
+        value = getattr(result, "status_code", None)
     return value if isinstance(value, int) else None
 
 

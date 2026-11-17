@@ -39,6 +39,15 @@ async def validate_public_url(
         raise UnsafeUrlError("Credentials in URLs are not allowed")
 
     host = parsed.hostname.rstrip(".").lower()
+    from ..isolation.transport import isolated
+
+    if isolated():
+        # This worker has no external network or DNS. The native broker checks the
+        # actual public peer before connecting, including every DNS address attempted.
+        # The container cannot bypass that check even if this Python code is compromised.
+        if parsed.port not in {None, 80 if parsed.scheme == "http" else 443}:
+            raise UnsafeUrlError("Only standard web ports are allowed")
+        return ValidatedUrl(url=urlunsplit(parsed), host=host, addresses=())
     if (host == "localhost" or host.endswith(".localhost")) and not allow_private:
         raise UnsafeUrlError("Localhost URLs are blocked")
 

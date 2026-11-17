@@ -24,6 +24,28 @@ completion gate or store a research ledger. No minimum number of pages establish
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the current design.
 
+## Isolated macOS runtime and Little Snitch
+
+Use the complete isolated runtime when connecting Pi on macOS:
+
+```sh
+.venv/bin/python tools/build_isolated.py
+.venv/bin/python tools/check_isolation.py
+```
+
+Configure Pi to run the absolute `web-search-isolated` launcher, as shown in
+[the Pi example](integrations/pi/mcp-server.example.json), and restart Pi.
+Python, Chromium and SearXNG run in a container without networking or host-file mounts.
+A dedicated native **Web Search Network** executable owns public HTTP(S) connections
+and enforces request restrictions. Give that executable its own Little Snitch rule.
+
+See [isolation, installation, verification and limitations](docs/isolation.md).
+Search queries and requested URLs still leave your computer; arbitrary GET requests
+cannot provide a guarantee against disclosing text already supplied by the caller.
+
+The manual Python/SearXNG setup below is the unrestricted development runtime.
+Use the isolated launcher for the firewall and file-isolation boundary.
+
 ## Migrating from autonomous research
 
 Restart the MCP server and reconnect or reload its tools in your client so it receives the new
@@ -199,9 +221,20 @@ and `always` attempts Chromium while preserving the HTTP result if browser rende
 page output includes the HTTP status, a separate semantic page status, and warnings for likely soft
 404s, CDN/upstream error documents, or incomplete browser output. Content is returned in bounded
 inline chunks; continue with `next_cursor`. Set `query` for a long or navigation-heavy page to
-return the most relevant content window first. Rendered pages use filtered Markdown when Crawl4AI
-can identify the main content. Use a smaller `max_chars` with `include_links=false` for batched or
-fan-out calls.
+return a matching content window first. This is local lexical matching, not model summarization.
+The default **4,000 characters bounds one reply**, not the extracted page: up to one million
+characters are retained, subject to document limits. Copy `next_cursor` to read following text,
+or `start_cursor` to read the same snapshot from the beginning after a focused window.
+Browser reads retain raw Markdown rather than permanently deleting sections with pruning/BM25
+filters. Plain text, Markdown, CSV and XML/feed documents preserve their text and whitespace.
+Use a smaller `max_chars` with `include_links=false` for batched or fan-out calls.
+
+Temporary challenge/error pages and failed browser fallbacks are not stored as normal document
+cache results. When browser rendering yields an error or shell, a usable HTTP extraction is
+preserved with a warning. HTML error responses retain their status and diagnostic text, including
+Cloudflare's `cf-mitigated: challenge` signal. `page_status=ok` means no known error signal was
+detected; it does not establish completeness. See the [reader reliability review](docs/reader-reliability.md)
+for coverage, remaining gaps and the isolation/challenge tradeoff.
 
 ### Rendered-page identity
 
@@ -251,7 +284,7 @@ Read outputs also include `guidance` about using supporting passages, incomplete
 checking omitted context. This guidance does not certify the content's accuracy or sufficiency.
 
 `next_cursor` is now an opaque string. Copy it unchanged into the next call with the same URL;
-it reads an immutable snapshot, including query-focused browser output, rather than fetching the
+it reads an immutable snapshot of retained extraction, rather than fetching the
 page again. Snapshots survive server restarts, expire after one hour, and may be evicted under the
 32 MB / 100-row storage ceiling (8 MB per snapshot). Expiration is an explicit error. Old numeric continuation offsets
 are rejected; `cursor=0` starts a new extraction. Use `refresh=true` on a new read to bypass caches.
@@ -285,10 +318,19 @@ The concurrency ceilings are fixed on first use; restart the MCP server to chang
 ## Terminal console
 
 Run `./web-search` from this project (or the installed `web-search` launcher). The optional console
-installs the application and browser runtime, manages Docker/SearXNG, shows retrieval readiness,
-and runs the doctor. “Test search and reading (offline)” exercises the actual MCP tools with fixture
-responses and reports a failure if any check fails. It uses no network or model. It does not modify
-your model configuration.
+builds and manages the isolated runtime and shows connected Pi workers. **Start services** starts
+Docker if needed, verifies the installed runtime and stops the old standalone SearXNG container.
+Pi launches its isolated worker when it connects, so an idle worker count is a ready state.
+The console does not launch a second persistent search service.
+
+**Stop search workers** disconnects this project's active Pi workers; reconnect Pi to use search
+again. **Run readiness checks** verifies isolation, page reading, real Chromium rendering and search
+through a temporary isolated worker. **Toggle live logs** follows the native broker's domain-only
+connection records. **Install / update and start** rebuilds the complete isolated runtime; reconnect
+Pi afterward, and confirm the rebuilt executable in Little Snitch if requested.
+
+“Test search and reading (offline)” exercises the MCP tools with fixture responses and reports
+a failure if any check fails. It uses no network or model and does not modify model configuration.
 
 ## Storage and safety
 

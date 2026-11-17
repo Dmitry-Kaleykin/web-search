@@ -57,7 +57,7 @@ class ContentCapTests(unittest.IsolatedAsyncioTestCase):
             reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
             try:
                 live = await reader.read("http://127.0.0.1/long-article")
-                cached = store.get_document("http:v2:http://127.0.0.1/long-article", 3600)
+                cached = store.get_document("http:v3:http://127.0.0.1/long-article", 3600)
             finally:
                 await reader.close()
                 store.close()

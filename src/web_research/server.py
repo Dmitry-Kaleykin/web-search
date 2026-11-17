@@ -26,7 +26,7 @@ from .safety.urls import canonicalize_url
 from .search.searxng import SearXNGError, SearXNGSearchProvider
 from .search.shared import SharedSearches
 from .storage import SQLiteStore
-from .text import lexical_similarity
+from .text import tokens
 from .workflow import CALLER_CONTRACT, RESEARCH_WORKFLOW, read_guidance, search_guidance
 
 try:
@@ -60,7 +60,9 @@ READ_URL_TOOL_DESCRIPTION = (
     "analyze that page. It uses safe bounded HTTP retrieval, Trafilatura with a basic HTML "
     "fallback, and automatic headless-Chromium escalation when rendering appears necessary. "
     "It reports HTTP and suspected error-page status and returns pageable inline content. Use "
-    "refresh=true bypasses cached pages. Copy next_cursor unchanged to continue the same snapshot. "
+    "refresh=true bypasses cached pages. Copy next_cursor unchanged to continue the same snapshot, "
+    "or start_cursor to read context before a query-focused window. The reply limit is not "
+    "the extraction limit. "
     "Use visual=true for PDF pages, images or charts and read-only actions for tabs or load-more. "
     "Use the optional query parameter to focus a navigation-heavy or long page. "
     "Use web_search instead "
@@ -127,6 +129,10 @@ class ReadUrlOutput(BaseModel):
     content_end: int
     has_more_content: bool
     next_cursor: str | int | None
+    start_cursor: str | None = Field(
+        default=None,
+        description="Read the same snapshot from its beginning after a query-focused window.",
+    )
     link_count: int
     links_included: bool
     links_truncated: bool
@@ -207,7 +213,8 @@ async def read_url(
             description=(
                 "Rendering policy: auto uses Chromium only when HTTP extraction appears "
                 "incomplete; never does not launch Chromium; always attempts Chromium and "
-                "preserves the HTTP result if browser rendering fails."
+                "preserves the HTTP result if browser rendering fails. Non-HTML documents "
+                "use their native reader unless browser visuals/actions are requested."
             )
         ),
     ] = "auto",
@@ -227,8 +234,9 @@ async def read_url(
             ge=1_000,
             le=60_000,
             description=(
-                "Maximum characters to return inline. Use 4000-8000 for batched or fan-out calls "
-                "to avoid client-side payload omission."
+                "Maximum characters in this reply, not the page extraction limit. "
+                "Use next_cursor for more text, or start_cursor for context before a focused "
+                "window. Use 4000-8000 for batched calls to avoid client-side payload omission."
             ),
         ),
     ] = 4_000,
@@ -320,6 +328,7 @@ async def read_url(
         query=query if cursor == 0 else None,
     )
     output.snapshot_id = snapshot_id
+    output.start_cursor = f"{snapshot_id}:0" if output.content_start > 0 else None
     output.available_actions = document.available_actions
     output.next_cursor = f"{snapshot_id}:{output.content_end}" if output.has_more_content else None
     output.visual_pages = [item["page"] for item in document.images]
@@ -579,7 +588,7 @@ def _read_url_output(
     content_start = cursor
     focused = False
     if query and cursor == 0:
-        content_start = _focused_content_start(full_content, query)
+        content_start = _focused_content_start(full_content, query, content_limit)
         focused = content_start > 0
     content_end = min(len(full_content), content_start + content_limit)
     has_more_content = content_end < len(full_content)
@@ -628,25 +637,41 @@ def _read_url_output(
     )
 
 
-def _focused_content_start(content: str, query: str) -> int:
-    # A relevant page title/H1 is usually the safest entry point: it preserves definitions and
-    # status callouts that precede a later matching paragraph, while skipping global navigation.
-    for heading in re.finditer(r"(?m)^#\s+.+$", content):
-        if lexical_similarity(heading.group(0), query) > 0:
-            return heading.start()
+def _focused_content_start(content: str, query: str, max_chars: int = 4_000) -> int:
+    """Select a bounded lexical window without deleting anything from the snapshot.
 
-    spans: list[tuple[float, int]] = []
-    for match in re.finditer(r"[^\n]+(?:\n(?!\s*\n)[^\n]+)*", content):
-        paragraph = match.group(0).strip()
-        if paragraph:
-            spans.append((lexical_similarity(paragraph, query), match.start()))
-    if not spans:
+    Overlapping windows handle huge single paragraphs and terms split across adjacent blocks.
+    Query coverage outranks density; a matching H1 must not hide a better passage far below it.
+    This is navigation assistance, not semantic relevance or an evidence judgment.
+    """
+    query_tokens = tokens(query)
+    if not query_tokens or len(content) <= max_chars:
         return 0
-    score, start = max(spans, key=lambda item: item[0])
-    if score <= 0:
+    for heading in re.finditer(r"(?m)^#\s+.+$", content):
+        if query_tokens <= tokens(heading.group(0)):
+            return heading.start()
+    width = max(1, min(1_000, max_chars // 2))
+    best_score = (0, 0.0)
+    best_start = 0
+    for start in range(0, len(content), max(1, width // 2)):
+        # Link destinations can repeat query words dozens of times in a navigation list.
+        # Rank visible labels rather than those URL tokens.
+        window = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", content[start : start + width])
+        window_tokens = tokens(window)
+        matched = len(query_tokens & window_tokens)
+        score = (matched, matched / max(1, len(window_tokens)))
+        if score > best_score:
+            best_score, best_start = score, start
+    if best_score[0] == 0:
         return 0
-    heading_start = content.rfind("\n#", max(0, start - 2_000), start)
-    return heading_start + 1 if heading_start >= 0 else start
+    # Include the preceding local heading or paragraph boundary when it fits, keeping enough
+    # of the budget after the hit to include the whole selected window.
+    context_start = max(0, best_start - min(2_000, max_chars // 2))
+    headings = list(re.finditer(r"(?m)^#{1,6}\s+.+$", content[context_start:best_start]))
+    if headings:
+        return context_start + headings[-1].start()
+    paragraph_start = content.rfind("\n\n", context_start, best_start)
+    return paragraph_start + 2 if paragraph_start >= 0 else best_start
 
 
 def _page_status(
@@ -668,6 +693,9 @@ def _page_status(
                 "document_pages_truncated:",
                 "ocr_unavailable:",
                 "ocr_failed:",
+                "content_truncated:",
+                "browser_content_filtered",
+                "text_decoding_lossy",
             )
         )
         for warning in effective_warnings

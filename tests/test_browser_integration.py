@@ -28,6 +28,11 @@ def local_site():
 
         def do_GET(self):
             self.requests.append(self.path)
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/article")
+                self.end_headers()
+                return
             if self.path == "/robots.txt":
                 content = b"User-agent: *\nAllow: /\n"
             elif self.path == "/error":
@@ -128,5 +133,17 @@ async def test_http_soft_error_is_not_clean_evidence(local_site, browser_environ
     try:
         document = await reader.read(base + "/error")
         assert any(w.startswith("suspected_error_page:") for w in document.warnings)
+    finally:
+        await reader.close()
+
+
+async def test_browser_redirect_provenance(local_site, browser_environment):
+    base, _ = local_site
+    reader = Crawl4AIReader(allow_private_urls=True)
+    try:
+        document = await reader.read(base + "/redirect")
+        assert document.final_url == base + "/article"
+        assert document.status_code == 200
+        assert "42 units" in document.content
     finally:
         await reader.close()

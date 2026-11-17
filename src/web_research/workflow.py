@@ -66,7 +66,9 @@ def read_guidance(status, truncated):
         "Use the passage only for claims it supports, preserving scope, negation, dates and units. "
         "Update the supported findings, gaps and conflicts before choosing the next useful lead."
         + (
-            " Output is partial; use continuation or an unfocused read to check omitted context."
+            " This reply is a window into the retained extraction, not a page-size limit. "
+            "Use next_cursor for following text and start_cursor for preceding context from "
+            "the same snapshot. Extraction-limit warnings mean some source text was not retained."
             if truncated
             else ""
         )

@@ -18,7 +18,7 @@ from ..safety.urls import (
 from ..storage import SQLiteStore
 from ..text import absolute_html_links, extract_html_fallback
 from .base import cap_content
-from .quality import assess_html_quality, has_meaningful_text
+from .quality import assess_html_quality, cacheable_document, has_meaningful_text
 
 
 class ReaderError(RuntimeError):
@@ -64,10 +64,13 @@ class HTTPReader:
         # honest non-browser TLS fingerprint rather than a half-finished imitation.
         http2 = importlib.util.find_spec("h2") is not None
         self.http2 = http2
+        from ..isolation.transport import BrokerTransport, isolated
+
         self._client = httpx.AsyncClient(
             timeout=timeout_seconds,
             follow_redirects=False,
             http2=http2,
+            **({"transport": BrokerTransport(), "trust_env": False} if isolated() else {}),
             headers={
                 "User-Agent": user_agent,
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
@@ -83,15 +86,15 @@ class HTTPReader:
     async def read(
         self, url: str, *, max_age_seconds: int | None = None, visual: bool = False, page: int = 1
     ) -> Document:
-        # Old extractions may contain origin-relative Markdown links. Do not reuse them.
-        canonical = "http:v2:" + canonicalize_url(url)
+        # Bypass older HTML-only extraction and challenge-cache variants.
+        canonical = "http:v3:" + canonicalize_url(url)
         if self.store and max_age_seconds != 0 and not visual:
             cached = await asyncio.to_thread(
                 self.store.get_document,
                 canonical,
                 (self.cache_ttl_seconds if max_age_seconds is None else max_age_seconds),
             )
-            if cached is not None:
+            if cached is not None and cacheable_document(cached):
                 cached.warnings = [*cached.warnings, "cache_hit"]
                 return cached
 
@@ -132,12 +135,15 @@ class HTTPReader:
             raise ReaderError("No response received")
         if response.status_code in {301, 302, 303, 307, 308}:
             raise ReaderError("Too many redirects")
-        try:
-            response.raise_for_status()
-        except Exception as exc:
-            raise ReaderError(f"HTTP {response.status_code} for {current}") from exc
-
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        # Keep bounded HTML error bodies so render=never can report a challenge with its
+        # actual status and diagnostics, and auto can attempt browser recovery.
+        html_response = content_type in {"text/html", "application/xhtml+xml"} or (
+            not content_type
+            and response.content.lstrip().lower().startswith((b"<!doctype html", b"<html"))
+        )
+        if response.status_code >= 400 and not html_response:
+            raise ReaderError(f"HTTP {response.status_code} for {current}")
         is_pdf = content_type == "application/pdf" or response.content.startswith(b"%PDF-")
         if is_pdf or content_type in {"image/png", "image/jpeg", "image/webp"}:
             from .documents import extract_binary
@@ -168,7 +174,7 @@ class HTTPReader:
             if self.store and not visual:
                 await asyncio.to_thread(self.store.put_document, canonical, document)
             return document
-        is_json = (
+        is_json = not html_response and (
             content_type == "application/json"
             or content_type.endswith("+json")
             or urlsplit(current).path.lower().endswith(".json")
@@ -179,11 +185,12 @@ class HTTPReader:
             and not (
                 content_type.startswith("text/")
                 or content_type in {"application/xhtml+xml", "application/xml"}
+                or content_type.endswith("+xml")
             )
         ):
             raise UnsupportedContentError(f"Unsupported content type: {content_type}")
 
-        decoded_text = response.content.decode(response.encoding or "utf-8", errors="replace")
+        decoded_text, decoding_warning = _decode_response(response, html_response=html_response)
         if is_json:
             try:
                 content = json.dumps(json.loads(decoded_text), ensure_ascii=False, indent=2)
@@ -200,8 +207,28 @@ class HTTPReader:
                 method="http+json",
                 content_type=content_type,
                 status_code=response.status_code,
-                warnings=[],
+                warnings=[decoding_warning] if decoding_warning else [],
                 links=[],
+            )
+            if self.store:
+                await asyncio.to_thread(self.store.put_document, canonical, document)
+            return document
+
+        if not html_response:
+            # Preserve code, Markdown, CSV, XML/RSS and whitespace verbatim. HTML parsing
+            # otherwise eats literal tags and joins lines, including <placeholder> values.
+            content, truncated = cap_content(
+                decoded_text, self.max_content_chars, method="http+text"
+            )
+            document = Document(
+                url=url,
+                final_url=current,
+                title=_title_from_url(current),
+                content=content,
+                method="http+text",
+                content_type=content_type or "text/plain",
+                status_code=response.status_code,
+                warnings=[w for w in (decoding_warning, truncated) if w],
             )
             if self.store:
                 await asyncio.to_thread(self.store.put_document, canonical, document)
@@ -211,10 +238,19 @@ class HTTPReader:
         fallback_title, fallback_content, links = extract_html_fallback(html_text, current)
         published_at, published_at_source = published_at_from_html(html_text)
         content, method, warnings = _extract_main_content(html_text, current, fallback_content)
+        if decoding_warning:
+            warnings.append(decoding_warning)
         content, truncated = cap_content(content, self.max_content_chars, method=method)
         if truncated:
             warnings.append(truncated)
         title = fallback_title or _title_from_url(current)
+        if response.headers.get("cf-mitigated", "").lower() == "challenge":
+            warnings.extend(
+                [
+                    "suspected_error_page:bot_challenge",
+                    "browser_recommended:browser_check_interstitial",
+                ]
+            )
         warnings.extend(
             assess_html_quality(
                 html_text,
@@ -223,6 +259,7 @@ class HTTPReader:
                 status_code=response.status_code,
             ).warnings()
         )
+        warnings = list(dict.fromkeys(warnings))
 
         document = Document(
             url=url,
@@ -238,7 +275,7 @@ class HTTPReader:
             links=links[:500],
             attribution=attribution_from_html(html_text, current),
         )
-        if self.store:
+        if self.store and cacheable_document(document):
             await asyncio.to_thread(self.store.put_document, canonical, document)
         return document
 
@@ -321,3 +358,30 @@ def _extract_main_content(
 def _title_from_url(url: str) -> str:
     parsed = urlsplit(url)
     return parsed.path.rstrip("/").rsplit("/", 1)[-1] or parsed.hostname or url
+
+
+def _decode_response(response, *, html_response: bool) -> tuple[str, str | None]:
+    """Honor declared HTML encodings instead of assuming every page is UTF-8.
+
+    lxml reads BOM/meta declarations without decompressing the already-bounded response again.
+    The HTTP charset takes precedence. Keep a visible warning when decoding is destructive.
+    """
+    encoding = response.charset_encoding
+    if not encoding and html_response:
+        from lxml import etree
+
+        try:
+            tree = etree.fromstring(response.content, parser=etree.HTMLParser())
+            encoding = tree.getroottree().docinfo.encoding if tree is not None else None
+            # The HTML parser defaults to Latin-1 in the absence of a declaration. Prefer
+            # UTF-8 then unless the response actually contains a legacy charset declaration.
+            if b"charset" not in response.content[
+                :4096
+            ].lower() and not response.content.startswith((b"\xff\xfe", b"\xfe\xff")):
+                encoding = "utf-8-sig"
+        except (ValueError, etree.LxmlError):
+            encoding = None
+    try:
+        return response.content.decode(encoding or "utf-8-sig"), None
+    except (LookupError, UnicodeDecodeError):
+        return response.content.decode("utf-8-sig", errors="replace"), "text_decoding_lossy"

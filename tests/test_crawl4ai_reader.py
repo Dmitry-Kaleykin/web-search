@@ -103,10 +103,10 @@ class Crawl4AIReaderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ReaderError, "minimal_text"):
             await reader.read("http://127.0.0.1/product")
 
-    async def test_prefers_filtered_markdown_over_navigation_heavy_raw_markdown(self):
+    async def test_preserves_raw_markdown_so_filtering_cannot_remove_context(self):
         result = crawl_result(
             markdown=SimpleNamespace(
-                raw_markdown="Navigation " * 200,
+                raw_markdown="Navigation\n\nBrowser support details\n\nException: preview only.",
                 fit_markdown="Browser support details",
             )
         )
@@ -114,11 +114,30 @@ class Crawl4AIReaderTests(unittest.IsolatedAsyncioTestCase):
 
         document = await reader.read("http://127.0.0.1/product")
 
-        self.assertEqual(document.content, "Browser support details")
-        self.assertIn("browser_content_filtered", document.warnings)
+        self.assertIn("Exception: preview only.", document.content)
+        self.assertNotIn("browser_content_filtered", document.warnings)
+
+    async def test_query_does_not_replace_full_extraction_with_filtered_subset(self):
+        result = crawl_result()
+        reader = await self.reader_for(result)
+        await reader.read("http://127.0.0.1/product", query="details")
+        crawler, config = await reader._ensure_crawler()
+        self.assertIs(crawler.arun.call_args.kwargs["config"], config)
+
+    async def test_redirect_reports_final_url_and_response_status(self):
+        reader = await self.reader_for(
+            crawl_result(
+                status_code=301,
+                redirected_url="http://127.0.0.1/new-product",
+                redirected_status_code=200,
+            )
+        )
+        document = await reader.read("http://127.0.0.1/product")
+        self.assertEqual(document.final_url, "http://127.0.0.1/new-product")
+        self.assertEqual(document.status_code, 200)
 
 
-class BrowserProfileTests(unittest.TestCase):
+class BrowserProfileTests(unittest.IsolatedAsyncioTestCase):
     """The rendered profile has to stay internally consistent or it reads as scripted."""
 
     def test_identity_layers_agree(self) -> None:
@@ -289,6 +308,7 @@ class BrowserProfileTests(unittest.TestCase):
         class Crawler:
             def __init__(self, config):
                 self.config = config
+                self.crawler_strategy = SimpleNamespace(set_hook=lambda *_args: None)
 
             async def start(self):
                 error = next(attempts)
@@ -304,7 +324,7 @@ class BrowserProfileTests(unittest.TestCase):
         with patch.object(crawl4ai, "AsyncWebCrawler", Crawler):
             crawler, _ = await reader._ensure_crawler()
 
-        self.assertEqual(["chrome-beta", None], started)  # retried on the library default
+        self.assertEqual(["chrome-beta", reader._browser_config("").chrome_channel], started)
         self.assertIs(crawler, reader._crawler)
         self.assertEqual("", reader.channel_in_use)
 
@@ -312,8 +332,8 @@ class BrowserProfileTests(unittest.TestCase):
         reader = Crawl4AIReader(allow_private_urls=True)
 
         class Crawler:
-            def __init__(self, _config):
-                pass
+            def __init__(self, config):
+                self.crawler_strategy = SimpleNamespace(set_hook=lambda *_args: None)
 
             async def start(self):
                 raise RuntimeError("chrome vanished")

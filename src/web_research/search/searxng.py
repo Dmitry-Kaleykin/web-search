@@ -89,9 +89,13 @@ class SearXNGSearchProvider:
         self.use_catalog = use_catalog
         self.timeout_seconds = timeout_seconds
         self.catalog = store.get_backend_metadata(self.base_url) if store else None
+        from ..isolation.transport import isolated
+
         self._client = httpx.AsyncClient(
             timeout=timeout_seconds,
             headers={"User-Agent": user_agent, "Accept": "application/json"},
+            # The only direct HTTP client in the worker talks to its own SearXNG.
+            **({"transport": httpx.AsyncHTTPTransport(), "trust_env": False} if isolated() else {}),
         )
 
     async def close(self) -> None:

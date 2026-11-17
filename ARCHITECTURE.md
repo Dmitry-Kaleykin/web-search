@@ -1,5 +1,10 @@
 # Architecture
 
+The [isolated macOS runtime](docs/isolation.md) packages the entire reader/search stack
+in a network-disabled container. Its only external retrieval path is a dedicated native
+macOS broker that enforces public-web, bodyless GET/HEAD requests. The older Python
+entrypoint remains available for development and does not provide this OS boundary.
+
 The calling model owns research reasoning. The MCP server supplies discovery and source access.
 
 ```text
