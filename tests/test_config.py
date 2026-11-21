@@ -55,3 +55,14 @@ def test_cookie_lifetime_is_configurable_because_anonimity_is_a_user_choice(tmp_
         assert Settings.from_env(env_file=env_file).cookie_ttl_seconds == 0
     with patch.dict(os.environ, {"WEB_SEARCH_COOKIE_TTL_SECONDS": "120"}, clear=True):
         assert Settings.from_env(env_file=env_file).cookie_ttl_seconds == 120
+
+
+def test_the_challenge_grace_is_bounded_and_can_be_switched_off(tmp_path):
+    """A rendered read waits for a self-clearing interstitial; the operator decides how long."""
+    missing = tmp_path / "missing.env"
+    with patch.dict(os.environ, {}, clear=True):
+        assert Settings.from_env(env_file=missing).browser_challenge_grace_seconds == 8.0
+    with patch.dict(os.environ, {"WEB_SEARCH_BROWSER_CHALLENGE_GRACE_SECONDS": "0"}, clear=True):
+        assert Settings.from_env(env_file=missing).browser_challenge_grace_seconds == 0
+    with patch.dict(os.environ, {"WEB_SEARCH_BROWSER_CHALLENGE_GRACE_SECONDS": "-3"}, clear=True):
+        assert Settings.from_env(env_file=missing).browser_challenge_grace_seconds == 0

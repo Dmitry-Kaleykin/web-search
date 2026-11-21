@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -15,12 +16,28 @@ from ..dates import attribution_from_html, normalize_published_at
 from ..models import Document
 from ..safety.urls import validate_public_url
 from ..storage import SQLiteStore
-from .actions import action_script, discover_actions
+from .actions import (
+    NAVIGATION_SETTLE_MS,
+    ActionRun,
+    action_script,
+    challenge_frames,
+    discover_actions,
+    plan_actions,
+    run_page_actions,
+    wait_for_challenge_frame,
+    wait_out_challenge,
+)
 from .base import cap_content
 from .http import ReaderError
 from .quality import assess_html_quality, page_diagnostics
 
 LOGGER = logging.getLogger(__name__)
+
+# One Chromium serves concurrent reads and crawl4ai hands its navigation hook only its own
+# arguments, so a read's action plan and its outcome travel in a context variable set around the
+# `arun` call. The object is mutated rather than the variable rebound, which is what lets the
+# calling task see what the hook did even if the library runs a step in a child task.
+_ACTION_RUN: ContextVar[ActionRun | None] = ContextVar("web_search_action_run", default=None)
 
 # Anti-bot layers grade whether a profile is internally consistent more than whether any single
 # property looks scripted. These defaults travel together: Crawl4AI derives `sec-ch-ua` from the
@@ -126,6 +143,28 @@ def _locale_from_accept_language(value: str) -> str | None:
     return primary if _LOCALE_RE.fullmatch(primary) else None
 
 
+def _fonts_blocked() -> bool:
+    """Whether this read may skip webfonts.
+
+    A page that is only being turned into text does not need its glyphs, and fonts are one of the
+    largest remaining bandwidth items. A page that is about to be clicked, or drawn for a model to
+    aim at, is being judged on how it looks, so it gets them: a screenshot the model uses to choose
+    coordinates has to show what the page shows a person.
+    """
+
+    active = _ACTION_RUN.get()
+    return not (active and active.interactive)
+
+
+# How long a rendered read waits for a challenge widget's own document to appear. This runs on every
+# rendered read, and the loop gives up as soon as a page has finished loading without naming a
+# widget. Do not raise this to cover slow widgets: measured on the reCAPTCHA demo, Google attaches
+# its iframe about two seconds in, and paying two seconds per render to report a name the caller can
+# already aim at (`frame: "recaptcha/api2"`) is the worse trade. A click waits longer for a frame it
+# was told to find (FRAME_WAIT_MS in readers/actions.py).
+FRAME_DISCOVERY_WAIT_MS = 1_200
+
+
 class Crawl4AIReader:
     """JavaScript-capable reader, loaded only when the optional extra is installed."""
 
@@ -141,6 +180,7 @@ class Crawl4AIReader:
         allow_private_urls: bool = False,
         allow_proxy_fake_ips: bool = False,
         page_timeout_ms: int = 35_000,
+        challenge_grace_seconds: float = 8.0,
         max_content_chars: int = 1_000_000,
         max_concurrent_renders: int = 2,
         render_semaphore: asyncio.Semaphore | None = None,
@@ -156,6 +196,9 @@ class Crawl4AIReader:
         self.allow_private_urls = allow_private_urls
         self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.page_timeout_ms = page_timeout_ms
+        # A managed interstitial clears itself in two to six seconds. Zero disables the wait for
+        # callers that would rather have the challenge reported immediately.
+        self.challenge_grace_seconds = max(0.0, challenge_grace_seconds)
         # Unlike the HTTP reader this path has no pre-fetch byte cap: Chromium materialises the
         # rendered document before we see it, so the ceiling has to be applied to the extracted
         # Markdown. It is the only leverage available and it is what bounds cache growth.
@@ -189,24 +232,38 @@ class Crawl4AIReader:
             allow_proxy_fake_ips=self.allow_proxy_fake_ips,
         )
         crawler, run_config = await self._ensure_crawler()
+        script_plan, page_plan = plan_actions(actions or [])
+        run = ActionRun(plan=page_plan)
         # Query selection belongs at the output window, after the complete extraction has
         # been snapshotted. BM25 filtering here permanently removed context from pagination.
         effective_config = run_config
-        if visual or actions:
+        if visual or script_plan:
+            # Only these two need a different run configuration. The challenge wait and the
+            # real-input actions work through the navigation hook, so a page-only plan leaves the
+            # shared config alone.
             effective_config = effective_config.clone(
                 screenshot=visual,
                 force_viewport_screenshot=True,
-                js_code=action_script(actions) if actions else None,
+                js_code=action_script(script_plan) if script_plan else None,
             )
+        token = _ACTION_RUN.set(run)
         try:
             async with self._render_semaphore:
                 result = await crawler.arun(url=url, config=effective_config)
         except Exception as exc:
             raise ReaderError(f"Crawl4AI failed for {url}: {exc}") from exc
-        if actions and not _actions_completed(
-            getattr(result, "js_execution_result", None), len(actions)
-        ):
-            raise ReaderError("Read-only browser action failed or targeted an unsupported control")
+        finally:
+            _ACTION_RUN.reset(token)
+        script_actions_failed = bool(script_plan) and not _actions_completed(
+            getattr(result, "js_execution_result", None), len(script_plan)
+        )
+        # A failed action is reported, not fatal. The page that was fetched is still the page the
+        # caller asked to read; what did not happen is the interaction. Failing the read instead
+        # would drop a rendered document onto the plain HTTP reader and lose the content the caller
+        # can use, which is what an escalation to a browser was meant to avoid.
+        action_warnings = [f"action_failed:{reason}"[:160] for reason in run.failures[:3]]
+        if script_actions_failed:
+            action_warnings.append("action_failed:script reported no completed action")
         markdown, content_filtered = _markdown_text(result.markdown)
         recovered_structural_warning = _recoverable_structural_reason(result, markdown)
         if not result.success and not recovered_structural_warning:
@@ -222,6 +279,16 @@ class Crawl4AIReader:
             raise ReaderError(f"Crawl4AI produced no Markdown for {url}")
         title = str((result.metadata or {}).get("title") or _title_from_url(final_url))
         warnings = ["browser_escalation"]
+        warnings.extend(run.warnings)
+        if run.challenge_wait_ms or run.challenge_cleared is False:
+            # The wait is part of why the answer arrived (or did not), so it belongs in the record
+            # rather than in a log line the caller cannot see.
+            warnings.append(f"challenge_waited:{run.challenge_wait_ms}")
+            warnings.append(
+                "challenge_cleared" if run.challenge_cleared else "challenge_still_present"
+            )
+        warnings.extend(f"challenge_frame:{frame}" for frame in run.challenge_frames)
+        warnings.extend(action_warnings)
         if content_filtered:
             warnings.append("browser_content_filtered")
         if recovered_structural_warning:
@@ -306,6 +373,7 @@ class Crawl4AIReader:
             for channel in dict.fromkeys((self.channel, "")):
                 crawler = AsyncWebCrawler(config=self._browser_config(channel))
                 self._install_network_guard(crawler)
+                self._install_action_hook(crawler)
                 self._install_launch_tweaks(crawler, channel)
                 self._install_stealth_profile(crawler)
                 try:
@@ -326,6 +394,48 @@ class Crawl4AIReader:
             raise ReaderError(
                 "Crawl4AI could not start Chromium; run `crawl4ai-setup` and `crawl4ai-doctor`"
             ) from last_error
+
+    def _install_action_hook(self, crawler) -> None:
+        """Give a self-clearing challenge its grace, then carry out this read's real-input actions.
+
+        `after_goto` is the only point where the document exists, has settled enough to inspect and
+        has not been extracted or screenshotted yet. Everything here runs before the script actions,
+        so a click that opens a panel is visible to the `expand`/`load_more` step that follows.
+        """
+
+        async def after_goto(page, **_kwargs):
+            run = _ACTION_RUN.get()
+            if run is None:
+                return
+            if self.challenge_grace_seconds > 0:
+                run.challenge_wait_ms, run.challenge_cleared = await wait_out_challenge(
+                    page, self.challenge_grace_seconds
+                )
+            # Reported whether or not the challenge is still up: a widget the caller can aim at is
+            # worth knowing about even when the page decided to answer anyway. The widget's own
+            # document is attached after the load event, so an empty list costs a short wait.
+            await wait_for_challenge_frame(page, run, FRAME_DISCOVERY_WAIT_MS)
+            arrived = str(page.url)
+            if run.plan:
+                await run_page_actions(page, run)
+                # A click can open the document it was aimed at, and the next read cannot aim at a
+                # frame it was never told about.
+                run.challenge_frames = [
+                    *run.challenge_frames,
+                    *(f for f in challenge_frames(page) if f not in run.challenge_frames),
+                ][:3]
+                if run.navigated_to and run.navigated_to != arrived:
+                    # The extraction and screenshot that follow should see the page the click
+                    # arrived at. Crawl4AI settles navigations it performs itself; a click made here
+                    # is not one of those.
+                    settle = getattr(page, "wait_for_load_state", None)
+                    if settle is not None:
+                        # The arrived page may still be streaming its own resources when the bound
+                        # runs out; the read proceeds with whatever has arrived.
+                        with contextlib.suppress(Exception):
+                            await settle("domcontentloaded", timeout=NAVIGATION_SETTLE_MS)
+
+        crawler.crawler_strategy.set_hook("after_goto", after_goto)
 
     def _browser_config(self, channel: str | None = None):
         """Build the Chromium profile. Every identity layer has to agree with the others."""
@@ -479,7 +589,8 @@ class Crawl4AIReader:
                     except ValueError:
                         allowed = False
                     host_cache[host] = allowed
-                if not allowed or request.resource_type in {"font", "media"}:
+                blocked = {"media"} | ({"font"} if _fonts_blocked() else set())
+                if not allowed or request.resource_type in blocked:
                     await route.abort()
                 else:
                     await route.continue_()
@@ -534,7 +645,8 @@ class Crawl4AIReader:
 
             async def broker_route(route):
                 request = route.request
-                if request.resource_type in {"font", "media"}:
+                blocked = {"media"} | ({"font"} if _fonts_blocked() else set())
+                if request.resource_type in blocked:
                     await route.abort()
                     return
                 body = request.post_data_buffer

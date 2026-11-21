@@ -26,7 +26,9 @@ Extraction-cap warnings mean discarded text is unavailable even through continua
 The inexpensive path is HTTP → content-type handling → Trafilatura main-content extraction, with
 a basic HTML fallback. Documents such as JSON, text, feeds, PDFs and images have their own paths.
 Strong shell/challenge signals can escalate HTML to local Chromium through Crawl4AI. Tabs,
-details, load-more and scroll remain bounded read-only actions.
+details, load-more and scroll remain bounded read-only actions. A caller can additionally ask for a
+trusted `click`, a coordinate click or a wait, in the page or in a challenge widget's own frame. See
+[browser-interaction.md](browser-interaction.md) for what those can and cannot clear.
 
 This is heuristic extraction, not an LLM summary. Trafilatura uses document structure; the query
 window uses overlapping text windows, query-term coverage and density, with nearby headings for
@@ -48,6 +50,10 @@ the text answers the question.
 | HTML meta charsets were ignored | Honor declared HTML encodings; warn about destructive decoding. |
 | Extraction caps could still produce `page_status=ok` | Mark known extraction loss as incomplete, separately from ordinary reply pagination. |
 | Browser redirect metadata described the first hop | Use Crawl4AI's final URL and final-response status when available. |
+| Any page above about 118 KB failed as a network error through the broker | Size the reply buffer for the base64 form of the body, not the body. A Wikipedia article now reads without a browser. |
+| A challenge was judged before it had time to pass | Give a self-clearing check a bounded, configurable wait and report what it was: `challenge_waited`, `challenge_cleared` or `challenge_still_present`. |
+| A widget in a cross-origin frame was unreachable and invisible | Report the widget's own document as `challenge_frame:` so a click can be aimed at it, and distinguish "no widget" from "would not say". |
+| One failed browser action discarded a rendered page | Report `action_failed:` on the page that could not be acted on instead of falling back to unrendered HTML. |
 | Two async browser-startup tests silently did no work | Execute them as async tests and repair their outdated doubles/assertions. |
 
 Old extraction cache variants are bypassed. Existing immutable snapshots keep their original text
@@ -61,7 +67,8 @@ Automated regressions cover full-snapshot pagination and restart, deep query mat
 browser selection, plaintext/CSV/Markdown/XML fidelity, legacy Cyrillic encoding, challenge
 recovery and cache behavior, browser-output rejection, and redirect metadata. The real local
 Chromium tests exercise JavaScript content, screenshots, tabs and load-more, including refusal
-of unsupported controls.
+of unsupported controls, plus frame-aimed clicks, waits, challenge-frame discovery and the bounded
+challenge wait under a virtual clock.
 
 A live smoke check used the development reader stack, bypassing caches:
 

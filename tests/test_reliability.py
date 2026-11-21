@@ -241,7 +241,11 @@ def test_browser_action_descriptors_exclude_forms_and_destructive_controls():
     assert [action["kind"] for action in actions] == ["tab", "load_more"]
     assert all(action["selector"].startswith("html:nth-of-type(1)") for action in actions)
     with pytest.raises(ValueError):
-        ReadAction(kind="click", selector="#delete")
+        # `click` is now something the caller may ask for, but nothing may be *offered* on a
+        # destructive control: discovery stays read-only even though the vocabulary grew.
+        ReadAction(kind="submit", selector="#delete")
+    with pytest.raises(ValueError):
+        ReadAction(kind="click")
     with pytest.raises(ValueError):
         ReadAction(kind="tab")
 

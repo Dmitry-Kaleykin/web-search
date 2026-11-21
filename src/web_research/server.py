@@ -282,8 +282,12 @@ async def read_url(
         Field(
             max_length=5,
             description=(
-                "Optional read-only browser actions: expand details, select a "
-                "tab, load more text, or scroll. Requires render=auto or always. "
+                "Optional browser actions: expand details, select a tab, load more text, scroll, "
+                "click a selector (optionally inside a `frame` named by a `challenge_frame:` "
+                "warning), click_at viewport coordinates from a visual read, or wait_for text or "
+                "duration_ms. A click uses trusted input events and may navigate, reported as "
+                "`action_navigated`. An action that did not happen is reported as `action_failed` "
+                "and the page is returned anyway. Requires render=auto or always. "
             ),
         ),
     ] = None,
@@ -608,6 +612,7 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
             stealth=settings.browser_stealth,
             channel=settings.browser_channel,
             proxy=settings.browser_proxy,
+            challenge_grace_seconds=settings.browser_challenge_grace_seconds,
             max_content_chars=settings.document_max_chars,
             max_concurrent_renders=settings.browser_max_concurrent_renders,
             render_semaphore=limits[2],

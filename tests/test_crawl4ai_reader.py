@@ -384,5 +384,178 @@ class StructuralFalsePositiveTests(unittest.IsolatedAsyncioTestCase):
             await self.read("Blocked by anti-bot protection: Structural: no <body> tag (400 bytes)")
 
 
+class WidgetFrame:
+    """The challenge document. It owns the click, not the page that embedded it."""
+
+    def __init__(self, url: str, owner: Widget) -> None:
+        self.url = url
+        self.owner = owner
+
+    def locator(self, _selector: str):
+        return self.owner._handle(_selector)
+
+    def get_by_text(self, _text: str, *, exact: bool):
+        return self.owner.get_by_text(_text, exact=exact)
+
+
+class Widget:
+    """A page whose challenge control lives in another document, as Playwright would show it."""
+
+    def __init__(self, *, anchor_url: str, click_fails=False, text_visible=False) -> None:
+        self.url = "http://127.0.0.1/form"
+        self.click_fails = click_fails
+        self.text_visible = text_visible
+        self.clicked: list[str] = []
+        self.slept: list[int] = []
+        self.main_frame = self
+        self.frames = [self, WidgetFrame(anchor_url, self)]
+
+    async def title(self) -> str:
+        return "Sign in"
+
+    async def evaluate(self, _script: str) -> str:
+        return ""
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        self.slept.append(ms)
+
+    async def wait_for_load_state(self, _state: str, *, timeout: int) -> None:
+        pass
+
+    def _handle(self, selector: str):
+        outer = self
+
+        class Handle:
+            @property
+            def first(self):
+                return self
+
+            async def evaluate(self, _script: str, *, timeout: int = 1_500) -> bool:
+                return False
+
+            async def scroll_into_view_if_needed(self, *, timeout: int) -> None:
+                pass
+
+            async def click(self, *, timeout: int) -> None:
+                if outer.click_fails:
+                    raise TimeoutError("locator.click: Timeout 3000ms exceeded")
+                outer.clicked.append(selector)
+
+        return Handle()
+
+    def locator(self, selector: str):
+        return self._handle(selector)
+
+    def get_by_text(self, _text: str, *, exact: bool):
+        outer = self
+
+        class Text:
+            @property
+            def first(self):
+                return self
+
+            async def wait_for(self, *, state: str, timeout: int) -> None:
+                if not outer.text_visible:
+                    raise TimeoutError(f"waiting for {state} text")
+
+        return Text()
+
+
+class Crawl4AIActionHookTests(unittest.IsolatedAsyncioTestCase):
+    """The hook is where a click happens; the read is where its consequences have to surface."""
+
+    async def reader_with_page(self, page, *, js_result=None):
+        hooks: dict = {}
+
+        class Strategy:
+            def set_hook(self, name, fn) -> None:
+                hooks[name] = fn
+
+        reader = Crawl4AIReader(allow_private_urls=True, challenge_grace_seconds=1)
+        reader._install_action_hook(SimpleNamespace(crawler_strategy=Strategy()))
+
+        async def arun(**_kwargs):
+            await hooks["after_goto"](page)
+            return crawl_result(js_execution_result=js_result)
+
+        crawler = SimpleNamespace(arun=arun)
+        config = SimpleNamespace(clone=lambda **kwargs: SimpleNamespace(**kwargs))
+        reader._ensure_crawler = AsyncMock(return_value=(crawler, config))
+        return reader
+
+    async def test_a_failed_click_is_reported_on_the_page_it_could_not_act_on(self) -> None:
+        """The page is still worth returning; what failed was the interaction, not the read."""
+        page = Widget(
+            anchor_url="https://www.google.com/recaptcha/api2/anchor?k=6Le-x", click_fails=True
+        )
+        reader = await self.reader_with_page(page)
+
+        document = await reader.read(
+            "http://127.0.0.1/form",
+            actions=[{"kind": "click", "selector": "input", "frame": "google.com"}],
+        )
+
+        self.assertEqual("Rendered details", document.content)
+        self.assertEqual(page.clicked, [])
+        self.assertTrue(
+            any(
+                warning.startswith("action_failed:click TimeoutError: locator.click")
+                for warning in document.warnings
+            ),
+            document.warnings,
+        )
+
+    async def test_a_script_action_that_did_nothing_is_reported_the_same_way(self) -> None:
+        page = Widget(anchor_url="https://site.example/panel")
+        reader = await self.reader_with_page(page, js_result={"read_actions_completed": 0})
+
+        document = await reader.read(
+            "http://127.0.0.1/form", actions=[{"kind": "expand", "selector": "details"}]
+        )
+
+        self.assertIn("action_failed:script reported no completed action", document.warnings)
+
+    async def test_a_widget_frame_is_told_to_the_caller_without_guessing_for_it(self) -> None:
+        page = Widget(anchor_url="https://challenges.cloudflare.com/turnstile/widget?sitekey=x")
+        reader = await self.reader_with_page(page)
+
+        document = await reader.read(
+            "http://127.0.0.1/form",
+            actions=[{"kind": "wait_for", "text": "Sign in confirmed", "duration_ms": 400}],
+        )
+
+        self.assertIn(
+            "challenge_frame:https://challenges.cloudflare.com/turnstile/widget", document.warnings
+        )
+        self.assertIn("action_timeout:wait_for:Sign in confirmed", document.warnings)
+
+    async def test_a_mixed_plan_is_judged_on_the_actions_script_could_run(self) -> None:
+        """The click runs outside the page script, so the script's own count must not include it."""
+        page = Widget(anchor_url="https://site.example/panel")
+        reader = await self.reader_with_page(page, js_result={"read_actions_completed": 1})
+
+        document = await reader.read(
+            "http://127.0.0.1/form",
+            actions=[
+                {"kind": "expand", "selector": "details"},
+                {"kind": "click", "selector": "button"},
+            ],
+        )
+
+        self.assertEqual(page.clicked, ["button"])
+        self.assertEqual(document.content, "Rendered details")
+
+    async def test_the_plan_does_not_outlive_the_read_that_supplied_it(self) -> None:
+        from web_research.readers.crawl4ai import _ACTION_RUN
+
+        page = Widget(anchor_url="https://site.example/panel")
+        reader = await self.reader_with_page(page)
+        await reader.read(
+            "http://127.0.0.1/form", actions=[{"kind": "click", "selector": "button"}]
+        )
+
+        self.assertIsNone(_ACTION_RUN.get())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -309,7 +309,10 @@ Rendered output includes `available_actions` with selectors for supported contro
 ```
 
 Supported actions are `expand` (HTML details), `tab` (a non-link ARIA tab), `load_more` (a reading
-button), and `scroll`, with at most five actions per call. Actions start from a fresh browser page;
+button), and `scroll`, with at most five actions per call. A caller may also ask for `click`,
+`click_at` and `wait_for`, including inside a frame named by a `challenge_frame:` warning; those are
+never offered automatically, because a control that looks like a tab can also submit a form. See
+[docs/browser-interaction.md](docs/browser-interaction.md). Actions start from a fresh browser page;
 repeat the needed action sequence to reach a later state. Form controls, arbitrary JavaScript and
 non-read HTTP methods are blocked. Screenshots show the viewport; use a scroll action to inspect more.
 A model without image support can still use extracted text, but cannot interpret the attached visual.

@@ -54,6 +54,10 @@ class Settings:
     # Upstream proxy for rendered pages (http, https, socks5, socks5h): changes network origin,
     # which no fingerprint patch can do.
     browser_proxy: str = ""
+    # How long a rendered page may keep waiting while a self-clearing interstitial does its work.
+    # Measured, a managed Cloudflare check takes two to six seconds; a fixed post-load delay of half
+    # a second never waits long enough to see it pass. 0 reports the challenge immediately.
+    browser_challenge_grace_seconds: float = 8.0
     allow_private_urls: bool = False
     allow_proxy_fake_ips: bool = False
     max_response_bytes: int = 5_000_000
@@ -92,6 +96,10 @@ class Settings:
             browser_stealth=_bool_env(environment, "WEB_SEARCH_BROWSER_STEALTH", True),
             browser_channel=_string_env(environment, "WEB_SEARCH_BROWSER_CHANNEL"),
             browser_proxy=_string_env(environment, "WEB_SEARCH_BROWSER_PROXY"),
+            browser_challenge_grace_seconds=max(
+                0.0,
+                _float_env(environment, "WEB_SEARCH_BROWSER_CHALLENGE_GRACE_SECONDS", 8.0),
+            ),
             allow_private_urls=_bool_env(environment, "WEB_SEARCH_ALLOW_PRIVATE_URLS", False),
             allow_proxy_fake_ips=_bool_env(environment, "WEB_SEARCH_ALLOW_PROXY_FAKE_IPS", False),
             max_response_bytes=_int_env(environment, "WEB_SEARCH_MAX_RESPONSE_BYTES", 5_000_000),

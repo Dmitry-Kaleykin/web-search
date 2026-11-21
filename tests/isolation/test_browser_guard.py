@@ -7,7 +7,16 @@ import httpx
 import pytest
 
 from web_research.isolation import transport
+from web_research.readers import crawl4ai
+from web_research.readers.actions import ActionRun
 from web_research.readers.crawl4ai import Crawl4AIReader
+
+
+class _Served(httpx.AsyncBaseTransport):
+    """An isolated browser has no direct route: anything not aborted goes through the broker."""
+
+    async def handle_async_request(self, request):
+        return httpx.Response(200, headers={"content-type": "font/woff2"}, content=b"wOF2")
 
 
 async def setup_guard(monkeypatch):
@@ -154,3 +163,55 @@ async def test_broker_failure_has_no_direct_browser_fallback(monkeypatch):
     await guard(route)
     route.abort.assert_awaited_once()
     route.continue_.assert_not_awaited()
+
+
+def _resource_request(resource: str):
+    return SimpleNamespace(
+        method="GET",
+        post_data_buffer=None,
+        resource_type=resource,
+        url="https://example.com/widget.woff2"
+        if resource == "font"
+        else "https://example.com/c.mp4",
+        headers={},
+        frame=SimpleNamespace(url="https://example.com"),
+    )
+
+
+@pytest.mark.parametrize("resource,expected", [("font", "abort"), ("media", "abort")])
+async def test_a_read_that_only_wants_text_gives_up_its_fonts_and_media(
+    monkeypatch, resource, expected
+):
+    monkeypatch.setattr(transport, "BrokerTransport", _Served)
+    guard, _ = await setup_guard(monkeypatch)
+    route = SimpleNamespace(
+        request=_resource_request(resource),
+        abort=AsyncMock(),
+        fulfill=AsyncMock(),
+        continue_=AsyncMock(),
+    )
+
+    await guard(route)
+
+    getattr(route, expected).assert_awaited_once()
+
+
+async def test_a_read_that_will_click_gives_the_page_its_fonts(monkeypatch):
+    """The reCAPTCHA checkbox is drawn from a webfont; a broken glyph is a broken target."""
+    monkeypatch.setattr(transport, "BrokerTransport", _Served)
+    guard, _ = await setup_guard(monkeypatch)
+    run = ActionRun(plan=[], interactive=True)
+    token = crawl4ai._ACTION_RUN.set(run)
+    try:
+        route = SimpleNamespace(
+            request=_resource_request("font"),
+            abort=AsyncMock(),
+            fulfill=AsyncMock(),
+            continue_=AsyncMock(),
+        )
+        await guard(route)
+    finally:
+        crawl4ai._ACTION_RUN.reset(token)
+
+    route.abort.assert_not_awaited()
+    route.fulfill.assert_awaited_once()
