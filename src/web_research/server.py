@@ -598,6 +598,7 @@ def _create_reader_runtime(settings: Settings) -> _ReaderRuntime:
         max_content_chars=settings.document_max_chars,
         allow_private_urls=settings.allow_private_urls,
         allow_proxy_fake_ips=settings.allow_proxy_fake_ips,
+        cookie_ttl_seconds=settings.cookie_ttl_seconds,
     )
     browser_reader = (
         Crawl4AIReader(
@@ -763,6 +764,10 @@ def main() -> None:
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx logs every request at INFO with the full URL, and a URL carries the research text:
+    # `/search?q=...` and `/articles?title=...`. That text should reach the data directory the
+    # user controls, not whatever log happens to be supervising this stdio process.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     LOGGER.info("Starting Local Agentic Web Search MCP server")
     anyio.run(_run_stdio_server)
 

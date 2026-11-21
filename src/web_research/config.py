@@ -64,6 +64,10 @@ class Settings:
     cache_document_max_payload_bytes: int = 2_000_000
     document_cache_ttl_seconds: int = 21_600
     search_cache_ttl_seconds: int = 900
+    # How long the plain HTTP reader remembers a cookie a site set. Long enough to finish a
+    # paginated or challenge-gated read, short enough that a site cannot recognise a returning
+    # visitor days later. 0 refuses cookies outright.
+    cookie_ttl_seconds: int = 900
     enable_crawl4ai: bool = True
     read_url_max_chars: int = 60_000
     read_url_max_links: int = 100
@@ -108,6 +112,7 @@ class Settings:
             search_cache_ttl_seconds=_int_env(
                 environment, "WEB_SEARCH_SEARCH_CACHE_TTL_SECONDS", 900
             ),
+            cookie_ttl_seconds=_int_env(environment, "WEB_SEARCH_COOKIE_TTL_SECONDS", 900),
             enable_crawl4ai=_bool_env(environment, "WEB_SEARCH_ENABLE_CRAWL4AI", True),
             read_url_max_chars=max(
                 1, _int_env(environment, "WEB_SEARCH_READ_URL_MAX_CHARS", 60_000)

@@ -162,3 +162,12 @@ macOS's `sandbox_init` is deprecated and may be removed in a future OS. Startup 
 the broker cannot apply its restrictions; it never retries without them. Updates to the
 pinned Crawl4AI or SearXNG versions require reviewing their client/context integration
 and rerunning the full isolation checks.
+
+## Isolation is not anonymity
+
+The policy above decides what the *container* can do and what binary may leave the machine. It does
+not decide what a website learns: the site always sees the egress address, the full URL, and any
+cookie it was given, and anyone able to watch the network path sees the plaintext SNI hostname.
+`docs/anonymity.md` records what each observer learns, the measured egress identity of this
+deployment, and what each remaining lever (proxy peer, Tor, Encrypted Client Hello, smaller engine
+fan-out) would actually buy and cost.

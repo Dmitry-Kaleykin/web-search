@@ -423,6 +423,79 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("local network policy", str(raised.exception))
 
+    async def test_the_reader_remembers_cookies_for_a_bounded_time_not_for_the_process_life(
+        self,
+    ) -> None:
+        """A cookie is what lets a challenge round trip work, and what makes a returning visitor.
+
+        Only the first one was asked for, so the second has to expire while the server is still
+        running.
+        """
+        from web_research.safety.cookies import ExpiringCookieJar
+
+        seen: list[str | None] = []
+        clock = {"now": 1_000.0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get("cookie"))
+            return httpx.Response(
+                200,
+                text="<html><body><p>" + "research content " * 30 + "</p></body></html>",
+                headers={
+                    "content-type": "text/html",
+                    "set-cookie": "phase=research; Path=/",
+                },
+            )
+
+        reader = HTTPReader(allow_private_urls=True, cookie_ttl_seconds=60)
+        assert isinstance(reader._client.cookies.jar, ExpiringCookieJar)
+        assert reader._client.cookies.jar.ttl_seconds == 60
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            cookies=ExpiringCookieJar(60, clock=lambda: clock["now"]),
+        )
+        try:
+            await reader.read("http://127.0.0.1/first")
+            clock["now"] += 10
+            await reader.read("http://127.0.0.1/second")
+            clock["now"] += 120
+            await reader.read("http://127.0.0.1/third")
+        finally:
+            await reader.close()
+
+        self.assertEqual(seen, [None, "phase=research", None])
+
+    async def test_a_paginated_read_keeps_the_cookie_it_was_handed_mid_read(self) -> None:
+        """Pruning between redirect hops must not strand a read that is already underway."""
+        from web_research.safety.cookies import ExpiringCookieJar
+
+        seen: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get("cookie"))
+            if request.url.path == "/start":
+                return httpx.Response(
+                    302, headers={"location": "/finish", "set-cookie": "step=1; Path=/"}
+                )
+            return httpx.Response(
+                200,
+                text="<html><body><p>" + "second page " * 30 + "</p></body></html>",
+                headers={"content-type": "text/html"},
+            )
+
+        reader = HTTPReader(allow_private_urls=True, cookie_ttl_seconds=60, max_redirects=2)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), cookies=ExpiringCookieJar(60)
+        )
+        try:
+            await reader.read("http://127.0.0.1/start")
+        finally:
+            await reader.close()
+
+        self.assertEqual(seen, [None, "step=1"])
+
 
 if __name__ == "__main__":
     unittest.main()

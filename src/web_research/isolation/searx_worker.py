@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 from socketserver import ThreadingMixIn
-from wsgiref.simple_server import WSGIServer, make_server
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 import httpx
 
 from .transport import BrokerTransport
+
+
+class RouteOnlyLog(WSGIRequestHandler):
+    """Log the route, not the query, because these lines leave the container as stderr.
+
+    The default line prints `GET /search?q=<what the user is researching>`, which reaches whoever
+    supervises the MCP process. Method, route and status are enough to diagnose a stalled search;
+    the terms belong to the user, not to the log.
+    """
+
+    def log_request(self, code="-", size="-") -> None:
+        self.log_message('"%s %s" %s %s', self.command, self.path.split("?", 1)[0], code, size)
 
 
 def main() -> None:
@@ -32,7 +44,9 @@ def main() -> None:
     class ThreadedServer(ThreadingMixIn, WSGIServer):
         daemon_threads = True
 
-    with make_server("127.0.0.1", 8080, app, server_class=ThreadedServer) as server:
+    with make_server(
+        "127.0.0.1", 8080, app, server_class=ThreadedServer, handler_class=RouteOnlyLog
+    ) as server:
         server.serve_forever()
 
 

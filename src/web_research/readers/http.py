@@ -51,6 +51,7 @@ class HTTPReader:
         allow_private_urls: bool = False,
         allow_proxy_fake_ips: bool = False,
         max_redirects: int = 5,
+        cookie_ttl_seconds: float = 900.0,
         document_semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         try:
@@ -64,6 +65,12 @@ class HTTPReader:
         self.allow_private_urls = allow_private_urls
         self.allow_proxy_fake_ips = allow_proxy_fake_ips
         self.max_redirects = max_redirects
+        self.cookie_ttl_seconds = cookie_ttl_seconds
+        # Cookies are what let a challenge round trip succeed, and what let a site recognise this
+        # reader next week. The jar keeps them for a bounded time and is pruned per request.
+        from ..safety.cookies import ExpiringCookieJar
+
+        self.cookie_jar = ExpiringCookieJar(cookie_ttl_seconds)
         self._document_limit = document_semaphore or asyncio.Semaphore(2)
         # h2 is an optional extra of httpx and the base install does not need it. Offering it puts
         # the plain HTTP path on the transport browsers use. The ALPN *order* stays httpcore's
@@ -78,6 +85,7 @@ class HTTPReader:
             timeout=timeout_seconds,
             follow_redirects=False,
             http2=http2,
+            cookies=self.cookie_jar,
             **({"transport": BrokerTransport(), "trust_env": False} if isolated() else {}),
             headers={
                 "User-Agent": user_agent,
@@ -312,6 +320,11 @@ class HTTPReader:
             raise ReaderError(f"Fetch failed for {url}: {exc}") from exc
 
     async def _stream_get(self, url: str, *, proxy_fake_dns: bool = False):
+        jar = getattr(self._client.cookies, "jar", None)
+        if hasattr(jar, "prune"):
+            # Pruned per request rather than per read, because a redirect chain is one read and a
+            # site that sets a cookie on hop one still gets it on hop two.
+            jar.prune()
         async with self._client.stream("GET", url) as response:
             self._validate_connected_peer(response, proxy_fake_dns=proxy_fake_dns)
             length = response.headers.get("content-length")

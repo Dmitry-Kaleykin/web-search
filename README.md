@@ -366,6 +366,11 @@ checks. The configured local SearXNG endpoint is separate from page-fetch safety
 Read-only browser actions are bounded; form submission and arbitrary JavaScript are unavailable.
 Blocked pages and extraction limitations are reported rather than treated as usable evidence.
 
+Isolation is not the same as anonymity: the site you read always sees your egress address, the URL,
+and any cookie you accepted, and your VPN provider sees every hostname because SNI is still sent in
+plaintext. `docs/anonymity.md` states what each observer learns, what the measured egress identity
+of this deployment is, and what each remaining lever would actually buy.
+
 ## Development
 
 ```bash

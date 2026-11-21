@@ -46,3 +46,12 @@ def test_active_resource_limits_are_bounded(tmp_path):
     assert settings.read_url_max_chars == 1
     assert settings.read_url_max_links == 0
     assert settings.search_timeout_seconds == 1
+
+
+def test_cookie_lifetime_is_configurable_because_anonimity_is_a_user_choice(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("WEB_SEARCH_COOKIE_TTL_SECONDS=0\n")
+    with patch.dict(os.environ, {}, clear=True):
+        assert Settings.from_env(env_file=env_file).cookie_ttl_seconds == 0
+    with patch.dict(os.environ, {"WEB_SEARCH_COOKIE_TTL_SECONDS": "120"}, clear=True):
+        assert Settings.from_env(env_file=env_file).cookie_ttl_seconds == 120
