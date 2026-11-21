@@ -493,7 +493,7 @@ class Crawl4AIReader:
         """Fulfill browser requests through the native broker; never use route.continue_."""
         import httpx
 
-        from ..isolation.transport import BrokerTransport
+        from ..isolation.transport import MAX_REQUEST_BODY_BYTES, BrokerTransport
 
         manager = crawler.crawler_strategy.browser_manager
         create_context = manager.create_browser_context
@@ -525,6 +525,7 @@ class Crawl4AIReader:
 
         async def on_page_context_created(page, context, **_kwargs):
             await context.clear_cookies()
+            _filtered_seen: set[tuple] = set()
 
             async def block_socket(route):
                 await route.close()
@@ -533,23 +534,57 @@ class Crawl4AIReader:
 
             async def broker_route(route):
                 request = route.request
+                if request.resource_type in {"font", "media"}:
+                    await route.abort()
+                    return
+                body = request.post_data_buffer
+                # A rendered page may talk to its own API. A cross-origin POST could turn what
+                # the page read into an outbound request to an unrelated host, and an unbounded
+                # body would turn a render into an upload.
+                outside_own_origin = request.method == "POST" and (
+                    not _same_origin(request.url, request.frame.url)
+                    or body is None
+                    or len(body) > MAX_REQUEST_BODY_BYTES
+                )
                 if (
-                    request.method not in {"GET", "HEAD"}
-                    or request.post_data_buffer
-                    or request.resource_type in {"font", "media"}
+                    request.method not in {"GET", "HEAD", "POST"}
+                    or outside_own_origin
+                    or (request.method != "POST" and body)
                 ):
                     await route.abort()
                     return
                 try:
+                    # A fresh client per request: BrokerTransport opens its own socket per request
+                    # anyway, and the browser context gives no teardown point at which to close a
+                    # shared client safely. The timeout is not optional: httpx hands its timeout
+                    # to the transport instead of enforcing it, so without one every stalled
+                    # subresource would wait for the broker's full 75-second budget.
                     async with httpx.AsyncClient(
-                        transport=BrokerTransport(), trust_env=False
+                        transport=BrokerTransport(),
+                        trust_env=False,
+                        timeout=httpx.Timeout(25.0, connect=10.0),
                     ) as client:
                         result = await client.request(
-                            request.method, request.url, headers=request.headers
+                            request.method,
+                            request.url,
+                            headers=request.headers,
+                            content=body if request.method == "POST" else None,
                         )
                     await route.fulfill(
                         status=result.status_code, headers=dict(result.headers), body=result.content
                     )
+                    dropped = result.extensions.get("broker_filtered") or []
+                    if dropped:
+                        # Once per distinct set per context: what gets filtered is a property of
+                        # the policy, not of one request, and a page issues many of each.
+                        key = tuple(dropped)
+                        if key not in _filtered_seen:
+                            _filtered_seen.add(key)
+                            LOGGER.warning(
+                                "Network broker filtered browser request headers for %s: %s",
+                                request.url,
+                                ", ".join(dropped),
+                            )
                 except Exception:
                     await route.abort()
 
@@ -567,6 +602,17 @@ def _markdown_text(value: Any) -> tuple[str, bool]:
         return raw, False
     fit = getattr(value, "fit_markdown", None)
     return (fit, True) if isinstance(fit, str) else ("", False)
+
+
+def _same_origin(request_url: str, frame_url: str) -> bool:
+    """Whether a subresource shares the origin of the frame that requested it."""
+
+    def origin(value: str) -> tuple:
+        parsed = urlsplit(value)
+        default = 443 if parsed.scheme == "https" else 80
+        return (parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port or default)
+
+    return origin(request_url) == origin(frame_url)
 
 
 def _proxy_config(value: str):

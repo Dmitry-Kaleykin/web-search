@@ -302,6 +302,44 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("unresponsive" in w for w in result.warnings))
         request.assert_awaited_once()
 
+    async def test_search_says_which_engines_answered_and_which_never_have(self):
+        """One engine answering must not look like the whole fleet working."""
+        payload = {
+            "results": [
+                {"url": "https://example.com/a", "engines": ["brave"]},
+                {"url": "https://example.com/b", "engines": ["brave"]},
+            ],
+            "failures": [],
+        }
+        ctx = SimpleNamespace(report_progress=AsyncMock())
+        with self.search_fixture(payload=payload):
+            result = await web_search("coverage", ctx, diagnostics=True)
+            quiet = await web_search("coverage other", ctx)
+
+        self.assertEqual(result.engine_coverage["answered"], ["brave"])
+        self.assertEqual(result.engine_coverage["silent"], ["google cse"])
+        self.assertEqual(result.engine_coverage["attribution"], "present")
+        self.assertEqual(result.engine_coverage["never_verified"], ["google cse"])
+        # This is current evidence, not retrieval provenance, so it stays out of the warnings
+        # a cache hit has to reproduce exactly.
+        self.assertFalse(any("never_verified" in w for w in result.warnings))
+        # Coverage is diagnostics, and a plain call reports the same results without it.
+        self.assertIsNone(quiet.engine_coverage)
+
+    async def test_missing_engine_attribution_is_not_counted_as_answered(self):
+        payload = {"results": [{"url": "https://example.com/a"}], "failures": []}
+        with self.search_fixture(payload=payload):
+            result = await web_search(
+                "unattributed",
+                SimpleNamespace(report_progress=AsyncMock()),
+                diagnostics=True,
+            )
+
+        self.assertEqual(result.engine_coverage["answered"], [])
+        # Nothing can be concluded about the engines that did not answer this time.
+        self.assertEqual(result.engine_coverage["attribution"], "absent")
+        self.assertEqual(result.engine_coverage["silent"], ["brave", "google cse"])
+
     async def test_search_distinguishes_empty_from_unavailable_without_retrying(self):
         ctx = SimpleNamespace(report_progress=AsyncMock())
         with self.search_fixture() as (_, _, request):

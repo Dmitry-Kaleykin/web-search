@@ -61,6 +61,34 @@ permanent leases. Failure extends the wait; verified success restores normal use
 cancelled probes release the lease and wait before another attempt, without inventing failures.
 A late response cannot erase a newer recorded failure. There is no background engine-probing loop.
 
+### Which engines took part
+
+`engine_status` answers "what does the health ledger say?". It does not answer "did these engines
+take part in this search?", and an aggregate `outcome: success` is compatible with a fleet where
+only one engine answered. `engine_coverage`, also returned with `diagnostics=true`, answers that
+second question for the request that produced the response:
+
+- `requested`: the engines this search dispatched to.
+- `answered`: engines observed in the result attribution of this response.
+- `silent`: requested engines neither answered nor explained by a cooldown, recovery lease or other
+  `engine_status` entry. Silence with no recorded reason is what this field exists to surface.
+- `attribution`: `absent` when the backend gave no per-engine attribution at all, which makes
+  silence meaningless - nothing can be inferred from it. `present` otherwise.
+- `never_verified`: requested engines whose status is `untested` with no recorded success. Their
+  silence means a broken or walled integration rather than an empty query.
+
+The field is omitted when diagnostics are not requested, and current engine evidence is deliberately
+not placed in `warnings`, because warnings belong to the retrieval record and a cache hit must
+reproduce them. `tools/check_isolation.py` prints the same report for the installed runtime and
+fails when a configured engine is missing or disabled.
+
+A wait recorded under a different backend build or a different local network policy is evidence
+about something that no longer exists, so a change in the backend fingerprint - SearXNG version,
+enabled engine table and policy revision - discards recorded waits and reports
+`engine_health_reset:backend_changed:<n>` or `engine_health_reset:unfingerprinted_history:<n>`.
+The first fingerprinted inspection of a store written before fingerprints existed therefore starts
+from no evidence rather than inheriting waits it cannot explain.
+
 The existing SQLite health table is upgraded without deleting cooldowns or historical journals.
 Recent health records survive expiry and maintenance; records unused for 90 days may be pruned.
 Use a separate data directory for a different SearXNG backend, as caches and engine history belong

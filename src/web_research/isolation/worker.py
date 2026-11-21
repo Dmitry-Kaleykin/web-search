@@ -9,13 +9,98 @@ import os
 import sys
 import uuid
 
-from .transport import MAX_FRAME, SOCKET_PATH
+from .transport import BROKER_TIMEOUT_SECONDS, MAX_FRAME, SOCKET_PATH
+
+# One request line per broker connection, plus a bounded POST body and headers.
+MAX_REQUEST_LINE = 160_000
+# The caller gives up just before its own socket timeout, so the reason it sees is the one this
+# worker chose rather than a closed connection.
+BROKER_RESULT_TIMEOUT = BROKER_TIMEOUT_SECONDS - 5.0
+
+
+async def caller_hangup(reader: asyncio.StreamReader) -> None:
+    """Return only when the caller closed its end; a stray byte is not a disconnect.
+
+    This runs as a task alongside the wait for a broker result. It must never start before the
+    request line has been read, because a competing read on the same stream takes bytes from the
+    front of the buffer and would eat the beginning of the request.
+    """
+    while await reader.read(1):
+        continue
+
+
+async def broker_request(
+    reader: asyncio.StreamReader,
+    writer,
+    *,
+    emit,
+    pending: dict[str, asyncio.Future],
+    slots: asyncio.Semaphore,
+) -> None:
+    """Carry one broker request for one connection, and release it if the caller disappears.
+
+    The caller can go away while its request waits: an abandoned render, a page that stopped
+    caring, a client whose own timeout fired first. Watching for the closed connection is the
+    only signal this socket offers, and without it a broker slot and a worker slot both stay held
+    by work nobody wants.
+    """
+    identifier = ""
+    answered = False
+    reply: dict = {"error": "Native network broker request failed"}
+    hangup: asyncio.Task | None = None
+    try:
+        async with slots:
+            line = await asyncio.wait_for(reader.readline(), 5)
+            if len(line) > MAX_REQUEST_LINE:
+                raise ValueError("Request exceeds policy limit")
+            request = json.loads(line)
+            identifier = uuid.uuid4().hex
+            future: asyncio.Future = asyncio.get_running_loop().create_future()
+            pending[identifier] = future
+            try:
+                # Watching starts here, not at connection setup: ``read(1)`` competes with
+                # ``readline()`` for the same buffer, and the request line pays for it.
+                hangup = asyncio.create_task(caller_hangup(reader))
+                await emit({"kind": "fetch", "id": identifier, "request": request})
+                done, _ = await asyncio.wait(
+                    (future, hangup),
+                    timeout=BROKER_RESULT_TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if future not in done:
+                    raise TimeoutError(
+                        "Native network broker connection closed before its result"
+                        if hangup in done
+                        else "Native network broker timed out"
+                    )
+                reply = future.result()
+                answered = True
+            finally:
+                pending.pop(identifier, None)
+    except Exception as exc:
+        reply = {"error": str(exc)}
+    finally:
+        if not answered and identifier:
+            # Release the native queue slot for work nobody is waiting for any more.
+            with contextlib.suppress(Exception):
+                await emit({"kind": "cancel", "id": identifier})
+        with contextlib.suppress(Exception):
+            writer.write(json.dumps(reply).encode() + b"\n")
+            await writer.drain()
+        if hangup is not None:
+            hangup.cancel()
+            with contextlib.suppress(BaseException):
+                await hangup
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
 
 
 async def run() -> None:
     os.umask(0o077)
     pending: dict[str, asyncio.Future] = {}
     output_lock = asyncio.Lock()
+    # Matches the native queue allowance, so backpressure forms in one place.
     slots = asyncio.Semaphore(16)
     mcp_messages: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
 
@@ -25,31 +110,9 @@ async def run() -> None:
             sys.stdout.buffer.flush()
 
     async def fetch(reader, writer):
-        try:
-            async with slots:
-                line = await asyncio.wait_for(reader.readline(), 5)
-                if len(line) > 32_768:
-                    raise ValueError("Request exceeds policy limit")
-                request = json.loads(line)
-                identifier = uuid.uuid4().hex
-                future = asyncio.get_running_loop().create_future()
-                pending[identifier] = future
-                try:
-                    await emit({"kind": "fetch", "id": identifier, "request": request})
-                    result = await asyncio.wait_for(future, 65)
-                finally:
-                    pending.pop(identifier, None)
-                writer.write(json.dumps(result).encode() + b"\n")
-                await writer.drain()
-        except Exception as exc:
-            with contextlib.suppress(Exception):
-                writer.write(json.dumps({"error": str(exc)}).encode() + b"\n")
-                await writer.drain()
-        finally:
-            writer.close()
-            await writer.wait_closed()
+        await broker_request(reader, writer, emit=emit, pending=pending, slots=slots)
 
-    server = await asyncio.start_unix_server(fetch, SOCKET_PATH, limit=32_769)
+    server = await asyncio.start_unix_server(fetch, SOCKET_PATH, limit=MAX_REQUEST_LINE + 1)
     children = []
     tasks = []
     stdin = asyncio.StreamReader(limit=MAX_FRAME)

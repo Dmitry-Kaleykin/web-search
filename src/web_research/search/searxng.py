@@ -61,6 +61,30 @@ _CHALLENGE_MARKERS = (
 )
 
 
+def _configuration_id(version: Any, engines: dict[str, dict]) -> str:
+    """Fingerprint of the backend build, its enabled engine table and the local network policy.
+
+    Recorded with the catalog so an obsolete cooldown can be recognised and dropped. The policy
+    term matters because a rebuilt image with a different header or method policy invalidates the
+    reasons engines failed for, while the SearXNG version alone would look unchanged.
+    """
+    from ..isolation.transport import POLICY_ID, isolated
+
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "version": version,
+                "engines": sorted(
+                    (name, tuple(sorted(entry.items()))) for name, entry in engines.items()
+                ),
+                "policy": POLICY_ID if isolated() else "host",
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    return digest[:16]
+
+
 class SearXNGSearchProvider:
     def __init__(
         self,
@@ -130,6 +154,13 @@ class SearXNGSearchProvider:
         """Read only local backend metadata; failed inspection never certifies configuration."""
         if not force and self.catalog and self.catalog.get("refresh_after", 0) > time.time():
             return
+        # Cooldowns are evidence about a particular backend and policy. Compare the fingerprint
+        # of what was there before with what is there now, and drop the evidence when it changes.
+        previous: dict = self.catalog or {}
+        previous_id = previous.get("configuration_id")
+        if previous_id is None and self.store:
+            previous = self.store.get_backend_metadata(self.base_url, ttl=31_536_000) or {}
+            previous_id = previous.get("configuration_id")
         try:
             response = await self._client.get(f"{self.base_url}/config", timeout=2)
             response.raise_for_status()
@@ -137,17 +168,19 @@ class SearXNGSearchProvider:
             entries = payload["engines"]
             if not isinstance(entries, list) or not entries:
                 raise ValueError("missing engine inventory")
+            engines = {
+                item["name"]: {
+                    "enabled": item.get("enabled") is True,
+                    "paging": item.get("paging") is True,
+                    "time_range_support": item.get("time_range_support") is True,
+                }
+                for item in entries
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            }
             self.catalog = {
-                "engines": {
-                    item["name"]: {
-                        "enabled": item.get("enabled") is True,
-                        "paging": item.get("paging") is True,
-                        "time_range_support": item.get("time_range_support") is True,
-                    }
-                    for item in entries
-                    if isinstance(item, dict) and isinstance(item.get("name"), str)
-                },
+                "engines": engines,
                 "version": payload.get("version"),
+                "configuration_id": _configuration_id(payload.get("version"), engines),
                 "refresh_after": time.time() + 900,
             }
         except Exception as exc:
@@ -156,6 +189,20 @@ class SearXNGSearchProvider:
             self.last_warnings.append(
                 "engine_configuration_unverified: backend /config unavailable"
             )
+        else:
+            configured = self.catalog["configuration_id"]
+            # Either the backend changed, or the stored evidence predates fingerprinting and
+            # describes whatever policy was installed when it was written. Both leave waits that
+            # no longer have a cause anyone can reproduce.
+            changed = bool(previous) and previous_id != configured
+            if changed:
+                cleared = self.health.reset() if self.health else 0
+                cause = "backend_changed" if previous_id else "unfingerprinted_history"
+                self.last_warnings.append(
+                    f"engine_health_reset:{cause}:{cleared}"
+                    if cleared
+                    else f"engine_health_reset:{cause}"
+                )
         if self.store:
             self.store.put_backend_metadata(self.base_url, self.catalog)
 

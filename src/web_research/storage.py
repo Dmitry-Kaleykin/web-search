@@ -140,6 +140,19 @@ class SQLiteStore:
             )
             return record
 
+    def clear_engine_health(self) -> int:
+        """Forget every observed engine wait. Returns how many records were dropped.
+
+        One table holds both the cooldown waits and the recovery-probe state, so this single
+        delete is what makes the cooldown API and the health API agree again after a policy or
+        backend change.
+        """
+        with self._lock, self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            rows = self._connection.execute("SELECT COUNT(*) FROM engine_health").fetchone()[0]
+            self._connection.execute("DELETE FROM engine_health")
+            return int(rows)
+
     def put_backend_metadata(self, url: str, payload: dict) -> None:
         with self._lock, self._connection:
             self._connection.execute(

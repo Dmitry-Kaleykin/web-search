@@ -90,11 +90,13 @@ paywall, in an iframe, or through an unsupported interaction may be absent. A ge
 cannot infer when every application has finished loading. Scanned documents depend on OCR quality
 and available languages. Audio/video transcription, Office documents and EPUB are not supported.
 
-The isolated runtime has a deliberate coverage tradeoff: the native broker allows bodyless
-GET/HEAD and strips Cookie, Authorization, Referer and other headers. Browser service workers,
-WebSockets and POST requests are blocked. This prevents many login flows, challenge exchanges and
-some read-only GraphQL applications from working. Browser stealth cannot repair missing protocol
-steps, and the broker supplies its own TLS/HTTP identity rather than Chromium's.
+The isolated runtime has a deliberate coverage tradeoff. The native broker allows GET, HEAD and a
+bounded POST body, forwards `Cookie`, `Referer` and the standard client hints within size caps, and
+strips `Authorization` and any header outside its list. A rendered page may POST only to its own
+origin; cross-origin POST, other write methods, service workers, WebSockets and downloads are
+blocked. So a challenge round trip that needs a cookie works, while a flow that needs a credential
+does not. Browser stealth cannot repair a missing protocol step, and the broker supplies its own
+TLS/HTTP identity rather than Chromium's.
 
 Cloudflare documents [automated browsers as unsupported for solving production challenges](https://developers.cloudflare.com/cloudflare-challenges/reference/supported-browsers/).
 It also provides the reliable [`cf-mitigated: challenge` response signal](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/challenge-pages/detect-response/).
@@ -104,7 +106,8 @@ CAPTCHAs automatically.
 The next substantial coverage improvement would be an explicitly enabled local browser mode
 with a separate persistent profile and human handoff for login/challenges. It could remain behind
 `read_url`, preserving the two-tool interface, but needs a distinct permission/network design:
-the current cookie-stripping, GET-only isolation policy cannot support that workflow. A separate
+what the isolated policy still refuses is not cookies but credentials, which never enter the
+container. A separate
 profile avoids silently using a person's everyday browser credentials. Even that mode would not
 guarantee access to every protected site.
 

@@ -29,6 +29,14 @@ class UnsupportedContentError(ReaderError):
     pass
 
 
+class ResponseTooLargeError(ReaderError):
+    """The response is bigger than the transfer budget.
+
+    Rendering cannot help: a browser downloads the same bytes, then adds a full page load. The
+    reader raises this so the router can say so instead of spending a render on it.
+    """
+
+
 class HTTPReader:
     def __init__(
         self,
@@ -136,6 +144,10 @@ class HTTPReader:
         if response.status_code in {301, 302, 303, 307, 308}:
             raise ReaderError("Too many redirects")
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        # The native broker reports the header names it removed. A page that returns an empty
+        # shell because a session cookie never arrived is otherwise indistinguishable from a
+        # page that is genuinely empty, so the adjustment travels with the document.
+        policy_warnings = _policy_filter_warnings(response)
         # Keep bounded HTML error bodies so render=never can report a challenge with its
         # actual status and diagnostics, and auto can attempt browser recovery.
         html_response = content_type in {"text/html", "application/xhtml+xml"} or (
@@ -168,7 +180,7 @@ class HTTPReader:
                 method=extracted["method"],
                 content_type="application/pdf" if is_pdf else content_type,
                 status_code=response.status_code,
-                warnings=extracted["warnings"],
+                warnings=[*policy_warnings, *extracted["warnings"]],
                 images=extracted["images"],
             )
             if self.store and not visual:
@@ -207,7 +219,7 @@ class HTTPReader:
                 method="http+json",
                 content_type=content_type,
                 status_code=response.status_code,
-                warnings=[decoding_warning] if decoding_warning else [],
+                warnings=[*policy_warnings, *([decoding_warning] if decoding_warning else [])],
                 links=[],
             )
             if self.store:
@@ -228,7 +240,7 @@ class HTTPReader:
                 method="http+text",
                 content_type=content_type or "text/plain",
                 status_code=response.status_code,
-                warnings=[w for w in (decoding_warning, truncated) if w],
+                warnings=[w for w in (*policy_warnings, decoding_warning, truncated) if w],
             )
             if self.store:
                 await asyncio.to_thread(self.store.put_document, canonical, document)
@@ -238,6 +250,7 @@ class HTTPReader:
         fallback_title, fallback_content, links = extract_html_fallback(html_text, current)
         published_at, published_at_source = published_at_from_html(html_text)
         content, method, warnings = _extract_main_content(html_text, current, fallback_content)
+        warnings = [*policy_warnings, *warnings]
         if decoding_warning:
             warnings.append(decoding_warning)
         content, truncated = cap_content(content, self.max_content_chars, method=method)
@@ -280,16 +293,41 @@ class HTTPReader:
         return document
 
     async def _bounded_get(self, url: str, *, proxy_fake_dns: bool = False):
+        from ..isolation.transport import MAX_BROKER_RESPONSE_BYTES, BrokerFailure
+
+        try:
+            return await self._stream_get(url, proxy_fake_dns=proxy_fake_dns)
+        except BrokerFailure as exc:
+            # A local decision is not a website's refusal. Saying which one it was is the
+            # difference between a retryable page and an engine that gets blamed for a minute.
+            if exc.kind == "too_large":
+                raise ResponseTooLargeError(
+                    f"Response for {url} exceeds the {MAX_BROKER_RESPONSE_BYTES} byte "
+                    "network transfer limit"
+                ) from exc
+            if exc.kind == "cancelled":
+                raise ReaderError(f"Request for {url} was cancelled before it completed") from exc
+            if exc.kind == "policy":
+                raise ReaderError(f"Blocked by the local network policy for {url}: {exc}") from exc
+            raise ReaderError(f"Fetch failed for {url}: {exc}") from exc
+
+    async def _stream_get(self, url: str, *, proxy_fake_dns: bool = False):
         async with self._client.stream("GET", url) as response:
             self._validate_connected_peer(response, proxy_fake_dns=proxy_fake_dns)
             length = response.headers.get("content-length")
             if length and int(length) > self.max_response_bytes:
-                raise ReaderError("Response exceeds configured byte limit")
+                raise ResponseTooLargeError(
+                    f"Response for {url} exceeds the configured "
+                    f"{self.max_response_bytes} byte limit"
+                )
             body = bytearray()
             async for chunk in response.aiter_bytes():
                 body.extend(chunk)
                 if len(body) > self.max_response_bytes:
-                    raise ReaderError("Response exceeds configured byte limit")
+                    raise ResponseTooLargeError(
+                        f"Response for {url} exceeds the configured "
+                        f"{self.max_response_bytes} byte limit"
+                    )
             decoded_headers = {
                 key: value
                 for key, value in response.headers.items()
@@ -325,6 +363,17 @@ class HTTPReader:
         )
         if not address.is_global and not proxy_path:
             raise ReaderError(f"Connected peer is not public: {address}")
+
+
+def _policy_filter_warnings(response) -> list[str]:
+    """Name the headers the network policy removed, in the fixed ``-`` prefixed form it reports."""
+    warnings = []
+    for name in response.extensions.get("broker_filtered") or []:
+        if str(name).startswith("-"):
+            warnings.append(f"response_header_dropped:{name[1:]}")
+        else:
+            warnings.append(f"request_header_dropped:{name}")
+    return warnings
 
 
 def _extract_main_content(

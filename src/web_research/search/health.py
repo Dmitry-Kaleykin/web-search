@@ -9,9 +9,55 @@ from typing import Any
 
 from ..storage import SQLiteStore
 
+# Reasons that describe this client's own transport or policy rather than the upstream site's
+# opinion of it. Treating a local fault as an upstream suspension hides a broken integration
+# behind an engine outage, which is the worst combination to debug: the engine is never retried
+# and the reason keeps the wording that made it look like someone else's problem.
+LOCAL_FAULT_TERMS = (
+    "network policy",
+    "local network",
+    "transfer limit",
+    "byte limit",
+    "ssl connect",
+    "certificate",
+    "could not resolve",
+    "dns",
+    "cancelled",
+    "saturated",
+    "no result",
+    "proxy",
+)
+UPSTREAM_WAIT_TERMS = (
+    "recaptcha",
+    "captcha",
+    "access denied",
+    "blocked",
+    "suspended",
+    "too many",
+    "rate limit",
+    "403",
+    "429",
+)
+
+
+def local_fault(reason: str) -> bool:
+    text = reason.casefold()
+    return any(term in text for term in LOCAL_FAULT_TERMS)
+
+
+# The upstream said how long it intends to keep saying no, either in these words or in a
+# Retry-After this caller was handed. Its own window is honoured even for an engine that has
+# never answered; only a reason nobody named gets the shorter never-verified retry window.
+def upstream_declared_wait(reason: str) -> bool:
+    text = reason.casefold()
+    return any(term in text for term in UPSTREAM_WAIT_TERMS)
+
 
 def failure_delay(reason: str) -> float:
     text = reason.casefold()
+    if local_fault(text):
+        # Short by design: the fault is on this side, so keep probing and keep reporting it.
+        return 120
     # Match the bundled SearXNG suspension policy. Remote instances may differ; these
     # are conservative retry estimates, not claims about the upstream unblock time.
     if "recaptcha" in text:
@@ -55,7 +101,17 @@ class EngineHealth:
             count = max(1, previous) if suspended else previous + 1
             base = failure_delay(reason)
             # Repeated observed failures back off. A suspension echo is not a new attempt.
-            delay = min(base * (2 ** min(count - 1, 8)), max(base, 7 * 86400))
+            # An engine that has never answered at all must not sleep for a day: "never worked
+            # here" is the state a reader needs soon, and a long cooldown turns a broken
+            # integration into an unexplained absence from the fleet.
+            ceiling = 1800 if local_fault(reason) else max(base, 7 * 86400)
+            if (
+                not local_fault(reason)
+                and not upstream_declared_wait(reason)
+                and not state.get("successes")
+            ):
+                ceiling = min(ceiling, 3600)
+            delay = min(base * (2 ** min(count - 1, 8)), ceiling)
             delay = max(delay, retry_after or 0)
             expiry = max(record["expires_at"], now + delay)
             state.update(
@@ -98,6 +154,19 @@ class EngineHealth:
             record.update(reason="", expires_at=0, updated_at=now)
 
         self.update(engine, change)
+
+    def reset(self) -> int:
+        """Forget observed waits, because the thing that produced them has changed.
+
+        Engine health is evidence about a specific backend build, engine set and network policy.
+        Rebuilding the image or changing the policy invalidates it, and a stale multi-day cooldown
+        would keep an engine absent for a fault nobody can now reproduce.
+        """
+        if not self.store:
+            count = len(self.local)
+            self.local.clear()
+            return count
+        return self.store.clear_engine_health()
 
     def claim(self, engine: str, seconds: float) -> str | None:
         """Only one process can test a recovering engine at a time; leases expire after crashes."""
@@ -151,6 +220,13 @@ class EngineHealth:
             output[engine] = {
                 "status": status,
                 "reason": record.get("reason", ""),
+                "fault": (
+                    "local_transport"
+                    if local_fault(record.get("reason", ""))
+                    else "upstream"
+                    if record.get("reason")
+                    else None
+                ),
                 "consecutive_failures": failures,
                 "repeated_failures": failures > 1,
                 "successes": state.get("successes", 0),

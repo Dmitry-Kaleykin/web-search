@@ -9,7 +9,7 @@ import weakref
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import anyio
 from mcp.types import CallToolResult, ImageContent, TextContent
@@ -97,6 +97,16 @@ class WebSearchOutput(BaseModel):
     )
     requested_engines: list[str] | None = Field(
         default=None, exclude_if=lambda value: value is None
+    )
+    engine_coverage: dict[str, Any] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Which requested engines contributed to this response. 'silent' excludes engines "
+            "already explained by engine_health; an engine in 'never_verified' has no recorded "
+            "success, so its silence is a broken or walled integration, not an empty query. "
+            "Meaningless when 'attribution' is absent."
+        ),
     )
     guidance: list[str] = Field(
         default_factory=list,
@@ -407,6 +417,7 @@ async def web_search(
         output.elapsed_ms = None
         output.responded_at = None
         output.requested_engines = None
+        output.engine_coverage = None
     return output
 
 
@@ -490,6 +501,30 @@ async def _web_search(query, ctx, settings, *, limit, page, language, time_range
         if not engine_health_known or "searxng" in cooling
         else [name for name in configured_engines if name.casefold() not in cooling]
     )
+    # Totals cannot tell an empty query from a dead integration. Attribution says which engines
+    # spoke; everything else is either waiting (engine_health) or silent (this block).
+    coverage: dict[str, Any] | None = None
+    if engine_health_known:
+        answered = {name.casefold() for hit in results for name in hit.engines}
+        waiting = {name.casefold() for name in engine_health}
+        never_verified = [
+            name
+            for name in requested_engines
+            if engine_status.get(name, {}).get("status") == "untested"
+            and not engine_status.get(name, {}).get("successes")
+        ]
+        coverage = {
+            "requested": requested_engines,
+            "answered": sorted(answered),
+            "silent": [
+                name for name in requested_engines if name.casefold() not in answered | waiting
+            ],
+            # SearXNG may omit per-engine attribution; then silence says nothing about engines.
+            "attribution": "present" if answered or not results else "absent",
+            # Current evidence, unlike retrieval provenance, so it is reported here rather than
+            # in the warnings a cache hit has to reproduce byte for byte.
+            "never_verified": never_verified,
+        }
     return WebSearchOutput(
         query=query.strip(),
         results=[
@@ -513,6 +548,7 @@ async def _web_search(query, ctx, settings, *, limit, page, language, time_range
         retrieved_at=retrieved_at,
         requested_engines=requested_engines,
         available_engines=available_engines,
+        engine_coverage=coverage,
         guidance=search_guidance(outcome),
     )
 

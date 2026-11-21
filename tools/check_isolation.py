@@ -38,6 +38,45 @@ def search_ready(search: dict) -> None:
     raise CheckFailure("\n".join(details))
 
 
+def report_engine_coverage(search: dict) -> None:
+    """Name the engines that answered, because an aggregate success can hide a dead fleet.
+
+    A search that returns three hits from one engine looks identical to a search where four
+    engines were asked and three were broken, so the acceptance check has to say which one it saw.
+    """
+    status = search.get("engine_status") or {}
+    coverage = search.get("engine_coverage") or {}
+    answered = {str(name).casefold() for name in coverage.get("answered", [])}
+    for name in coverage.get("requested", []):
+        entry = status.get(name) or {}
+        reason = f" - {entry['reason']}" if entry.get("reason") else ""
+        fault = f" [{entry['fault']}]" if entry.get("fault") else ""
+        spoke = " answered" if str(name).casefold() in answered else " silent"
+        print(
+            f"  engine {name}: {entry.get('status', 'unknown')}{spoke}{reason}{fault}", flush=True
+        )
+    if coverage.get("attribution") == "absent":
+        print("  NOTE the backend gave no per-engine attribution for these results", flush=True)
+    broken = sorted(
+        name for name, entry in status.items() if entry.get("status") in {"missing", "disabled"}
+    )
+    require(
+        not broken,
+        "Configured search engines are not enabled in the SearXNG backend: " + ", ".join(broken),
+    )
+    untested = sorted(
+        name
+        for name, entry in status.items()
+        if name != "searxng" and entry.get("status") == "untested" and not entry.get("successes")
+    )
+    if untested:
+        print(
+            "  NOTE no recorded success since the last backend or policy change: "
+            + ", ".join(untested),
+            flush=True,
+        )
+
+
 def expected_failures(error: Exception) -> list[str] | None:
     """Unwrap MCP task groups without hiding unrelated programming/transport failures."""
     if isinstance(error, ExceptionGroup):
@@ -193,11 +232,15 @@ async def check_mcp() -> None:
                     "query": "Python documentation",
                     "limit": 3,
                     "refresh": True,
+                    # Without this the per-engine evidence is omitted and a one-engine answer
+                    # would look identical to a whole fleet answering.
+                    "diagnostics": True,
                 },
             )
         )
         search_ready(search)
         print("PASS real SearXNG search through native broker", flush=True)
+        report_engine_coverage(search)
 
 
 def main(argv=None) -> None:

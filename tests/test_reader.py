@@ -13,6 +13,7 @@ from web_research.readers.base import cap_content
 from web_research.readers.http import (
     HTTPReader,
     ReaderError,
+    ResponseTooLargeError,
     _extract_main_content,
 )
 from web_research.storage import SQLiteStore
@@ -361,6 +362,66 @@ class HTTPReaderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(importlib.util.find_spec("h2") is not None, reader.http2)
         finally:
             await reader.close()
+
+    async def test_a_response_over_the_transfer_budget_is_not_retried_as_a_fetch_failure(self):
+        """Oversize is a fact about the object, not a transient fault to retry or render."""
+        from web_research.isolation.transport import BrokerFailure
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise BrokerFailure("Response exceeds the native byte limit", kind="too_large")
+
+        reader = HTTPReader(allow_private_urls=True)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with self.assertRaises(ResponseTooLargeError) as raised:
+                await reader.read("http://127.0.0.1/huge.pdf")
+        finally:
+            await reader.close()
+
+        self.assertIn("byte", str(raised.exception))
+        # A browser downloads the same bytes, so the router must not escalate this.
+        self.assertIsInstance(raised.exception, ReaderError)
+
+    async def test_a_policy_decision_about_headers_is_reported_with_the_document(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                text="<html><body><article><p>"
+                + "alpha beta gamma " * 60
+                + "</p></article></body></html>",
+                headers={"content-type": "text/html; charset=utf-8"},
+                extensions={"broker_filtered": ["authorization", "-set-cookie"]},
+            )
+
+        reader = HTTPReader(allow_private_urls=True)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            document = await reader.read("http://127.0.0.1/needs-cookies")
+        finally:
+            await reader.close()
+
+        self.assertIn("request_header_dropped:authorization", document.warnings)
+        self.assertIn("response_header_dropped:set-cookie", document.warnings)
+        self.assertGreater(len(document.content), 0)
+
+    async def test_a_local_policy_refusal_says_so_instead_of_blaming_the_site(self):
+        from web_research.isolation.transport import BrokerFailure
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise BrokerFailure("policy: method PUT is not allowed", kind="policy")
+
+        reader = HTTPReader(allow_private_urls=True)
+        await reader._client.aclose()
+        reader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with self.assertRaises(ReaderError) as raised:
+                await reader.read("http://127.0.0.1/form")
+        finally:
+            await reader.close()
+
+        self.assertIn("local network policy", str(raised.exception))
 
 
 if __name__ == "__main__":

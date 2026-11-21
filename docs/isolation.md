@@ -83,12 +83,19 @@ checking enabled. Restart Pi after the checks pass so its new worker uses the re
 ## Enforced network policy
 
 - Public HTTP or HTTPS only, using the corresponding standard port 80 or 443.
-- GET and HEAD only, with no bodies, uploads, CONNECT tunnels or URL credentials.
-- Only bounded Accept, Accept-Language, User-Agent, Range and conditional-cache headers
-  are forwarded. Authorization, Cookie, Referer and arbitrary headers are discarded.
+- GET, HEAD and bounded POST only. A POST body is capped at 64 KB and must be a form, JSON or
+  plain-text payload. Other methods, uploads, CONNECT tunnels and URL credentials are refused.
+- Forwarded request headers are a fixed list: `Accept`, `Accept-Language`, `User-Agent`, `Range`,
+  `If-Modified-Since`, `If-None-Match`, `Referer`, `Cookie`, the `Sec-Fetch-*` and `Sec-CH-UA-*`
+  client hints, `Priority` and `Content-Type`, with one `Cookie` header capped at 8 KB.
+  `Authorization` and anything outside the list are discarded, and the broker reports the
+  discarded *names* so a caller can say why a page came back empty. Responses may return up to
+  12 `Set-Cookie` headers (8 KB in total); the cookie jar lives in the caller, so a cookie is
+  only ever sent back to the host that set it, and credentials still never enter the container.
 - TLS certificate and hostname verification remain enabled. No interception CA is installed.
 - A 5 MB decoded response limit, 64 KB header limit, 4 KB URL limit, 45-second transfer
-  timeout, and bounded concurrent/queued requests.
+  timeout, and bounded concurrent/queued requests. A response over the limit is reported as
+  `too_large`, which is a fact about the object rather than a failure to retry or re-render.
 - Each connection's actual IP is checked before opening its socket. Loopback, LAN,
   link-local, cloud metadata, synthetic proxy, reserved and special-use ranges are blocked.
   IPv6 is restricted to global unicast, excluding transition and documentation ranges.
@@ -98,20 +105,33 @@ checking enabled. Restart Pi after the checks pass so its new worker uses the re
   downloads and write requests are blocked. The container's network namespace also
   prevents direct networking, including WebRTC and QUIC.
 
-The broker uses certificate-verified DNS over HTTPS at the fixed public address
-`https://1.1.1.1/dns-query`, avoiding local/TUN synthetic DNS without permitting private
-connections. Cloudflare receives queried hostnames. libcurl generates the fixed DNS
-protocol requests internally; this is not an API for submitting arbitrary POST data.
-The target website sees the broker's TLS/HTTP fingerprint rather than Chromium's.
+- Browser requests are fulfilled from broker responses. A rendered page may POST only to its own
+  origin and within the body limit; cross-origin POST, other write methods, GET or HEAD with a
+  body, service workers, WebSockets and downloads are blocked. The container's network namespace
+  also prevents direct networking, including WebRTC and QUIC.
 
-Strict method and cookie restrictions mean some search engines, login walls, browser
-challenges and interactive pages will fail. There is no automatic security exception.
-The caller sees retrieval failures through the existing error/warning fields.
+The broker uses certificate-verified DNS over HTTPS, at `https://1.1.1.1/dns-query` and, when that
+resolver fails, `https://dns.quad9.net/dns-query`, avoiding local/TUN synthetic DNS without
+permitting private connections. These providers receive queried hostnames. libcurl generates the
+DNS protocol requests internally; this is not an API for submitting arbitrary POST data. One
+resolver going down used to look like every website being unreachable, which is why there are two.
+The target website sees the broker's TLS/HTTP fingerprint rather than Chromium's
+([measured](transport-fingerprints.md)).
+
+Forwarding `Cookie` and the client-hint headers removed an inconsistency rather than adding a new
+channel: the broker already announced a desktop Chrome `User-Agent` while discarding the headers
+Chrome always sends with it. The measured payoff was two configured search engines that had failed
+with `parsing error` and `access denied` — a challenge round trip that could not keep its cookie —
+answering again after the change. Login walls still fail, because a login is a credential and
+credentials stay outside the container. There is no automatic security exception.
+The measurements behind these choices, and what is still open, are recorded in
+[the isolation work plan](isolation-work-plan.md).
 
 ## Logs and verification
 
 `.web-search-data/isolation/network.jsonl` records time, target hostname, method, status,
-decoded response size and policy/transport errors. It omits paths, query strings,
+decoded response size and policy/transport errors with a coarse error kind (`policy`,
+`too_large`, `cancelled`, `transport`). It omits paths, query strings,
 headers, search text and page contents. The log rotates between launches at 5 MB.
 The regular isolated application cache still contains fetched public content and
 submitted queries. Avoid using confidential text as a search query.

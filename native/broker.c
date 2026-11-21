@@ -1,4 +1,5 @@
-// The only internet-capable implementation. No request bodies, tunnels, cookies or credentials.
+// The only internet-capable implementation. Public web destinations, no credentials, bounded
+// bodies. The caller may carry cookies and browser request headers; this file holds no state.
 #include "broker.h"
 #include <arpa/inet.h>
 #include <curl/curl.h>
@@ -9,9 +10,17 @@
 #include <string.h>
 
 #define MAX_BODY 5000000
+#define MAX_REQUEST_BODY 65536
 #define MAX_HEADERS 65536
 
+// Two independent resolvers. A single DNS-over-HTTPS endpoint is a single point of failure for
+// every destination, and an unreachable resolver looks like an unreachable website.
+static const char *const DOH_URLS[] = {"https://1.1.1.1/dns-query",
+                                       "https://dns.quad9.net/dns-query"};
+
 void ws_init(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
+
+const char *ws_version(void) { return curl_version(); }
 
 int ws_public_ip(const char *address) {
     struct in_addr v4;
@@ -45,7 +54,11 @@ int ws_public_ip(const char *address) {
 static size_t body_callback(char *data, size_t size, size_t count, void *context) {
     WSResponse *r = context;
     size_t n = size * count;
-    if (n > MAX_BODY || r->body_size > MAX_BODY - n) return 0;
+    // Aborting the write is the only way to bound a chunked response, so record the reason.
+    if (n > MAX_BODY || r->body_size > MAX_BODY - n) {
+        r->too_large = 1;
+        return 0;
+    }
     unsigned char *p = realloc(r->body, r->body_size + n + 1);
     if (!p) return 0;
     r->body = p;
@@ -68,6 +81,13 @@ static size_t header_callback(char *data, size_t size, size_t count, void *conte
     return n;
 }
 
+static int cancel_callback(void *context, curl_off_t total, curl_off_t now,
+                           curl_off_t upload_total, curl_off_t uploaded) {
+    (void)total; (void)now; (void)upload_total; (void)uploaded;
+    const volatile int *cancel = ((WSResponse *)context)->cancel;
+    return cancel && *cancel ? 1 : 0;
+}
+
 static curl_socket_t public_socket(void *context, curlsocktype purpose,
                                    struct curl_sockaddr *address) {
     (void)context; (void)purpose;
@@ -82,7 +102,8 @@ static curl_socket_t public_socket(void *context, curlsocktype purpose,
     return socket(address->family, address->socktype, address->protocol);
 }
 
-WSResponse ws_fetch(const char *url, const char *method, const char *headers) {
+WSResponse ws_fetch(const char *url, const char *method, const char *headers, const char *body,
+                    size_t body_size, const volatile int *cancel) {
     WSResponse r = {0};
     CURLU *parsed = curl_url();
     CURL *curl = NULL;
@@ -91,10 +112,13 @@ WSResponse ws_fetch(const char *url, const char *method, const char *headers) {
     const char *error = NULL;
     char curl_error[CURL_ERROR_SIZE] = {0};
     char *header_copy = NULL;
+    r.cancel = cancel;
 
-    if (strcmp(method, "GET") && strcmp(method, "HEAD")) {
-        error = "Only GET and HEAD are allowed"; goto done;
+    if (strcmp(method, "GET") && strcmp(method, "HEAD") && strcmp(method, "POST")) {
+        error = "Only GET, HEAD and POST are allowed"; goto done;
     }
+    if (body_size > MAX_REQUEST_BODY) { error = "Request body exceeds the size limit"; goto done; }
+    if (cancel && *cancel) { error = "Request cancelled before it started"; goto done; }
     if (strlen(url) > 4096 || strpbrk(url, "\r\n\t")) {
         error = "URL exceeds policy limits"; goto done;
     }
@@ -139,7 +163,6 @@ WSResponse ws_fetch(const char *url, const char *method, const char *headers) {
     // Fixed-address, certificate-verified DoH avoids local/TUN synthetic DNS and never
     // consults LAN DNS for submitted names. The socket hook validates the ACTUAL peer
     // before connect(), covering redirects, rebinding, and every address curl tries.
-    curl_easy_setopt(curl, CURLOPT_DOH_URL, "https://1.1.1.1/dns-query");
     curl_easy_setopt(curl, CURLOPT_DOH_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_DOH_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, public_socket);
@@ -154,18 +177,47 @@ WSResponse ws_fetch(const char *url, const char *method, const char *headers) {
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 45L);
-    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)MAX_BODY);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, body_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &r);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &r);
+    // The only abort path: the caller can give up on a transfer without a second channel.
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, cancel_callback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &r);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, curl_error);
+    if (body && body_size) {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_size);
+    } else if (!strcmp(method, "POST")) {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, 0L);
+    }
     if (!strcmp(method, "HEAD")) curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
-    CURLcode result = curl_easy_perform(curl);
+    CURLcode result = CURLE_OK;
+    for (size_t attempt = 0; attempt < sizeof(DOH_URLS) / sizeof(*DOH_URLS); attempt++) {
+        curl_easy_setopt(curl, CURLOPT_DOH_URL, DOH_URLS[attempt]);
+        curl_error[0] = 0;
+        result = curl_easy_perform(curl);
+        // A resolver that cannot answer is retried through the other operator, but only while
+        // nothing has been consumed, so a partial body is never silently restarted.
+        if (result == CURLE_COULDNT_RESOLVE_HOST && !r.body_size && !r.too_large &&
+            !(cancel && *cancel) && attempt + 1 < sizeof(DOH_URLS) / sizeof(*DOH_URLS))
+            continue;
+        break;
+    }
     if (result != CURLE_OK) {
-        // Avoid logging URLs, credentials or response content in errors.
-        error = curl_easy_strerror(result); goto done;
+        if (r.too_large) {
+            // Avoid logging URLs, credentials or response content in errors.
+            error = "Response exceeds the native byte limit";
+        } else if (result == CURLE_ABORTED_BY_CALLBACK) {
+            error = "Request cancelled by client";
+        } else {
+            error = curl_easy_strerror(result);
+        }
+        goto done;
     }
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &r.status);
 done:

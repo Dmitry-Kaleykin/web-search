@@ -38,20 +38,63 @@ async def setup_guard(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "method,body,resource",
+    "method,body,resource,url,frame",
     [
-        ("POST", None, "fetch"),
-        ("GET", b"secret", "fetch"),
-        ("GET", None, "media"),
+        # A page may post to its own origin, but not to somebody else's.
+        ("POST", b"q=x", "fetch", "https://api.example.com/graphql", "https://example.com/app"),
+        ("POST", b"q" * 70_000, "fetch", "https://example.com/api", "https://example.com/app"),
+        ("POST", None, "fetch", "https://example.com/api", "https://example.com/app"),
+        ("PUT", b"q=x", "fetch", "https://example.com/api", "https://example.com/app"),
+        ("GET", b"secret", "fetch", "https://example.com", "https://example.com"),
+        ("GET", None, "media", "https://example.com/clip.mp4", "https://example.com"),
+        ("GET", None, "font", "https://example.com/f.woff2", "https://example.com"),
     ],
 )
-async def test_browser_blocks_write_requests_before_broker(monkeypatch, method, body, resource):
+async def test_browser_blocks_requests_the_broker_cannot_carry(
+    monkeypatch, method, body, resource, url, frame
+):
     guard, _ = await setup_guard(monkeypatch)
-    request = SimpleNamespace(method=method, post_data_buffer=body, resource_type=resource)
+    request = SimpleNamespace(
+        method=method,
+        post_data_buffer=body,
+        resource_type=resource,
+        url=url,
+        headers={},
+        frame=SimpleNamespace(url=frame),
+    )
     route = SimpleNamespace(request=request, abort=AsyncMock(), fulfill=AsyncMock())
     await guard(route)
     route.abort.assert_awaited_once()
     route.fulfill.assert_not_awaited()
+
+
+async def test_browser_posts_to_its_own_origin_through_the_broker(monkeypatch):
+    seen = []
+
+    class FakeBroker(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            seen.append((request.method, str(request.url), request.read()))
+            return httpx.Response(200, content=b'{"results":[]}')
+
+    monkeypatch.setattr(transport, "BrokerTransport", FakeBroker)
+    guard, _ = await setup_guard(monkeypatch)
+    route = SimpleNamespace(
+        request=SimpleNamespace(
+            method="POST",
+            post_data_buffer=b'{"q":"x"}',
+            resource_type="fetch",
+            url="https://example.com/api/search",
+            headers={"content-type": "application/json"},
+            frame=SimpleNamespace(url="https://example.com/search?q=x"),
+        ),
+        abort=AsyncMock(),
+        fulfill=AsyncMock(),
+        continue_=AsyncMock(),
+    )
+    await guard(route)
+    assert seen == [("POST", "https://example.com/api/search", b'{"q":"x"}')]
+    route.fulfill.assert_awaited_once()
+    route.abort.assert_not_awaited()
 
 
 async def test_browser_reads_are_fulfilled_by_broker_and_websockets_closed(monkeypatch):
@@ -71,6 +114,7 @@ async def test_browser_reads_are_fulfilled_by_broker_and_websockets_closed(monke
             resource_type="document",
             url="https://example.com",
             headers={},
+            frame=SimpleNamespace(url="https://example.com"),
         ),
         abort=AsyncMock(),
         fulfill=AsyncMock(),
@@ -101,6 +145,7 @@ async def test_broker_failure_has_no_direct_browser_fallback(monkeypatch):
             resource_type="document",
             url="https://example.com",
             headers={},
+            frame=SimpleNamespace(url="https://example.com"),
         ),
         abort=AsyncMock(),
         fulfill=AsyncMock(),

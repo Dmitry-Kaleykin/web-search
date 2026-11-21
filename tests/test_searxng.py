@@ -316,6 +316,81 @@ class SearXNGSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                 await provider.close()
                 store.close()
 
+    async def test_changed_backend_configuration_discards_stale_engine_evidence(self) -> None:
+        """A cooldown is evidence about a backend build and a network policy, not a fact."""
+        engines = [{"name": "brave", "enabled": True, "paging": True, "time_range_support": True}]
+        version = {"value": "2026.01"}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"version": version["value"], "engines": engines})
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStore(Path(directory) / "research.sqlite3")
+            provider = SearXNGSearchProvider(
+                "http://searxng.test",
+                store=store,
+                healthy_engines="brave",
+            )
+            await provider._client.aclose()
+            provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            try:
+                await provider.refresh_catalog(force=True)
+                first = provider.catalog["configuration_id"]
+                # Nothing was known before this backend was ever inspected, so there is no
+                # stale evidence to throw away on the first look.
+                provider._cool("brave", "CAPTCHA challenge")
+                self.assertIn("brave", store.active_engine_cooldowns())
+                self.assertFalse(
+                    any(w.startswith("engine_health_reset") for w in provider.last_warnings)
+                )
+
+                version["value"] = "2026.02"
+                await provider.refresh_catalog(force=True)
+                self.assertNotEqual(provider.catalog["configuration_id"], first)
+                self.assertEqual(store.active_engine_cooldowns(), {})
+                self.assertEqual(store.engine_records(), {})
+                self.assertTrue(
+                    any(w.startswith("engine_health_reset") for w in provider.last_warnings),
+                    provider.last_warnings,
+                )
+
+                provider.last_warnings.clear()
+                await provider.refresh_catalog(force=True)
+                self.assertFalse(
+                    any(w.startswith("engine_health_reset") for w in provider.last_warnings)
+                )
+
+                # Evidence written before fingerprints existed describes an unknown policy, so
+                # the first fingerprinted inspection has to discard it rather than inherit it.
+                store.put_backend_metadata("http://searxng.test", {"engines": {"brave": {}}})
+                provider.catalog = None
+                provider._cool("brave", "CAPTCHA challenge")
+                provider.last_warnings.clear()
+                await provider.refresh_catalog(force=True)
+                self.assertEqual(store.active_engine_cooldowns(), {})
+                self.assertTrue(
+                    any(
+                        w.startswith("engine_health_reset:unfingerprinted_history")
+                        for w in provider.last_warnings
+                    ),
+                    provider.last_warnings,
+                )
+            finally:
+                await provider.close()
+                store.close()
+
+    def test_the_configuration_id_sees_the_engine_table_and_the_local_policy(self):
+        from web_research.search.searxng import _configuration_id
+
+        engines = {"brave": {"enabled": True, "paging": True, "time_range_support": False}}
+        same = _configuration_id("1.0", engines)
+        self.assertEqual(same, _configuration_id("1.0", dict(engines)))
+        self.assertNotEqual(same, _configuration_id("1.1", engines))
+        self.assertNotEqual(
+            same,
+            _configuration_id("1.0", {"brave": {**engines["brave"], "enabled": False}}),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

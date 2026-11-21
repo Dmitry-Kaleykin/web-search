@@ -114,6 +114,37 @@ class LayeredReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.method, "browser")
         self.assertEqual(browser.calls, 1)
 
+    async def test_an_oversized_object_is_not_handed_to_the_browser(self) -> None:
+        """Rendering re-downloads the same bytes, which is a slower way to fail again."""
+        from web_research.readers.http import ResponseTooLargeError
+
+        primary = FakeReader(error=ResponseTooLargeError("Response is larger than 10 MB"))
+        browser = FakeReader(document("Rendered", "browser"))
+        router = LayeredReader(primary, browser)
+        with self.assertRaises(ResponseTooLargeError):
+            await router.read("https://example.com/huge.pdf")
+        self.assertEqual(browser.calls, 0)
+
+    async def test_unsupported_content_is_not_handed_to_the_browser(self) -> None:
+        from web_research.readers.http import UnsupportedContentError
+
+        primary = FakeReader(error=UnsupportedContentError("Unsupported content type: zip"))
+        browser = FakeReader(document("Rendered", "browser"))
+        router = LayeredReader(primary, browser)
+        with self.assertRaises(UnsupportedContentError):
+            await router.read("https://example.com/archive.zip")
+        self.assertEqual(browser.calls, 0)
+
+    async def test_an_explicit_render_still_asks_the_browser_for_an_oversized_object(self) -> None:
+        from web_research.readers.http import ResponseTooLargeError
+
+        primary = FakeReader(error=ResponseTooLargeError("Response is larger than 10 MB"))
+        browser = FakeReader(document("Rendered content " * 40, "browser"))
+        router = LayeredReader(primary, browser)
+        result = await router.read("https://example.com/huge.pdf", render="always")
+        self.assertEqual(result.method, "browser")
+        self.assertEqual(browser.calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

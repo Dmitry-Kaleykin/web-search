@@ -130,6 +130,18 @@ class LayeredReader:
                 document = await self.primary.read(url)
         except Exception as exc:
             primary_error = exc
+            from .http import ResponseTooLargeError, UnsupportedContentError
+
+            if (
+                render != "always"
+                and not visual
+                and not actions
+                and isinstance(primary_error, (ResponseTooLargeError, UnsupportedContentError))
+            ):
+                # A browser downloads the same bytes and cannot render a body the transfer
+                # budget refused, or a format it has no extractor for. Escalating only doubles
+                # the cost of giving the same answer, and a large object is where that hurts.
+                raise primary_error from exc
 
         if document is not None and document.content_type in {
             "application/pdf",
