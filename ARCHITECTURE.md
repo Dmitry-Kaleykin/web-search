@@ -32,17 +32,20 @@ There is no server-side query planning,
 claim extraction, coverage calculation, semantic relevance gate, source-count rule, or synthesis.
 The model interprets untrusted source content and is responsible for its final answer.
 
-The caller procedure lives in packaged `research_workflow.md`. `workflow.py` supplies the tool-level
-contract and guidance derived from retrieval status, source truncation, and engine attribution.
+The caller procedure lives once in packaged `research_workflow.md`. `workflow.py` supplies short
+guidance only for empty searches, access failures, and incomplete/error pages.
 These are suggestions, not a confidence score or stopping gate. The caller keeps a compact evidence
 note in its conversation and continuation summaries. It ends with supported completion, unproductive
 available search paths, or a blocked/limited partial result, preserving outstanding gaps.
 Pi can load `integrations/pi/workflow.mjs` to inject the shared procedure whenever both direct tools
-are active. It adds no tools, model calls, or external storage and respects other system instructions.
+are active and the same workflow is absent from the system context. It adds no tools, model calls,
+or external storage and respects other system instructions.
 
 `web_search` has a configurable 30-second default deadline covering dispatch queue and upstream
-request time. Dispatches are serialized so each provider instance restores cooldowns recorded by
-its predecessor. The provider has no internal retry or diversity-widening loop and uses an explicit general-web
+request time. Cache lookup precedes the dispatch gate; valid hits return without waiting for another
+query or reading the backend inventory. Fresh dispatches remain serialized and reload persisted
+health/inventory after waiting; the provider rechecks the cache under the gate. It has no internal
+retry or diversity-widening loop and uses an explicit general-web
 engine pool. It returns cached results or performs one request, without diversity widening or page reads.
 The caller may choose one engine from that pool with `engine`. The selection is part of
 cache identity; selection cannot bypass cooldowns or introduce unconfigured engines.
@@ -92,7 +95,9 @@ final prose and the quality of the stopping rationale still require review. Time
 evaluation runaway and fail the run; they are not evidence thresholds.
 
 Engine access history and transactional recovery leases live in `search/health.py` and SQLite.
-`engine_status` exposes observations separately from eligibility. Per-engine timing headers can
+`engine_status`, requested engines and call timings are opt-in with `diagnostics=true`.
+Default results retain evidence, original retrieval warnings, current cooldowns and eligible engines.
+Per-engine timing headers can
 verify successful empty execution; unsupported filters and absent attribution do not certify health.
 Backend inventory is read from the local `/config` endpoint and cached, with explicit uncertainty if
 it is unavailable. See [search availability](docs/search-availability.md) for the operational policy.

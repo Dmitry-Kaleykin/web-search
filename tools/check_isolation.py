@@ -3,15 +3,58 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class CheckFailure(RuntimeError):
+    """An expected failed readiness check, with a user-readable explanation."""
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise CheckFailure(message)
+
+
+def search_ready(search: dict) -> None:
+    if search.get("outcome") == "success" and search.get("results"):
+        return
+    details = [f"Search returned {search.get('outcome', 'an invalid response')}; no results."]
+    failures = [
+        warning for warning in search.get("warnings", []) if warning.startswith("search_failed:")
+    ]
+    details.extend(failures or search.get("warnings", [])[:2])
+    for engine, reason in search.get("engine_health", {}).items():
+        details.append(f"  {engine}: {reason}")
+    raise CheckFailure("\n".join(details))
+
+
+def expected_failures(error: Exception) -> list[str] | None:
+    """Unwrap MCP task groups without hiding unrelated programming/transport failures."""
+    if isinstance(error, ExceptionGroup):
+        messages = []
+        for child in error.exceptions:
+            nested = expected_failures(child)
+            if nested is None:
+                return None
+            messages.extend(nested)
+        return messages
+    if isinstance(error, CheckFailure):
+        return [str(error)]
+    if isinstance(error, subprocess.CalledProcessError):
+        return [
+            f"Container isolation check exited with status {error.returncode}; see output above."
+        ]
+    return None
 
 
 def check_container(config: dict) -> None:
@@ -65,7 +108,8 @@ print('PASS network namespace, host-file isolation, nonroot user and readonly fi
 
 def result_json(result) -> dict:
     if result.is_error:
-        raise AssertionError(str(result.content))
+        message = "\n".join(item.text for item in result.content if item.type == "text")
+        raise CheckFailure(f"MCP request failed: {message}")
     return json.loads(next(item.text for item in result.content if item.type == "text"))
 
 
@@ -80,7 +124,10 @@ async def check_mcp() -> None:
     ):
         await session.initialize()
         tools = await session.list_tools()
-        assert {tool.name for tool in tools.tools} == {"web_search", "read_url"}
+        require(
+            {tool.name for tool in tools.tools} == {"web_search", "read_url"},
+            "The isolated worker did not expose both search and reading tools.",
+        )
         print("PASS MCP handshake and tool schemas", flush=True)
         read = result_json(
             await session.call_tool(
@@ -92,7 +139,10 @@ async def check_mcp() -> None:
                 },
             )
         )
-        assert read["title"] == "Example Domain" and "documentation" in read["content"], read
+        require(
+            read.get("title") == "Example Domain" and "documentation" in read.get("content", ""),
+            "Public HTTPS reading did not return the expected example page.",
+        )
         print("PASS public HTTPS page retrieval through native broker", flush=True)
         blocked = await session.call_tool(
             "read_url",
@@ -102,7 +152,7 @@ async def check_mcp() -> None:
                 "refresh": True,
             },
         )
-        assert blocked.is_error, blocked
+        require(blocked.is_error, "Private-address rejection failed; isolation is not ready.")
         print("PASS private-address rejection through MCP", flush=True)
         rendered = result_json(
             await session.call_tool(
@@ -115,19 +165,25 @@ async def check_mcp() -> None:
                 },
             )
         )
-        assert rendered["extraction_method"] == "crawl4ai+chromium", rendered
-        assert any(
-            item.type == "image"
-            for item in (
-                await session.call_tool(
-                    "read_url",
-                    {
-                        "url": "https://example.com",
-                        "render": "always",
-                        "visual": True,
-                    },
-                )
-            ).content
+        require(
+            rendered.get("extraction_method") == "crawl4ai+chromium",
+            "Chromium rendering failed: " + "; ".join(rendered.get("warnings", [])),
+        )
+        require(
+            any(
+                item.type == "image"
+                for item in (
+                    await session.call_tool(
+                        "read_url",
+                        {
+                            "url": "https://example.com",
+                            "render": "always",
+                            "visual": True,
+                        },
+                    )
+                ).content
+            ),
+            "Chromium returned no screenshot.",
         )
         print("PASS real Chromium rendering and screenshot through native broker", flush=True)
         search = result_json(
@@ -140,14 +196,27 @@ async def check_mcp() -> None:
                 },
             )
         )
-        assert search["outcome"] == "success" and search["results"], search
+        search_ready(search)
         print("PASS real SearXNG search through native broker", flush=True)
 
 
-def main() -> None:
-    config = json.loads((ROOT / "build/isolation.json").read_text())
-    check_container(config)
-    asyncio.run(check_mcp())
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--debug", action="store_true", help="Show full tracebacks for failed checks"
+    )
+    args = parser.parse_args(argv)
+    try:
+        config = json.loads((ROOT / "build/isolation.json").read_text())
+        check_container(config)
+        asyncio.run(check_mcp())
+    except Exception as error:
+        messages = expected_failures(error)
+        if args.debug or messages is None:
+            raise
+        for message in messages:
+            print(f"FAIL {message}", file=sys.stderr, flush=True)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

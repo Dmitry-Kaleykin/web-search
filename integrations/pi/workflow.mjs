@@ -11,7 +11,8 @@ export default function (pi) {
       "Search the web and return ranked URLs, titles, snippets,"));
     const read = tools.some((tool) => tool.description?.startsWith(
       "Fetch and extract content from an already-known public HTTP(S) URL."));
-    if (!search || !read || event.systemPrompt.includes(marker)) return;
+    if (!search || !read || event.systemPrompt.includes(marker) ||
+        event.systemPrompt.includes(workflow.trim())) return;
     // Reapplied each turn, including after compaction. The caller retains its evidence note
     // in conversation summaries; this extension stores no research state or private source text.
     return { systemPrompt: `${event.systemPrompt}\n\n${marker}\n${workflow}` };

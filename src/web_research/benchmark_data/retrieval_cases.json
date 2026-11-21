@@ -2,28 +2,215 @@
   {
     "id": "documentation_en",
     "tool": "web_search",
-    "arguments": {"query": "Python asyncio TaskGroup cancellation documentation", "language": "en", "limit": 5, "refresh": true},
-    "review": "Are the top results about TaskGroup cancellation, in an appropriate language and version? Record relevance separately from retrieval success."
+    "arguments": {
+      "query": "Python asyncio TaskGroup cancellation documentation",
+      "language": "en",
+      "limit": 5,
+      "refresh": true
+    },
+    "review": "Are the top results about TaskGroup cancellation, in an appropriate language and version? Record relevance separately from retrieval success.",
+    "category": "documentation_en"
   },
   {
     "id": "documentation_ru",
     "tool": "web_search",
-    "arguments": {"query": "Python asyncio TaskGroup документация отмена задач", "language": "ru", "limit": 5, "refresh": true},
-    "review": "Are the sources directly relevant? Note original documentation versus translations and secondary explanations."
+    "arguments": {
+      "query": "Python asyncio TaskGroup документация отмена задач",
+      "language": "ru",
+      "limit": 5,
+      "refresh": true
+    },
+    "review": "Are the sources directly relevant? Note original documentation versus translations and secondary explanations.",
+    "category": "documentation_ru"
   },
   {
     "id": "documentation_html",
     "tool": "read_url",
-    "arguments": {"url": "https://docs.python.org/3/library/asyncio-task.html", "query": "TaskGroup cancellation", "max_chars": 4000, "include_links": true, "refresh": true},
+    "arguments": {
+      "url": "https://docs.python.org/3/library/asyncio-task.html",
+      "query": "TaskGroup cancellation",
+      "max_chars": 4000,
+      "include_links": true,
+      "refresh": true
+    },
     "expected_text": "TaskGroup",
     "expected_markdown_target": "https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.CancelledError",
-    "review": "Check that cancellation caveats remain understandable and relative links retain the documentation directory."
+    "review": "Check that cancellation caveats remain understandable and relative links retain the documentation directory.",
+    "category": "html"
   },
   {
     "id": "package_json",
     "tool": "read_url",
-    "arguments": {"url": "https://pypi.org/pypi/httpx/json", "max_chars": 4000, "refresh": true},
+    "arguments": {
+      "url": "https://pypi.org/pypi/httpx/json",
+      "max_chars": 4000,
+      "refresh": true
+    },
     "expected_text": "httpx",
-    "review": "Check that the package metadata is readable and truncation and continuation are explicit. This is not a latest-version accuracy test."
+    "review": "Check that the package metadata is readable and truncation and continuation are explicit. This is not a latest-version accuracy test.",
+    "category": "json"
+  },
+  {
+    "id": "news_en",
+    "category": "recent_news_en",
+    "tool": "web_search",
+    "arguments": {
+      "query": "NASA latest science mission announcements",
+      "language": "en",
+      "limit": 5,
+      "refresh": true,
+      "time_range": "month"
+    },
+    "review": "Count directly relevant original announcements in the first five results. Check actual page dates against the last month; do not infer freshness from ranking."
+  },
+  {
+    "id": "news_ru",
+    "category": "recent_news_ru",
+    "tool": "web_search",
+    "arguments": {
+      "query": "Роскосмос последние новости запуск спутников",
+      "language": "ru",
+      "limit": 5,
+      "refresh": true,
+      "time_range": "month"
+    },
+    "review": "Count relevant Russian-language reports in the first five results. Identify original reports and check dates; distinguish access failure from stale coverage."
+  },
+  {
+    "id": "obscure_fact",
+    "category": "obscure_fact",
+    "tool": "web_search",
+    "arguments": {
+      "query": "Antikythera mechanism Saros dial 223 months museum",
+      "language": "en",
+      "limit": 5,
+      "refresh": true
+    },
+    "review": "Does a museum or scholarly source explain the Saros dial and 223-month cycle? Count relevant results at five, noting copied descriptions."
+  },
+  {
+    "id": "regional_ru",
+    "category": "regional_ru",
+    "tool": "web_search",
+    "arguments": {
+      "query": "Казань музей естественной истории Татарстана официальный часы работы",
+      "language": "ru",
+      "limit": 5,
+      "refresh": true
+    },
+    "review": "Does the official museum appear in the first five results? Check geographic disambiguation, opening hours and whether the page is current."
+  },
+  {
+    "id": "pdf_discovery",
+    "category": "document_discovery",
+    "tool": "web_search",
+    "arguments": {
+      "query": "RFC 9110 HTTP Semantics filetype:pdf",
+      "language": "en",
+      "limit": 5,
+      "refresh": true
+    },
+    "review": "Count results that lead to the actual RFC PDF, versus HTML references or unrelated documents. Query operators are upstream hints."
+  },
+  {
+    "id": "database_docs",
+    "category": "technical_documentation",
+    "tool": "web_search",
+    "arguments": {
+      "query": "SQLite WAL checkpoint busy readers documentation",
+      "language": "en",
+      "limit": 5,
+      "refresh": true
+    },
+    "review": "Count official or directly useful sources in the first five results. Can the reader find the caveat about active readers preventing checkpoint completion?"
+  },
+  {
+    "id": "pdf_text",
+    "category": "pdf",
+    "arguments": {
+      "url": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+      "max_chars": 4000,
+      "refresh": true
+    },
+    "expected_text": "Dummy PDF file",
+    "review": "Verify readable PDF text and page provenance. Record any missing words separately from fetch success.",
+    "tool": "read_url"
+  },
+  {
+    "id": "table_html",
+    "category": "tables",
+    "arguments": {
+      "url": "https://en.wikipedia.org/wiki/SI_base_unit",
+      "query": "luminous intensity candela",
+      "max_chars": 4000,
+      "refresh": true
+    },
+    "expected_text": "candela",
+    "review": "Inspect the SI base-unit table: do quantity, unit and symbol stay associated? Record lost rows or column relationships.",
+    "tool": "read_url"
+  },
+  {
+    "id": "cyrillic_html",
+    "category": "cyrillic",
+    "arguments": {
+      "url": "https://ru.wikipedia.org/wiki/Байт",
+      "query": "восемь бит",
+      "max_chars": 4000,
+      "refresh": true
+    },
+    "expected_text": "бит",
+    "review": "Check Cyrillic fidelity and whether the eight-bit definition and qualifications are returned without encoding damage.",
+    "tool": "read_url"
+  },
+  {
+    "id": "plain_text",
+    "category": "plain_text",
+    "arguments": {
+      "url": "https://www.rfc-editor.org/rfc/rfc9110.txt",
+      "query": "9.2.1 Safe Methods",
+      "max_chars": 4000,
+      "refresh": true
+    },
+    "expected_text": "Safe Methods",
+    "review": "Check that the relevant safe-methods section is selected rather than only the table of contents. Use start_cursor/next_cursor to review qualifications and whitespace.",
+    "tool": "read_url"
+  },
+  {
+    "id": "rss_feed",
+    "category": "feed",
+    "arguments": {
+      "url": "https://www.nasa.gov/rss/dyn/breaking_news.rss",
+      "max_chars": 4000,
+      "refresh": true
+    },
+    "expected_text": "<rss",
+    "review": "Verify that feed tags and article URLs survive. Check item dates manually; a feed fetching successfully does not establish recent entries.",
+    "tool": "read_url"
+  },
+  {
+    "id": "rendered_docs",
+    "category": "browser",
+    "arguments": {
+      "url": "https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_grid_layout",
+      "query": "grid layout",
+      "render": "always",
+      "max_chars": 4000,
+      "refresh": true
+    },
+    "expected_method": "crawl4ai+chromium",
+    "review": "Check that real Chromium rendering retains usable explanatory text. Note navigation clutter and missing examples separately.",
+    "tool": "read_url"
+  },
+  {
+    "id": "restricted_site",
+    "category": "access_probe",
+    "arguments": {
+      "url": "https://www.reddit.com/r/Python/",
+      "max_chars": 4000,
+      "refresh": true
+    },
+    "access_probe": true,
+    "review": "Record usable content versus challenge/access denial. A reported block is an access observation, not successful content extraction or a reason to loosen policy.",
+    "tool": "read_url"
   }
 ]

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import extension from "./workflow.mjs";
+import { readFileSync } from "node:fs";
 
 const tools = [
   { name: "prefix_web_search", description: "Search the web and return ranked URLs, titles, snippets, and reported publication dates." },
@@ -26,4 +27,10 @@ test("only augments turns with both of this server's tools enabled", async () =>
   assert.ok(result.systemPrompt.includes("blocked:"));
   const again = await handler(tools.map((tool) => tool.name))(result);
   assert.equal(again, undefined);
+});
+
+test("does not repeat a workflow already forwarded by the MCP adapter", async () => {
+  const workflow = readFileSync(new URL("../../src/web_research/research_workflow.md", import.meta.url), "utf8");
+  const result = await handler(tools.map((tool) => tool.name))({ systemPrompt: `Existing prompt\n${workflow}` });
+  assert.equal(result, undefined);
 });

@@ -172,6 +172,19 @@ export function createServices({ projectDir, run, log = () => {}, platform = pro
     await run(python, [path.join(projectDir, "tools/check_isolation.py")], { env: localEnv });
   }
 
+  async function rebuild() {
+    if (!(await exists(python, true))) {
+      throw new Error("The local Python environment is missing. Run Install / update and start first.");
+    }
+    await ensureDocker();
+    log("Rebuilding isolated search. Docker may download build dependencies; runtime checks use Web Search Network.");
+    await run(python, [path.join(projectDir, "tools/build_isolated.py")], { env: localEnv });
+    log("Runtime rebuilt. Little Snitch may ask to verify Web Search Network’s changed identity. Keep identity checking enabled; general Python or Chromium internet access is not needed.");
+    log("Checking the rebuilt runtime’s isolation, page reading, Chromium, and search…");
+    await doctor();
+    log("Rebuild and isolation checks passed. Restart Pi to use the updated runtime.");
+  }
+
   async function prepareLogs() {
     await mkdir(path.dirname(auditLog), { recursive: true, mode: 0o700 });
     const file = await open(auditLog, "a", 0o600);
@@ -179,5 +192,5 @@ export function createServices({ projectDir, run, log = () => {}, platform = pro
     return auditLog;
   }
 
-  return { status, start, stop, install, doctor, prepareLogs };
+  return { status, start, stop, install, rebuild, doctor, prepareLogs };
 }

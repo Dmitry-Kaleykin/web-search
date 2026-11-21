@@ -21,7 +21,8 @@ function worker(overrides = {}) {
   };
 }
 
-async function fixture(t, { workers = [], legacy = false, image = true, running = true } = {}) {
+async function fixture(t, { workers = [], legacy = false, image = true, running = true,
+  failScript = null } = {}) {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "ws-console-"));
   t.after(() => rm(projectDir, { recursive: true, force: true }));
   const config = { image: IMAGE, docker: "/usr/local/bin/docker",
@@ -37,7 +38,10 @@ async function fixture(t, { workers = [], legacy = false, image = true, running 
   const run = async (command, args, options = {}) => {
     calls.push({ command, args, options });
     const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
-    if (command.endsWith("python")) return ok();
+    if (command.endsWith("python")) {
+      if (failScript && args[0]?.endsWith(failScript)) throw new Error(`Simulated failure: ${failScript}`);
+      return ok();
+    }
     assert.equal(command, config.docker);
     assert.deepEqual(args.slice(0, 2), ["--host", config.docker_endpoint]);
     const op = args.slice(2);
@@ -138,6 +142,42 @@ test("installation builds the isolated runtime instead of host Chromium or Compo
   await services.install();
   assert.ok(calls.some(({ args }) => args[0] === path.join(projectDir, "tools/build_isolated.py")));
   assert.ok(!calls.some(({ command, args }) => command.endsWith("crawl4ai-setup") || args.includes("compose")));
+});
+
+test("rebuild checks the new runtime without pip or disconnecting Pi's existing worker", async (t) => {
+  const { services, calls, logs, projectDir } = await fixture(t, { workers: [worker()] });
+  await services.rebuild();
+  const pythonCalls = calls.filter(({ command }) => command.endsWith("python"));
+  assert.deepEqual(pythonCalls.map(({ args }) => args), [
+    [path.join(projectDir, "tools/build_isolated.py")],
+    [path.join(projectDir, "tools/check_isolation.py")],
+  ]);
+  for (const { options } of pythonCalls) {
+    assert.deepEqual(Object.keys(options.env).sort(), ["HOME", "PATH"]);
+  }
+  assert.ok(!calls.some(({ args }) => args.includes("pip") || args.includes("stop")));
+  assert.ok(logs.findIndex((message) => message.includes("Docker may download")) <
+    logs.findIndex((message) => message.includes("Runtime rebuilt")));
+  assert.ok(logs.some((message) => message.includes("Little Snitch")));
+  assert.match(logs.at(-1), /checks passed.*Restart Pi/);
+});
+
+for (const failScript of ["build_isolated.py", "check_isolation.py"]) {
+  test(`rebuild does not report success after ${failScript} fails`, async (t) => {
+    const { services, calls, logs } = await fixture(t, { failScript });
+    await assert.rejects(services.rebuild(), /Simulated failure/);
+    assert.ok(!logs.some((message) => message.includes("checks passed")));
+    if (failScript === "build_isolated.py") {
+      assert.ok(!calls.some(({ args }) => args[0]?.endsWith("check_isolation.py")));
+    }
+  });
+}
+
+test("rebuild requires the existing Python environment without installing one", async (t) => {
+  const { services, calls, projectDir } = await fixture(t);
+  await unlink(path.join(projectDir, ".venv/bin/python"));
+  await assert.rejects(services.rebuild(), /Python environment is missing/);
+  assert.equal(calls.length, 0);
 });
 
 test("live logs use the broker audit file and preserve existing records", async (t) => {

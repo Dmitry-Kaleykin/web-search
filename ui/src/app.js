@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,10 +16,14 @@ import {
   stripTerminalSequences,
 } from "@earendil-works/pi-tui";
 import { createServices } from "./services.js";
+import { copyText } from "./clipboard.js";
+import { createSessionLog } from "./diagnostics.js";
 
 const UI_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_DIR = path.resolve(UI_DIR, "..");
 const EVALUATOR = path.join(PROJECT_DIR, ".venv", "bin", "web-search-eval");
+const sessionLog = createSessionLog(PROJECT_DIR);
+const plainCheck = process.argv.includes("--check");
 
 const ansi = {
   accent: (text) => `\x1b[38;5;75m${text}\x1b[0m`,
@@ -32,9 +36,14 @@ const ansi = {
 
 const actions = [
   {
+    value: "rebuild",
+    label: "Rebuild isolated runtime",
+    description: "Apply project changes and verify isolation; restart Pi afterward",
+  },
+  {
     value: "setup",
     label: "Install / update and start",
-    description: "Build the complete isolated runtime and prepare Docker",
+    description: "Install dependencies, build the isolated runtime, and prepare Docker",
   },
   {
     value: "start",
@@ -72,6 +81,7 @@ const actions = [
 const terminal = new ProcessTerminal();
 const tui = new TuiAltScreen(terminal, false, undefined, {
   mouse: true,
+  copySelection: (text) => copyText(text),
   searchMatchStyle: (text) => `\x1b[30;43m${text}\x1b[0m`,
   searchCurrentMatchStyle: (text) => `\x1b[30;46m${text}\x1b[0m`,
 });
@@ -101,7 +111,7 @@ const menu = new SelectList(actions, actions.length, {
   noMatch: (text) => ansi.warning(text),
 });
 const footer = new Text(
-  ansi.dim("↑↓ choose · enter run · esc/q quit · ctrl+shift+f search logs"),
+  ansi.dim("↑↓ choose · enter run · esc/q quit · ctrl+y copy logs · ctrl+o open log · ctrl+shift+f search"),
   1,
   0,
 );
@@ -127,6 +137,7 @@ let logLines = [];
 const services = createServices({ projectDir: PROJECT_DIR, run, log: appendLog });
 
 function requestRender() {
+  if (plainCheck) return;
   statusText.invalidate();
   activityText.invalidate();
   logText.invalidate();
@@ -134,7 +145,14 @@ function requestRender() {
 }
 
 function appendLog(text, kind = "normal") {
-  const cleaned = stripTerminalSequences(String(text)).replace(/\r/g, "").trimEnd();
+  const raw = stripTerminalSequences(String(text)).replace(/\r/g, "");
+  sessionLog.append(raw.endsWith("\n") ? raw : `${raw}\n`);
+  if (plainCheck) {
+    const stream = kind === "error" ? process.stderr : process.stdout;
+    stream.write(raw.endsWith("\n") ? raw : `${raw}\n`);
+    return;
+  }
+  const cleaned = raw.trimEnd();
   if (!cleaned) return;
   const prefix = kind === "error" ? ansi.error("× ") : kind === "command" ? ansi.accent("› ") : "  ";
   logLines.push(...cleaned.split("\n").map((line) => `${prefix}${line}`));
@@ -280,7 +298,9 @@ async function performAction(value) {
   busy = true;
   setActivity(`Running: ${actions.find((item) => item.value === value)?.label || value}`);
   try {
-    if (value === "setup") {
+    if (value === "rebuild") {
+      await services.rebuild();
+    } else if (value === "setup") {
       await services.install();
     } else if (value === "start") {
       await services.start();
@@ -296,10 +316,13 @@ async function performAction(value) {
     } else if (value === "refresh") {
       await refreshStatus();
     }
-    setActivity("Operation complete", "success");
+    setActivity(value === "rebuild"
+      ? "Rebuild and checks passed. Restart Pi to use the updated runtime."
+      : "Operation complete", "success");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     appendLog(message, "error");
+    appendLog(`Full output saved: ${sessionLog.path}`);
     setActivity(message, "error");
   } finally {
     busy = false;
@@ -317,6 +340,21 @@ function shutdown(code) {
 menu.onSelect = (item) => void performAction(item.value);
 menu.onCancel = () => shutdown(0);
 tui.addInputListener((data) => {
+  if (matchesKey(data, Key.ctrl("y"))) {
+    void readFile(sessionLog.path, "utf8").then((text) => copyText(text)).then((ok) => {
+      setActivity(ok ? "Full log copied" : `Copy failed. Log: ${sessionLog.path}`,
+        ok ? "success" : "error");
+    }).catch((error) => setActivity(error.message, "error"));
+    return { consume: true };
+  }
+  if (matchesKey(data, Key.ctrl("o"))) {
+    const child = spawn("/usr/bin/open", ["-t", sessionLog.path], { stdio: "ignore" });
+    child.on("error", (error) => setActivity(error.message, "error"));
+    child.on("close", (code) => {
+      if (code !== 0) setActivity(`Cannot open log: ${sessionLog.path}`, "error");
+    });
+    return { consume: true };
+  }
   if (matchesKey(data, Key.ctrl("c")) || data === "q") {
     shutdown(0);
     return { consume: true };
@@ -334,5 +372,17 @@ process.on("uncaughtException", (error) => {
   }
 });
 
-tui.start();
-void refreshStatus();
+if (plainCheck) {
+  try {
+    await services.doctor();
+  } catch (error) {
+    appendLog(error instanceof Error ? error.message : String(error), "error");
+    process.exitCode = 1;
+  } finally {
+    appendLog(`Full output saved: ${sessionLog.path}`);
+  }
+} else {
+  tui.start();
+  appendLog(`Session log: ${sessionLog.path}`);
+  void refreshStatus();
+}

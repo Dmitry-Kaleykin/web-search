@@ -74,6 +74,12 @@ the broker audit file. Stop search workers affects only this project's Pi worker
 Docker and unrelated containers stay running. Reconnect Pi after stopping its worker.
 There is no standalone SearXNG restart action, since Pi owns worker connections.
 
+For future project changes, select **Rebuild isolated runtime**. This runs the build and then
+the complete isolation checks, without running the host Python package installer. Docker can
+download dependencies during the build. The checks use Web Search Network for public traffic.
+Little Snitch may ask you to verify the rebuilt executable's changed identity; keep identity
+checking enabled. Restart Pi after the checks pass so its new worker uses the rebuilt image.
+
 ## Enforced network policy
 
 - Public HTTP or HTTPS only, using the corresponding standard port 80 or 443.

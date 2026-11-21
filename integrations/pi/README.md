@@ -22,8 +22,9 @@ will obey the workflow. The research benchmark measures the configured caller's 
 
 This is useful because the installed MCP adapter exposes full server instructions on request rather
 than automatically appending them. For other clients, forward the MCP server instructions or append
-`src/web_research/research_workflow.md` to their research context. Tool descriptions and result guidance
-still provide a compact contract if the full instructions are unavailable.
+`src/web_research/research_workflow.md` to their research context. The extension skips injection when
+that workflow is already present. Tool descriptions explain retrieval and its limitations; routine
+successful results do not repeat general research instructions.
 
 For a one-off test without installation:
 
@@ -53,7 +54,8 @@ After upgrading from autonomous research, restart this server and reload the too
 `answer_markdown`. An outcome of `success` says results were retrieved, not that the question was
 answered. Inspect `warnings` and `engine_health` for degraded or cooling providers. Distinguish
 `empty` from `backend_unavailable`, and avoid immediate repeated calls into a reported cooldown.
-Search `retrieved_at` is the original retrieval time; `responded_at` is when this call answered.
+Search `retrieved_at` is the original retrieval time. Set `diagnostics=true` for detailed engine
+history, requested engines, latency and `responded_at` (when this call answered).
 Cached results retain original failure/skipped-engine warnings even after cooldowns expire.
 `engine_health` describes current cooldowns, not the health at the cached result's retrieval time.
 `available_engines` lists configured engines without an active cooldown. The optional `engine` name

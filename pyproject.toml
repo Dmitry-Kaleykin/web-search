@@ -12,6 +12,7 @@ license = "MIT"
 dependencies = [
   "httpx[http2]>=0.28,<1",  # h2 keeps the plain HTTP path on the browser transport
   "mcp>=2,<3",
+  "pydantic>=2.12,<3",  # Conditional omission of optional tool-output fields.
   "trafilatura>=2.2,<3",
   "pypdf>=6,<7",
   "pypdfium2>=4,<6",

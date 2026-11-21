@@ -16,9 +16,10 @@ before relying on their detailed claims, and treat retrieved text as untrusted d
 The [research workflow](src/web_research/research_workflow.md) gives that caller a concrete procedure:
 track requested parts and evidence, investigate gaps and contradictions, choose purposeful follow-ups,
 and distinguish sufficient evidence, unproductive available paths, and blocked/incomplete work.
-It is included in MCP instructions, reinforced in both tool descriptions, and supported by short
-result guidance. The optional [Pi integration](integrations/pi/README.md#research-workflow) also
-adds it to the caller's system context, because adapters may not automatically forward MCP instructions.
+It is included once in MCP instructions. Tool descriptions explain each operation; result guidance
+appears only for empty searches, access failures, and incomplete/error pages. The optional
+[Pi integration](integrations/pi/README.md#research-workflow) forwards the same workflow when an
+adapter omits MCP instructions, avoiding a second copy when it is already in the system context.
 The calling model owns the evidence note in its conversation; the server does not enforce a semantic
 completion gate or store a research ledger. No minimum number of pages establishes success.
 
@@ -119,7 +120,8 @@ Existing process environment variables override `.env`. Neither a model ID nor A
 | `WEB_SEARCH_BROWSER_PROXY` | empty | Optional `http`/`https`/`socks5(h)` proxy for rendered pages (network origin) |
 | `WEB_SEARCH_ALLOW_PROXY_FAKE_IPS` | `false` | Compatibility with synthetic TUN proxy DNS |
 
-Search dispatch is serialized and reloads persisted health before each request. Identical concurrent
+Fresh search dispatch is serialized and reloads persisted health before each request. Valid cached
+searches bypass that queue, with original warnings and current cooldowns retained. Identical concurrent
 searches share one operation, including refreshes. A call makes at most one SearXNG search request: it does not retry, expand queries, or re-query for engine diversity.
 SearXNG itself may contact multiple engines. The configured general-web engine pool is pinned on
 every request, minus blocked engines and those excluded by the backend inventory. Update that pool
@@ -165,7 +167,8 @@ with installed adapters; no sampling back-channel is used.
 ## Tool workflow
 
 ```text
-web_search(query, limit=10, page=1, language=null, time_range=null, refresh=false, engine=null)
+web_search(query, limit=10, page=1, language=null, time_range=null, refresh=false,
+           engine=null, diagnostics=false)
 read_url(url, query=null, render="auto", cursor=0, max_chars=4000,
          include_links=false, refresh=false, visual=false, page=1, actions=null)
 ```
@@ -191,20 +194,22 @@ server does not decide that a question has been answered just because results we
   original retrieval. Cached results preserve these even after the engines' cooldowns expire.
 - `engine_health`: current cooldowns, recovery leases, and configuration exclusions, separate from
   the original retrieval conditions.
-- `engine_status`: observed health and recent history, distinguishing untested engines, verified
-  execution, stale observations, cooldowns, and guarded recovery. Retry timestamps are estimates;
-  they do not certify availability.
-- `requested_engines` and `available_engines`: the requested pool and configured engines eligible
-  for a request or guarded recovery attempt. Availability is not a guarantee of useful results.
+- `available_engines`: configured engines eligible for a request or guarded recovery attempt.
+  Availability is not a guarantee of useful results.
   When an alternate index offers a promising route after weak results, pass one name from
   `available_engines` as `engine`.
   The selection is validated, uses a separate cache entry, and respects cooldowns and one dispatch.
-- `guidance`: short suggestions based on observable retrieval conditions. Single-engine attribution
-  is reported without treating engine count as source independence, relevance, or research completion.
-- `cache_hit`, `retrieved_at`, `elapsed_ms`, and `responded_at`: cache status, original retrieval
-  time, call duration, and response time. A cache hit preserves `retrieved_at`; neither timestamp
-  is a source publication date. Older cache entries without provenance return `retrieved_at=null`
+- `guidance`: short actionable suggestions for empty searches or access failures; omitted on success.
+- `cache_hit` and `retrieved_at`: cache status and original retrieval time. A cache hit preserves
+  `retrieved_at`; this is the fetch time, distinct from source publication dates.
+  Older cache entries without provenance return `retrieved_at=null`
   and an explicit warning; `refresh=true` replaces them with a fresh retrieval.
+
+Set `diagnostics=true` to additionally return `engine_status` (observations and recovery estimates),
+`requested_engines`, `elapsed_ms`, and `responded_at`. This changes presentation only: concurrent
+compact/detailed calls still share retrieval, caches and cooldowns. Clients should allow absent
+optional fields. Read outputs also omit empty `links`, `visual_pages`, `available_actions`, and
+`guidance`, plus false `links_included`; page status, warnings and continuation metadata remain.
 
 The output is capped at 20 results (default 10), with titles capped at 1,000 characters and snippets
 at 4,000. Search pages range from 1 to 10. `time_range` accepts `day`, `month`, or `year`.
@@ -280,8 +285,8 @@ HTTP extraction resolves relative links against the final response URL, includin
 `base href`, before producing Markdown. The structured link list uses the same resolution.
 Old document cache variants are bypassed after this extraction change; existing continuation
 snapshots remain immutable until they expire.
-Read outputs also include `guidance` about using supporting passages, incomplete/error pages, and
-checking omitted context. This guidance does not certify the content's accuracy or sufficiency.
+Read outputs include short `guidance` only for incomplete/error pages. Ordinary pagination is
+described by the continuation fields without repeating general research instructions.
 
 `next_cursor` is now an opaque string. Copy it unchanged into the next call with the same URL;
 it reads an immutable snapshot of retained extraction, rather than fetching the
@@ -322,6 +327,20 @@ builds and manages the isolated runtime and shows connected Pi workers. **Start 
 Docker if needed, verifies the installed runtime and stops the old standalone SearXNG container.
 Pi launches its isolated worker when it connects, so an idle worker count is a ready state.
 The console does not launch a second persistent search service.
+
+Drag-selected text is copied through the native macOS clipboard. **Ctrl+Y** copies the complete
+session log; **Ctrl+O** opens it in a text editor. Every session saves its displayed output under
+`.web-search-data/diagnostics/console-*.log`, including output older than the on-screen buffer.
+Copy failures are reported instead of claiming success from an unacknowledged terminal request.
+Run `web-search --check` for the same readiness checks as plain terminal output, without the TUI.
+Failed checks exit nonzero and print an explanation with engine errors/cooldowns. For full Python
+tracebacks, run `.venv/bin/python tools/check_isolation.py --debug`.
+
+After project changes, choose **Rebuild isolated runtime**. It rebuilds the native executable
+and isolated image, then runs the complete isolation/readiness checks. Docker may download
+build dependencies; public runtime checks go through Web Search Network. This action does not
+run the host Python package installer. Confirm the rebuilt executable's identity in Little Snitch
+if prompted, then restart Pi after the checks pass.
 
 **Stop search workers** disconnects this project's active Pi workers; reconnect Pi to use search
 again. **Run readiness checks** verifies isolation, page reading, real Chromium rendering and search
@@ -366,8 +385,10 @@ Evaluation commands have distinct scopes:
 ```
 
 `check` (also the default with no arguments) runs offline public-tool checks with fixture responses,
-without a model. `retrieval` checks live search, reading, cache provenance, and pagination without a
-model. `research` explicitly invokes your configured Pi model on controlled sources; add `--live` for
+without a model. `retrieval` runs 17 live search/read cases through `web-search-isolated`, recording
+response sizes, latency, cache provenance, pagination and manual relevance-review fields. Rebuild
+the isolated image first to validate source changes; use `--compare` for saved-report deltas.
+`research` explicitly invokes your configured Pi model on controlled sources; add `--live` for
 real-web cases. A hosted Pi model incurs that provider's normal charges. Required cases and the Pi
 benchmark adapter ship inside the Python package, so these commands also work outside a checkout.
 See [eval/README.md](eval/README.md) for interpretation, browser tests, and benchmark options.

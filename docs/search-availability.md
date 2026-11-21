@@ -8,6 +8,10 @@ search APIs. Access health is separate from result relevance and research comple
 A valid cached result remains usable while engines are blocked. Its original retrieval time and
 warnings remain unchanged. Reading the cache does not establish engine recovery.
 
+Cache hits bypass the fresh-search queue and preserve both retrieval provenance and current
+cooldowns. Refreshes and expired entries still wait for serialized dispatch; a queued call rechecks
+the cache and reloads persisted engine state before sending a request.
+
 For fresh discovery, the server excludes engines on cooldown or already being tested for recovery.
 It makes at most one SearXNG search request. Simultaneous identical calls within one MCP server share
 that request, including `refresh=true`. Different queries still use the bounded, serialized queue.
@@ -23,7 +27,7 @@ are not automatically admitted: being enabled does not establish useful coverage
 
 ## Health and recovery
 
-`engine_status` is an additional structured output field. It reports each configured engine and the
+`engine_status` is returned with `diagnostics=true`. It reports each configured engine and the
 SearXNG endpoint, including status, consecutive failures, repeated-failure flag, success/failure
 counts, last observed success/failure, last successful execution latency, and estimated next retry.
 Timestamps are Unix seconds. Missing observations are null, not inferred successes.

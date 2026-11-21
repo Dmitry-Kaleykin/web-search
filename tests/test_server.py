@@ -395,7 +395,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 store._connection.execute(
                     "UPDATE engine_health SET expires_at = ?", (time.time() - 1,)
                 )
-            cached = await web_search("partial", ctx)
+            cached = await web_search("partial", ctx, diagnostics=True)
             request.assert_awaited_once()
             request.return_value = {"results": [{"url": "https://example.com/new"}], "failures": []}
             fresh = await web_search("partial", ctx, refresh=True)

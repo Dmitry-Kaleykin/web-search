@@ -284,7 +284,7 @@ async def test_identical_mcp_refreshes_share_request_and_one_cancel_does_not_sto
         ):
             first = asyncio.create_task(web_search("same", ctx, refresh=True))
             await entered.wait()
-            second = asyncio.create_task(web_search("same", ctx, refresh=True))
+            second = asyncio.create_task(web_search("same", ctx, refresh=True, diagnostics=True))
             await asyncio.sleep(0)
             first.cancel()
             with pytest.raises(asyncio.CancelledError):

@@ -60,27 +60,54 @@ benchmarks or evidence of current answer accuracy.
 
 ## Live retrieval baseline
 
-Run from the project root with SearXNG running and the reader configured:
+Build the isolated runtime after source changes, then run from the project root:
 
 ```sh
 .venv/bin/web-search-eval retrieval \
-  --output eval/baselines/$(date +%Y-%m-%d)-retrieval.json
+  --label isolated-current --output /tmp/web-search-retrieval.json
+
+# Compare identical requests against a saved run; changing requests are marked incomparable.
+.venv/bin/web-search-eval retrieval \
+  --output /tmp/web-search-retrieval-next.json --compare /tmp/web-search-retrieval.json
+
+# Limit a run to selected cases (repeat --case as needed).
+.venv/bin/web-search-eval retrieval --case documentation_en --case pdf_text \
+  --output /tmp/web-search-retrieval-small.json
 ```
 
-This is an opt-in network check, separate from controlled caller research. It uses the public
-MCP tools in-process with no model, performs two focused searches (English/Russian), reads official
-Python documentation and public package JSON, and checks search-cache provenance and immutable
-read continuation. Cases ship in `src/web_research/benchmark_data/retrieval_cases.json`; `--cases` selects another manifest.
-It records exact tool arguments, outputs, timings, retrieval warnings, and per-case checks.
+This is an opt-in network check, separate from controlled caller research. It connects to
+`web-search-isolated` over stdio, keeping public requests behind the native broker. It never falls
+back to host-side retrieval. The default launcher is this checkout's executable, or the installed
+launcher on PATH; use `--launcher /absolute/path/web-search-isolated` to select another installation.
+Docker must already be running. The installed image is pinned: rebuild before testing changed
+source, then reconnect Pi. Builds may download dependencies through Docker; runtime requests use
+Web Search Network.
+
+The 17-case corpus covers English/Russian documentation and recent news, regional search, an
+obscure historical fact, PDF discovery, HTML tables, Cyrillic, plain text, JSON, RSS, PDF text,
+forced Chromium rendering, and a restricted-site access probe. Cases ship in
+`src/web_research/benchmark_data/retrieval_cases.json`; `--cases` selects another manifest.
+Calls remain sequential, with no automatic retry. The report records exact tool arguments,
+outputs, structured JSON byte counts, fresh/cache latency, retained/returned character counts,
+retrieval warnings, image identity when available, tool-schema hash, and per-case checks.
 Initial calls request fresh data. Follow-up calls specifically exercise cache and pagination.
+
+The summary separates mechanical failures from observed access limitations. A restricted-site
+probe can record a properly reported challenge, but that never counts as usable page content;
+tool errors remain failures. Ordinary reader cases require `page_status=ok` and any declared
+expected passage/method. Known passages test extraction only, not complete fidelity.
 
 The exit code reports mechanical check failures. It does **not** score relevance, factual answers,
 source independence, or stopping decisions. Review the returned sources using each case's review
-prompt. Empty, blocked, or changed live sources remain recorded failures rather than being retried
+prompt and fill the report's `manual_review` fields: relevant results among the first five, missing
+passages/table relationships, and notes. Unreviewed values stay null. Empty, blocked, or changed
+ordinary sources remain recorded failures rather than being retried
 until the report turns green. Reports contain public result snippets and bounded page excerpts;
 inspect them before sharing if you replace the bundled cases with private queries.
 
-The exit status and saved results describe this run only; upstream engines and sources can change.
+Comparison records latency and response-size deltas plus check outcomes only for identical
+requests. It does not infer better relevance from smaller/faster results. The exit status and saved
+results describe this run only; upstream engines and sources can change.
 
 ## Offline public-tool checks
 

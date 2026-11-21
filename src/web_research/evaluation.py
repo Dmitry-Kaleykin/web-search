@@ -48,7 +48,10 @@ async def offline_checks() -> dict[str, bool]:
             read["output"] or {}
         ).get("content", "")
         chosen = await call_fixture(
-            case, directory / "simple", "web_search", {**search_args, "engine": "specialist"}
+            case,
+            directory / "simple",
+            "web_search",
+            {**search_args, "engine": "specialist", "diagnostics": True},
         )
         selected = chosen["output"] or {}
         checks["explicit_engine_selection"] = (

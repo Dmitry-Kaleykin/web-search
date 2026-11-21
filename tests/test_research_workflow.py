@@ -83,7 +83,7 @@ async def test_engine_selection_cache_and_current_availability(tmp_path):
 async def test_fixture_uses_mcp_tools_and_scores_only_read_evidence(tmp_path):
     case = next(case for case in load_cases() if case["id"] == "simple_fact")
     discovered = await call_fixture(case, tmp_path, "web_search", {"query": "Neral Standard audit"})
-    assert discovered["output"]["guidance"]
+    assert "guidance" not in discovered["output"]
     url = discovered["output"]["results"][0]["url"]
     answer = {
         "findings": {

@@ -186,6 +186,29 @@ class SearXNGSearchProvider:
             raise SearXNGError("No configured engine can execute these search parameters")
         params["engines"] = ",".join(available)
 
+    def cached_search(
+        self,
+        query: str,
+        *,
+        page: int = 1,
+        language: str | None = None,
+        time_range: str | None = None,
+        categories: str | None = None,
+        limit: int = 10,
+        engines: str | None = None,
+    ) -> list[SearchResult] | None:
+        """Read fresh cached results and provenance without querying inventory or engines."""
+        engines = engines or ",".join(self.healthy_engines) or None
+        key = _cache_key(query, page, language, time_range, categories, limit, engines)
+        cached = self.store.get_search_entry(key, self.cache_ttl_seconds) if self.store else None
+        if cached is None:
+            return None
+        self.last_cache_hit = True
+        self.last_retrieved_at = cached.retrieved_at
+        self.last_warnings = list(cached.warnings)
+        self.last_engine_health = self.engine_health()
+        return cached.results
+
     async def search(
         self,
         query: str,
@@ -204,14 +227,18 @@ class SearXNGSearchProvider:
         self.last_engine_health = {}
         engines = engines or ",".join(self.healthy_engines) or None
         cache_key = _cache_key(query, page, language, time_range, categories, limit, engines)
-        if self.store and not refresh:
-            cached = self.store.get_search_entry(cache_key, self.cache_ttl_seconds)
+        if not refresh:
+            cached = self.cached_search(
+                query,
+                page=page,
+                language=language,
+                time_range=time_range,
+                categories=categories,
+                limit=limit,
+                engines=engines,
+            )
             if cached is not None:
-                self.last_cache_hit = True
-                self.last_retrieved_at = cached.retrieved_at
-                self.last_warnings.extend(cached.warnings)
-                self.last_engine_health = self.engine_health()
-                return cached.results
+                return cached
 
         params: dict[str, str | int] = {"q": query, "format": "json", "pageno": page}
         if language:

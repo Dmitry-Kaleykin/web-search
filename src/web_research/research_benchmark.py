@@ -51,6 +51,7 @@ async def describe(policy):
         description = definition.description
         if old:
             schema["properties"].pop("engine", None)
+            schema["properties"].pop("diagnostics", None)
             description = old[
                 "WEB_SEARCH_TOOL_DESCRIPTION"
                 if definition.name == "web_search"
