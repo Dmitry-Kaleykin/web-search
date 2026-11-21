@@ -145,7 +145,10 @@ def _wait_seconds(request: httpx.Request) -> float:
 class BrokerTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         payload = request_payload(request, await request_body(request))
-        reader, writer = await asyncio.open_unix_connection(SOCKET_PATH, limit=160_000)
+        # The buffer must hold a whole reply line including base64 expansion. A smaller limit does
+        # not fail loudly: `readline` hands back a truncated line, and every page above roughly
+        # 118 KB turns into a framing error that reads like a website problem.
+        reader, writer = await asyncio.open_unix_connection(SOCKET_PATH, limit=MAX_FRAME + 1)
         try:
             writer.write(json.dumps(payload).encode() + b"\n")
             await writer.drain()

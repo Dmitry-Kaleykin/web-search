@@ -240,3 +240,46 @@ async def test_a_real_socket_round_trip_agrees_on_framing(short_socket_path, mon
     assert response.extensions["broker_forwarded"] == ["cookie"]
     assert response.extensions["broker_filtered"] == ["authorization"]
     assert pending == {}
+
+
+async def test_a_page_larger_than_the_old_reply_buffer_survives_the_round_trip(
+    short_socket_path, monkeypatch
+):
+    """The reply buffer used to be 160 KB, which is smaller than one ordinary article.
+
+    A base64 body is a third larger than the bytes it carries, so anything past about 118 KB was
+    truncated mid-line and reported as a failed fetch. That is a large fraction of real pages, and
+    the router hid it by escalating to Chromium, which reads as a slow website rather than a bug.
+    """
+    from web_research.isolation import worker
+
+    path = short_socket_path
+    pending: dict[str, asyncio.Future] = {}
+    article = b"<html><body>" + b"x" * 200_000 + b"</body></html>"
+
+    async def emit(value: dict) -> None:
+        pending[value["id"]].set_result(
+            {
+                "status": 200,
+                "headers": [["content-type", "text/html"]],
+                "body": base64.b64encode(article).decode(),
+            }
+        )
+
+    server = await asyncio.start_unix_server(
+        lambda reader, writer: worker.broker_request(
+            reader, writer, emit=emit, pending=pending, slots=asyncio.Semaphore(4)
+        ),
+        path,
+        limit=worker.MAX_REQUEST_LINE + 1,
+    )
+    monkeypatch.setattr(transport, "SOCKET_PATH", path)
+    try:
+        async with httpx.AsyncClient(transport=transport.BrokerTransport(), timeout=5) as client:
+            response = await client.get("https://example.com/article")
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert response.content == article
+    assert pending == {}
